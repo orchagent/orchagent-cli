@@ -69,7 +69,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd cli
-          npm ci
+          npm install
 
       - name: Build @orchagent/cli
         run: |
