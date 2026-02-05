@@ -1,6 +1,6 @@
 {
   "name": "orchagent",
-  "version": "0.3.31",
+  "version": "0.3.30",
   "description": "Convenience wrapper for @orchagent/cli - AI agent marketplace CLI",
   "license": "MIT",
   "author": "orchagent <hello@orchagent.io>",
