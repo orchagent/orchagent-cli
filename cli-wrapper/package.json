@@ -1,0 +1,37 @@
+{
+  "name": "orchagent",
+  "version": "0.3.30",
+  "description": "Convenience wrapper for @orchagent/cli - AI agent marketplace CLI",
+  "license": "MIT",
+  "author": "orchagent <hello@orchagent.io>",
+  "homepage": "https://orchagent.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/orchagent/orchagent-cli.git",
+    "directory": "cli-wrapper"
+  },
+  "bugs": {
+    "url": "https://github.com/orchagent/orchagent/issues"
+  },
+  "keywords": [
+    "orchagent",
+    "ai",
+    "agents",
+    "cli",
+    "marketplace",
+    "llm"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "orchagent": "index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "dependencies": {
+    "@orchagent/cli": "^0.3.30"
+  }
+}

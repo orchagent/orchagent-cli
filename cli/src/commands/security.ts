@@ -1,0 +1,418 @@
+import { Command } from 'commander'
+import fs from 'fs/promises'
+import chalk from 'chalk'
+
+import { getResolvedConfig, loadConfig } from '../lib/config'
+import { safeFetchWithRetryForCalls } from '../lib/api'
+import { CliError } from '../lib/errors'
+import { printJson } from '../lib/output'
+import { createSpinner } from '../lib/spinner'
+import { detectLlmKey, validateProvider, type LlmProvider } from '../lib/llm'
+import { track } from '../lib/analytics'
+
+const DEFAULT_VERSION = 'latest'
+
+type AgentRef = {
+  org?: string
+  agent: string
+  version: string
+}
+
+function parseAgentRef(value: string): AgentRef {
+  const [ref, versionPart] = value.split('@')
+  const version = versionPart?.trim() || DEFAULT_VERSION
+  const segments = ref.split('/')
+  if (segments.length === 1) {
+    return { agent: segments[0], version }
+  }
+  if (segments.length === 2) {
+    return { org: segments[0], agent: segments[1], version }
+  }
+  if (segments.length === 3) {
+    return { org: segments[0], agent: segments[1], version: segments[2] }
+  }
+  throw new CliError('Invalid agent reference. Use org/agent/version or org/agent@version format.')
+}
+
+// Severity color mapping
+function severityColor(severity: string): string {
+  switch (severity.toLowerCase()) {
+    case 'critical':
+      return chalk.red.bold(severity.toUpperCase())
+    case 'high':
+      return chalk.red(severity.toUpperCase())
+    case 'medium':
+      return chalk.yellow(severity.toUpperCase())
+    case 'low':
+      return chalk.blue(severity.toUpperCase())
+    default:
+      return severity
+  }
+}
+
+// Risk level color mapping
+function riskLevelColor(level: string): string {
+  switch (level.toLowerCase()) {
+    case 'critical':
+      return chalk.bgRed.white.bold(` ${level.toUpperCase()} `)
+    case 'high':
+      return chalk.bgRed.white(` ${level.toUpperCase()} `)
+    case 'medium':
+      return chalk.bgYellow.black(` ${level.toUpperCase()} `)
+    case 'low':
+      return chalk.bgBlue.white(` ${level.toUpperCase()} `)
+    case 'minimal':
+      return chalk.bgGreen.white(` ${level.toUpperCase()} `)
+    default:
+      return level
+  }
+}
+
+// Types for scan response
+interface Vulnerability {
+  attack_id: string
+  category: string
+  severity: string
+  attack_name: string
+  attack_description: string
+  leaked: boolean
+  leaked_content?: string
+  response_snippet?: string
+}
+
+interface ScanResult {
+  agent_id: string
+  scan_timestamp: string
+  total_attacks: number
+  vulnerabilities_found: number
+  risk_level: string
+  vulnerabilities: Vulnerability[]
+  summary: {
+    by_category: Record<string, number>
+    by_severity: Record<string, number>
+  }
+  markdown_report?: string
+}
+
+function formatSummaryOutput(result: ScanResult): void {
+  process.stdout.write('\n')
+  process.stdout.write(chalk.bold('Security Scan Results\n'))
+  process.stdout.write('━'.repeat(50) + '\n\n')
+
+  // Agent info
+  process.stdout.write(`${chalk.bold('Agent:')} ${result.agent_id}\n`)
+  process.stdout.write(`${chalk.bold('Scan Time:')} ${result.scan_timestamp}\n\n`)
+
+  // Risk level banner
+  process.stdout.write(`${chalk.bold('Risk Level:')} ${riskLevelColor(result.risk_level)}\n\n`)
+
+  // Summary stats
+  process.stdout.write(`${chalk.bold('Attacks Tested:')} ${result.total_attacks}\n`)
+  process.stdout.write(`${chalk.bold('Vulnerabilities Found:')} ${result.vulnerabilities_found}\n\n`)
+
+  // Breakdown by severity
+  if (Object.keys(result.summary.by_severity).length > 0) {
+    process.stdout.write(chalk.bold('By Severity:\n'))
+    const severityOrder = ['critical', 'high', 'medium', 'low']
+    for (const sev of severityOrder) {
+      const count = result.summary.by_severity[sev]
+      if (count && count > 0) {
+        process.stdout.write(`  ${severityColor(sev)}: ${count}\n`)
+      }
+    }
+    process.stdout.write('\n')
+  }
+
+  // Breakdown by category
+  if (Object.keys(result.summary.by_category).length > 0) {
+    process.stdout.write(chalk.bold('By Category:\n'))
+    for (const [cat, count] of Object.entries(result.summary.by_category)) {
+      if (count > 0) {
+        process.stdout.write(`  ${cat}: ${count}\n`)
+      }
+    }
+    process.stdout.write('\n')
+  }
+
+  // Top vulnerabilities (show first 5)
+  if (result.vulnerabilities.length > 0) {
+    process.stdout.write(chalk.bold('Top Issues:\n'))
+    const topVulns = result.vulnerabilities.slice(0, 5)
+    for (const vuln of topVulns) {
+      process.stdout.write(`\n  ${severityColor(vuln.severity)} - ${chalk.bold(vuln.attack_name)}\n`)
+      process.stdout.write(`  Category: ${vuln.category}\n`)
+      if (vuln.attack_description) {
+        const desc = vuln.attack_description.length > 100
+          ? vuln.attack_description.slice(0, 97) + '...'
+          : vuln.attack_description
+        process.stdout.write(`  ${chalk.dim(desc)}\n`)
+      }
+    }
+
+    if (result.vulnerabilities.length > 5) {
+      process.stdout.write(`\n  ${chalk.dim(`... and ${result.vulnerabilities.length - 5} more`)}\n`)
+    }
+    process.stdout.write('\n')
+  }
+
+  // Suggestion
+  if (result.vulnerabilities_found > 0) {
+    process.stdout.write(chalk.yellow('Tip: Use --output markdown for a detailed report.\n'))
+  } else {
+    process.stdout.write(chalk.green('No vulnerabilities detected. Your agent appears secure.\n'))
+  }
+}
+
+export function registerSecurityCommand(program: Command): void {
+  const security = program
+    .command('security')
+    .description('Security scanning and vulnerability testing for agents')
+
+  security
+    .command('test <agent>')
+    .description('Run dynamic security test against an agent')
+    .option('--categories <cats...>', 'Filter by attack categories')
+    .option('--severities <sevs...>', 'Filter by severities (critical, high, medium, low)')
+    .option('--max-attacks <n>', 'Limit number of attacks', parseInt)
+    .option('--output <format>', 'Output format: json, markdown, summary', 'summary')
+    .option('--output-file <path>', 'Write report to file')
+    .option('--key <key>', 'LLM API key (overrides env vars)')
+    .option('--provider <provider>', 'LLM provider (openai, anthropic, gemini)')
+    .addHelpText('after', `
+Examples:
+  orch security test my-org/my-agent/1.0.0
+  orch security test my-org/my-agent@latest --categories persona_roleplay logic_trap
+  orch security test my-org/my-agent/1.0.0 --severities critical high
+  orch security test my-org/my-agent/1.0.0 --output markdown --output-file report.md
+  orch security test my-org/my-agent/1.0.0 --max-attacks 10 --output json
+`)
+    .action(
+      async (
+        agentRef: string,
+        options: {
+          categories?: string[]
+          severities?: string[]
+          maxAttacks?: number
+          output?: string
+          outputFile?: string
+          key?: string
+          provider?: string
+        }
+      ) => {
+        const resolved = await getResolvedConfig()
+        if (!resolved.apiKey) {
+          throw new CliError('Missing API key. Run `orchagent login` first.')
+        }
+
+        const parsed = parseAgentRef(agentRef)
+        const configFile = await loadConfig()
+        const org = parsed.org ?? configFile.workspace ?? resolved.defaultOrg
+        if (!org) {
+          throw new CliError('Missing org. Use org/agent or set default org.')
+        }
+
+        const agentId = `${org}/${parsed.agent}/${parsed.version}`
+
+        // Detect LLM key for the scan
+        let llmKey: string | undefined
+        let llmProvider: string | undefined
+
+        if (options.key) {
+          if (!options.provider) {
+            throw new CliError(
+              'When using --key, you must also specify --provider (openai, anthropic, or gemini)'
+            )
+          }
+          validateProvider(options.provider)
+          llmKey = options.key
+          llmProvider = options.provider
+        } else {
+          const detected = await detectLlmKey(['any'] as LlmProvider[], resolved)
+          if (detected) {
+            llmKey = detected.key
+            llmProvider = detected.provider
+          }
+        }
+
+        // Build request body
+        const requestBody: Record<string, unknown> = {
+          agent_id: agentId,
+        }
+
+        if (options.categories && options.categories.length > 0) {
+          requestBody.categories = options.categories
+        }
+        if (options.severities && options.severities.length > 0) {
+          requestBody.severities = options.severities
+        }
+        if (options.maxAttacks) {
+          requestBody.max_attacks = options.maxAttacks
+        }
+
+        const url = `${resolved.apiUrl.replace(/\/$/, '')}/security/test`
+
+        // Make the API call with a spinner
+        const spinner = createSpinner(`Scanning ${agentId} for vulnerabilities...`)
+        spinner.start()
+
+        // Build headers - LLM key goes in X-LLM-API-Key header
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${resolved.apiKey}`,
+        }
+        if (llmKey) {
+          headers['X-LLM-API-Key'] = llmKey
+        }
+
+        let response: Response
+        try {
+          response = await safeFetchWithRetryForCalls(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(requestBody),
+            timeoutMs: 300000, // 5 minutes - scans can take time
+          })
+        } catch (err) {
+          spinner.fail(`Scan failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+          throw err
+        }
+
+        if (!response.ok) {
+          const text = await response.text()
+          let payload: unknown
+          try {
+            payload = JSON.parse(text)
+          } catch {
+            payload = text
+          }
+
+          const message =
+            typeof payload === 'object' && payload
+              ? (payload as { error?: { message?: string }; message?: string }).error?.message ||
+                (payload as { message?: string }).message ||
+                response.statusText
+              : response.statusText
+          spinner.fail(`Scan failed: ${message}`)
+          throw new CliError(message)
+        }
+
+        spinner.succeed(`Scan completed for ${agentId}`)
+
+        const result: ScanResult = await response.json() as ScanResult
+
+        // Track successful scan
+        await track('cli_security_scan', {
+          agent: agentId,
+          vulnerabilities_found: result.vulnerabilities_found,
+          risk_level: result.risk_level,
+        })
+
+        // Handle output
+        const outputFormat = options.output || 'summary'
+
+        if (options.outputFile) {
+          let content: string
+          if (outputFormat === 'json') {
+            content = JSON.stringify(result, null, 2)
+          } else if (outputFormat === 'markdown' && result.markdown_report) {
+            content = result.markdown_report
+          } else if (outputFormat === 'markdown') {
+            // Generate basic markdown if server didn't provide one
+            content = generateMarkdownReport(result)
+          } else {
+            // For summary output to file, use markdown
+            content = generateMarkdownReport(result)
+          }
+          await fs.writeFile(options.outputFile, content, 'utf8')
+          process.stdout.write(`Report saved to ${options.outputFile}\n`)
+          return
+        }
+
+        // Print to stdout based on format
+        if (outputFormat === 'json') {
+          printJson(result)
+        } else if (outputFormat === 'markdown') {
+          if (result.markdown_report) {
+            process.stdout.write(result.markdown_report)
+          } else {
+            process.stdout.write(generateMarkdownReport(result))
+          }
+        } else {
+          // summary format
+          formatSummaryOutput(result)
+        }
+      }
+    )
+}
+
+function generateMarkdownReport(result: ScanResult): string {
+  const lines: string[] = []
+
+  lines.push('# Security Scan Report')
+  lines.push('')
+  lines.push(`**Agent:** ${result.agent_id}`)
+  lines.push(`**Scan Time:** ${result.scan_timestamp}`)
+  lines.push(`**Risk Level:** ${result.risk_level.toUpperCase()}`)
+  lines.push('')
+  lines.push('## Summary')
+  lines.push('')
+  lines.push(`- Total Attacks Tested: ${result.total_attacks}`)
+  lines.push(`- Vulnerabilities Found: ${result.vulnerabilities_found}`)
+  lines.push('')
+
+  if (Object.keys(result.summary.by_severity).length > 0) {
+    lines.push('### By Severity')
+    lines.push('')
+    for (const [sev, count] of Object.entries(result.summary.by_severity)) {
+      if (count > 0) {
+        lines.push(`- ${sev.toUpperCase()}: ${count}`)
+      }
+    }
+    lines.push('')
+  }
+
+  if (Object.keys(result.summary.by_category).length > 0) {
+    lines.push('### By Category')
+    lines.push('')
+    for (const [cat, count] of Object.entries(result.summary.by_category)) {
+      if (count > 0) {
+        lines.push(`- ${cat}: ${count}`)
+      }
+    }
+    lines.push('')
+  }
+
+  if (result.vulnerabilities.length > 0) {
+    lines.push('## Vulnerabilities')
+    lines.push('')
+
+    for (const vuln of result.vulnerabilities) {
+      lines.push(`### ${vuln.attack_name}`)
+      lines.push('')
+      lines.push(`- **Severity:** ${vuln.severity.toUpperCase()}`)
+      lines.push(`- **Category:** ${vuln.category}`)
+      lines.push(`- **Attack ID:** ${vuln.attack_id}`)
+      lines.push('')
+      if (vuln.attack_description) {
+        lines.push(vuln.attack_description)
+        lines.push('')
+      }
+      if (vuln.leaked_content) {
+        lines.push('**Leaked Content:**')
+        lines.push('```')
+        lines.push(vuln.leaked_content)
+        lines.push('```')
+        lines.push('')
+      }
+      if (vuln.response_snippet) {
+        lines.push('**Response Snippet:**')
+        lines.push('```')
+        lines.push(vuln.response_snippet)
+        lines.push('```')
+        lines.push('')
+      }
+    }
+  }
+
+  return lines.join('\n')
+}
