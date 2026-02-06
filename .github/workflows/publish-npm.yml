@@ -1,7 +1,6 @@
 name: Publish to npm
 
 on:
-  # Manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
       tag:
@@ -15,14 +14,13 @@ on:
           - alpha
           - next
 
-  # Trigger on version tags (e.g., v0.3.30)
   push:
     tags:
       - 'v*.*.*'
 
 permissions:
   contents: read
-  id-token: write  # Required for OIDC authentication with npm
+  id-token: write
 
 jobs:
   publish:
@@ -36,7 +34,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Get version from tag
         id: get_version
@@ -45,11 +42,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           if [[ "$EVENT_NAME" == "push" ]]; then
-            # Extract version from tag (v0.3.30 -> 0.3.30)
             VERSION="${GITHUB_REF#refs/tags/v}"
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
-            # Use version from package.json for manual triggers
             VERSION=$(node -p "require('./cli/package.json').version")
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           fi
@@ -79,10 +74,9 @@ jobs:
       - name: Publish @orchagent/cli
         env:
           NPM_TAG: ${{ steps.npm_tag.outputs.tag }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd cli
-          npm publish --access public --tag "$NPM_TAG"
+          npm publish --provenance --access public --tag "$NPM_TAG"
 
       - name: Sync wrapper version
         env:
@@ -94,23 +88,18 @@ jobs:
       - name: Publish orchagent wrapper
         env:
           NPM_TAG: ${{ steps.npm_tag.outputs.tag }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd cli-wrapper
-          npm publish --access public --tag "$NPM_TAG"
+          npm publish --provenance --access public --tag "$NPM_TAG"
 
       - name: Summary
         env:
           VERSION: ${{ steps.get_version.outputs.version }}
           NPM_TAG: ${{ steps.npm_tag.outputs.tag }}
         run: |
-          echo "✅ Published successfully!"
+          echo "Published successfully!"
           echo ""
-          echo "📦 @orchagent/cli@$VERSION"
-          echo "📦 orchagent@$VERSION"
+          echo "@orchagent/cli@$VERSION"
+          echo "orchagent@$VERSION"
           echo ""
-          echo "🏷️  Tag: $NPM_TAG"
-          echo ""
-          echo "Users can now run:"
-          echo "  npx orchagent skill install owner/repo"
-          echo "  npm install -g @orchagent/cli"
+          echo "Tag: $NPM_TAG"
