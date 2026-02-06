@@ -19,7 +19,7 @@ vi.mock('../lib/api')
 vi.mock('../lib/bundle')
 
 import fs from 'fs/promises'
-import { registerPublishCommand } from './publish'
+import { registerPublishCommand, extractTemplateVariables, deriveInputSchema } from './publish'
 import { getResolvedConfig } from '../lib/config'
 import { createAgent, getOrg } from '../lib/api'
 import { detectEntrypoint } from '../lib/bundle'
@@ -114,6 +114,14 @@ describe('publish command', () => {
           tags: ['test'],
           is_public: false,
           supported_providers: ['any'],
+          // Auto-derived from {{input}} template variable (no schema.json)
+          input_schema: {
+            type: 'object',
+            properties: {
+              input: { type: 'string', description: 'Value for the input template variable' },
+            },
+            required: ['input'],
+          },
         })
       )
       // Note: version is NOT sent to createAgent - server auto-assigns it
@@ -459,6 +467,173 @@ describe('publish command', () => {
       await program.parseAsync(['node', 'test', 'publish'])
 
       expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('sk_service_abc123'))
+    })
+
+    it('auto-derives input schema from template variables when no schema.json', async () => {
+      const manifest = {
+        name: 'custom-agent',
+        type: 'prompt',
+        description: 'Custom agent',
+      }
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        if (path.includes('orchagent.json')) {
+          return JSON.stringify(manifest)
+        }
+        if (path.includes('prompt.md')) {
+          return 'Humanize this text: {{text}}\n\nTone: {{tone}}'
+        }
+        if (path.includes('schema.json')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      expect(mockCreateAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          input_schema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'Value for the text template variable' },
+              tone: { type: 'string', description: 'Value for the tone template variable' },
+            },
+            required: ['text', 'tone'],
+          },
+        })
+      )
+    })
+
+    it('warns when schema.json properties mismatch template variables', async () => {
+      const manifest = {
+        name: 'mismatch-agent',
+        type: 'prompt',
+        description: 'Mismatch agent',
+      }
+
+      const schemas = {
+        input: {
+          type: 'object',
+          properties: {
+            input: { type: 'string', description: 'The user input' },
+          },
+          required: ['input'],
+        },
+      }
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        if (path.includes('orchagent.json')) {
+          return JSON.stringify(manifest)
+        }
+        if (path.includes('prompt.md')) {
+          // User changed prompt to use {{text}} but didn't update schema.json
+          return 'Humanize: {{text}}'
+        }
+        if (path.includes('schema.json')) {
+          return JSON.stringify(schemas)
+        }
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      // Should warn about mismatch
+      expect(stderrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Schema mismatch')
+      )
+      // Should still use the explicit schema.json (user's explicit file takes precedence)
+      expect(mockCreateAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          input_schema: schemas.input,
+        })
+      )
+    })
+
+    it('does not derive schema when prompt has no template variables', async () => {
+      const manifest = {
+        name: 'no-vars-agent',
+        type: 'prompt',
+        description: 'No vars agent',
+      }
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        if (path.includes('orchagent.json')) {
+          return JSON.stringify(manifest)
+        }
+        if (path.includes('prompt.md')) {
+          return 'You are a helpful assistant. Respond to any input.'
+        }
+        if (path.includes('schema.json')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      expect(mockCreateAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          input_schema: undefined,
+        })
+      )
+    })
+  })
+
+  describe('extractTemplateVariables', () => {
+    it('extracts simple variables', () => {
+      expect(extractTemplateVariables('Hello {{name}}')).toEqual(['name'])
+    })
+
+    it('extracts multiple variables', () => {
+      expect(extractTemplateVariables('{{text}} with {{tone}}')).toEqual(['text', 'tone'])
+    })
+
+    it('deduplicates repeated variables', () => {
+      expect(extractTemplateVariables('{{x}} and {{x}} again')).toEqual(['x'])
+    })
+
+    it('returns empty array when no variables', () => {
+      expect(extractTemplateVariables('No variables here')).toEqual([])
+    })
+
+    it('ignores malformed braces', () => {
+      expect(extractTemplateVariables('{single} and {{{triple}}}')).toEqual(['triple'])
+    })
+  })
+
+  describe('deriveInputSchema', () => {
+    it('creates schema from variable names', () => {
+      const schema = deriveInputSchema(['text', 'tone'])
+      expect(schema).toEqual({
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Value for the text template variable' },
+          tone: { type: 'string', description: 'Value for the tone template variable' },
+        },
+        required: ['text', 'tone'],
+      })
+    })
+
+    it('handles single variable', () => {
+      const schema = deriveInputSchema(['input']) as any
+      expect(Object.keys(schema.properties)).toEqual(['input'])
+      expect(schema.required).toEqual(['input'])
     })
   })
 

@@ -554,7 +554,10 @@ ${skillData.prompt}
           for (const tool of installed) {
             log(`  - ${tool}\n`)
           }
-          log(`\nLocation: ${scope === 'user' ? '~/.claude/skills/ (and other AI tool dirs)' : './<tool>/skills/'}\n`)
+          log(`\nLocations:\n`)
+          for (const file of result.files) {
+            log(`  - ${file.tool}: ${file.path}\n`)
+          }
         }
       }
     )

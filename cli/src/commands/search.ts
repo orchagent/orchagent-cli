@@ -17,6 +17,7 @@ export function registerSearchCommand(program: Command): void {
     .option('--recent', 'Show most recently published')
     .option('--mine', 'Show only your own agents (including private)')
     .option('--type <type>', 'Filter by type: agents, skills, code, prompt, skill, all (default: all)', 'all')
+    .option('--tags <tags>', 'Filter by tags (comma-separated, e.g., security,devops)')
     .option('--limit <n>', `Max results (default: ${DEFAULT_LIMIT})`, String(DEFAULT_LIMIT))
     .option('--free', 'Show only free agents')
     .option('--paid', 'Show only paid agents')
@@ -26,6 +27,9 @@ Pricing Filters:
   --free    Show only free agents
   --paid    Show only paid agents
 
+Tag Filters:
+  --tags security,devops    Show agents matching any of these tags
+
 Ownership Filters:
   --mine    Show your own agents (public and private). Requires login.
 `)
@@ -34,6 +38,7 @@ Ownership Filters:
       recent?: boolean
       mine?: boolean
       type: string
+      tags?: string
       limit: string
       free?: boolean
       paid?: boolean
@@ -45,6 +50,7 @@ Ownership Filters:
       // Map type filter for API (null means no filter)
       const typeFilter = options.type === 'all' ? undefined : options.type
       const sort = options.popular ? 'stars' as const : options.recent ? 'recent' as const : undefined
+      const tags = options.tags ? options.tags.split(',').map(t => t.trim()).filter(Boolean) : undefined
 
       let agents
 
@@ -64,11 +70,11 @@ Ownership Filters:
         }
 
         if (query) {
-          agents = await searchAgents(config, query, { sort, type: typeFilter })
-          await track('cli_search', { query, type: options.type })
+          agents = await searchAgents(config, query, { sort, tags, type: typeFilter })
+          await track('cli_search', { query, type: options.type, tags: options.tags })
         } else {
-          agents = await listPublicAgents(config, { sort, type: typeFilter })
-          await track('cli_search', { mode: options.popular ? 'popular' : 'recent', type: options.type })
+          agents = await listPublicAgents(config, { sort, tags, type: typeFilter })
+          await track('cli_search', { mode: options.popular ? 'popular' : 'recent', type: options.type, tags: options.tags })
         }
       }
 

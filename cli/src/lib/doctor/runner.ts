@@ -47,21 +47,10 @@ export async function runAllChecks(): Promise<CheckResult[]> {
       message: 'Skipped (gateway unreachable)',
       details: { skipped: true, reason: 'gateway unreachable' },
     })
-    results.push({
-      category: 'llm',
-      name: 'server_llm_keys',
-      status: 'warning',
-      message: 'Skipped (gateway unreachable)',
-      details: { skipped: true, reason: 'gateway unreachable' },
-    })
 
-    // Still check local LLM env vars since they don't require network
-    const localLlmCheck = (await runLlmChecks()).find(
-      (r) => r.name === 'local_llm_env'
-    )
-    if (localLlmCheck) {
-      results.push(localLlmCheck)
-    }
+    // LLM checks with server status unknown — local env vars still checked
+    const llmResults = await runLlmChecks({ skipServer: true })
+    results.push(...llmResults)
   }
 
   return results

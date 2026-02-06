@@ -211,10 +211,11 @@ export async function updateOrg(
 
 export async function listPublicAgents(
   config: ResolvedConfig,
-  options?: { sort?: 'stars' | 'recent' | 'name'; type?: string }
+  options?: { sort?: 'stars' | 'recent' | 'name'; tags?: string[]; type?: string }
 ): Promise<PublicAgent[]> {
   const params = new URLSearchParams()
   if (options?.sort) params.append('sort', options.sort)
+  if (options?.tags?.length) params.append('tags', options.tags.join(','))
   if (options?.type) params.append('type', options.type)
   const queryStr = params.toString()
   return publicRequest<PublicAgent[]>(
@@ -280,8 +281,8 @@ export async function createAgent(
 export async function starAgent(
   config: ResolvedConfig,
   agentId: string
-): Promise<void> {
-  await request(config, 'POST', `/agents/${agentId}/star`)
+): Promise<{ starred: boolean }> {
+  return request(config, 'POST', `/agents/${agentId}/star`)
 }
 
 export async function unstarAgent(

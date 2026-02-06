@@ -82,7 +82,7 @@ interface Vulnerability {
 
 interface ScanResult {
   agent_id: string
-  scan_timestamp: string
+  scanned_at: string
   total_attacks: number
   vulnerabilities_found: number
   risk_level: string
@@ -101,7 +101,7 @@ function formatSummaryOutput(result: ScanResult): void {
 
   // Agent info
   process.stdout.write(`${chalk.bold('Agent:')} ${result.agent_id}\n`)
-  process.stdout.write(`${chalk.bold('Scan Time:')} ${result.scan_timestamp}\n\n`)
+  process.stdout.write(`${chalk.bold('Scan Time:')} ${result.scanned_at}\n\n`)
 
   // Risk level banner
   process.stdout.write(`${chalk.bold('Risk Level:')} ${riskLevelColor(result.risk_level)}\n\n`)
@@ -351,7 +351,7 @@ function generateMarkdownReport(result: ScanResult): string {
   lines.push('# Security Scan Report')
   lines.push('')
   lines.push(`**Agent:** ${result.agent_id}`)
-  lines.push(`**Scan Time:** ${result.scan_timestamp}`)
+  lines.push(`**Scan Time:** ${result.scanned_at}`)
   lines.push(`**Risk Level:** ${result.risk_level.toUpperCase()}`)
   lines.push('')
   lines.push('## Summary')

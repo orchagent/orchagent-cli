@@ -16,7 +16,85 @@ const CATEGORY_NAMES: Record<string, string> = {
   configuration: 'Configuration',
   connectivity: 'Connectivity',
   authentication: 'Authentication',
-  llm: 'LLM Configuration',
+  llm: 'LLM Providers',
+}
+
+// Symbol for server-unknown state
+const UNKNOWN_SYMBOL = chalk.dim('?')
+
+/**
+ * Render the LLM section with per-provider table layout.
+ */
+function renderLlmSection(checks: CheckResult[], verbose: boolean): void {
+  const providerChecks = checks.filter(
+    (c) => c.name.startsWith('llm_provider_') && c.name !== 'llm_provider_summary'
+  )
+  const summaryCheck = checks.find((c) => c.name === 'llm_provider_summary')
+
+  // Calculate padding for aligned columns
+  const maxIdLen = Math.max(...providerChecks.map((c) => {
+    const id = (c.details?.providerId as string) || ''
+    return id.length
+  }))
+
+  for (const check of providerChecks) {
+    const id = (check.details?.providerId as string) || ''
+    const padded = id.padEnd(maxIdLen)
+    const serverVal = check.details?.server
+    const localVal = check.details?.local as boolean
+    const configured = serverVal === true || localVal
+
+    // Pick symbol: ✓ for configured, ✗ for not configured, ? for server-unknown
+    let symbol: string
+    if (configured) {
+      symbol = SYMBOLS.success
+    } else if (serverVal === null) {
+      symbol = UNKNOWN_SYMBOL
+    } else {
+      symbol = SYMBOLS.error
+    }
+
+    // Build location text
+    let location: string
+    if (serverVal === null) {
+      location = localVal ? 'Server unknown, local configured' : 'Server unknown, not local'
+    } else if (serverVal && localVal) {
+      location = 'Configured (server + local)'
+    } else if (serverVal) {
+      location = 'Configured (server)'
+    } else if (localVal) {
+      location = 'Configured (local)'
+    } else {
+      location = 'Not configured'
+    }
+
+    process.stdout.write(`  ${symbol} ${padded}  ${location}\n`)
+
+    // Show format hint as dim indented text
+    const formatHint = check.details?.formatHint as string | undefined
+    if (formatHint) {
+      process.stdout.write(chalk.dim(`    \u26a0 ${formatHint}\n`))
+    }
+
+    // Verbose: show details
+    if (verbose && check.details) {
+      for (const [key, value] of Object.entries(check.details)) {
+        if (key === 'providerId' || key === 'displayName' || key === 'formatHint') continue
+        const displayValue = typeof value === 'object' ? JSON.stringify(value) : String(value)
+        process.stdout.write(chalk.dim(`    ${key}: ${displayValue}\n`))
+      }
+    }
+  }
+
+  // Summary tip/fix
+  if (summaryCheck) {
+    process.stdout.write('\n')
+    const symbol = SYMBOLS[summaryCheck.status] || SYMBOLS.info
+    process.stdout.write(`  ${symbol} ${summaryCheck.message}\n`)
+    if (summaryCheck.fix) {
+      process.stdout.write(chalk.dim(`    \u2192 ${summaryCheck.fix}\n`))
+    }
+  }
 }
 
 /**
@@ -76,21 +154,25 @@ export function printHumanOutput(
     const displayName = CATEGORY_NAMES[category] || category
     process.stdout.write(chalk.bold(`${displayName}\n`))
 
-    for (const check of checks) {
-      const symbol = SYMBOLS[check.status] || SYMBOLS.info
-      process.stdout.write(`  ${symbol} ${check.message}\n`)
+    if (category === 'llm') {
+      renderLlmSection(checks, verbose)
+    } else {
+      for (const check of checks) {
+        const symbol = SYMBOLS[check.status] || SYMBOLS.info
+        process.stdout.write(`  ${symbol} ${check.message}\n`)
 
-      // Show fix suggestion for warnings/errors (not for success/info)
-      if (check.fix && (check.status === 'warning' || check.status === 'error')) {
-        process.stdout.write(chalk.dim(`    \u2192 ${check.fix}\n`))
-      }
+        // Show fix suggestion for warnings/errors (not for success/info)
+        if (check.fix && (check.status === 'warning' || check.status === 'error')) {
+          process.stdout.write(chalk.dim(`    \u2192 ${check.fix}\n`))
+        }
 
-      // Show details in verbose mode
-      if (verbose && check.details) {
-        for (const [key, value] of Object.entries(check.details)) {
-          const displayValue =
-            typeof value === 'object' ? JSON.stringify(value) : String(value)
-          process.stdout.write(chalk.dim(`    ${key}: ${displayValue}\n`))
+        // Show details in verbose mode
+        if (verbose && check.details) {
+          for (const [key, value] of Object.entries(check.details)) {
+            const displayValue =
+              typeof value === 'object' ? JSON.stringify(value) : String(value)
+            process.stdout.write(chalk.dim(`    ${key}: ${displayValue}\n`))
+          }
         }
       }
     }

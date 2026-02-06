@@ -45,6 +45,83 @@ const SCHEMA_TEMPLATE = `{
 }
 `
 
+const CODE_TEMPLATE_PY = `"""
+orchagent code agent entrypoint.
+
+Reads JSON input from stdin, processes it, and writes JSON output to stdout.
+This is the standard orchagent code agent protocol.
+
+Usage:
+  echo '{"input": "hello"}' | python main.py
+"""
+
+import json
+import sys
+
+
+def main():
+    # Read JSON input from stdin
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON input"}))
+        sys.exit(1)
+
+    user_input = data.get("input", "")
+
+    # --- Your logic here ---
+    result = f"Received: {user_input}"
+    # --- End your logic ---
+
+    # Write JSON output to stdout
+    print(json.dumps({"result": result}))
+
+
+if __name__ == "__main__":
+    main()
+`
+
+function readmeTemplate(agentName: string, type: string): string {
+  const callExample = type === 'code'
+    ? `orchagent call ${agentName} input-file.txt`
+    : `orchagent call ${agentName} --data '{"input": "Hello world"}'`
+  const runExample = type === 'code'
+    ? `orchagent run ${agentName} --input '{"file_path": "src/app.py"}'`
+    : `orchagent run ${agentName} --input '{"input": "Hello world"}'`
+
+  return `# ${agentName}
+
+A brief description of what this agent does.
+
+## Usage
+
+### Server execution
+
+\`\`\`sh
+${callExample}
+\`\`\`
+
+### Local execution
+
+\`\`\`sh
+${runExample}
+\`\`\`
+
+## Input
+
+| Field | Type | Description |
+|-------|------|-------------|
+| \`input\` | string | The input to process |
+
+## Output
+
+| Field | Type | Description |
+|-------|------|-------------|
+| \`result\` | string | The agent's response |
+`
+}
+
 const SKILL_TEMPLATE = `---
 name: my-skill
 description: When to use this skill
@@ -126,22 +203,32 @@ export function registerInitCommand(program: Command): void {
       manifest.type = ['code', 'skill'].includes(options.type) ? options.type : 'prompt'
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
 
-      // Create prompt template (for prompt-based agents)
-      if (options.type !== 'code') {
+      // Create prompt template (for prompt-based agents) or entrypoint (for code agents)
+      if (options.type === 'code') {
+        const entrypointPath = path.join(targetDir, 'main.py')
+        await fs.writeFile(entrypointPath, CODE_TEMPLATE_PY)
+      } else {
         await fs.writeFile(promptPath, PROMPT_TEMPLATE)
       }
 
       // Create schema template
       await fs.writeFile(schemaPath, SCHEMA_TEMPLATE)
 
+      // Create README
+      const readmePath = path.join(targetDir, 'README.md')
+      await fs.writeFile(readmePath, readmeTemplate(agentName, options.type))
+
       process.stdout.write(`Initialized agent "${agentName}" in ${targetDir}\n`)
       process.stdout.write(`\nFiles created:\n`)
       const prefix = name ? name + '/' : ''
       process.stdout.write(`  ${prefix}orchagent.json - Agent configuration\n`)
-      if (options.type !== 'code') {
+      if (options.type === 'code') {
+        process.stdout.write(`  ${prefix}main.py        - Agent entrypoint (stdin/stdout JSON)\n`)
+      } else {
         process.stdout.write(`  ${prefix}prompt.md      - Prompt template\n`)
       }
       process.stdout.write(`  ${prefix}schema.json    - Input/output schemas\n`)
+      process.stdout.write(`  ${prefix}README.md      - Agent documentation\n`)
       process.stdout.write(`\nNext steps:\n`)
       if (options.type !== 'code') {
         const stepNum = name ? 2 : 1
@@ -156,9 +243,9 @@ export function registerInitCommand(program: Command): void {
         if (name) {
           process.stdout.write(`  1. cd ${name}\n`)
         }
-        process.stdout.write(`  ${stepNum}. Edit schema.json with your input/output schemas\n`)
-        process.stdout.write(`  ${stepNum + 1}. Deploy your code and get the URL\n`)
-        process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish --url <your-agent-url>\n`)
+        process.stdout.write(`  ${stepNum}. Edit main.py with your agent logic\n`)
+        process.stdout.write(`  ${stepNum + 1}. Test: echo '{"input": "test"}' | python main.py\n`)
+        process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish\n`)
       }
     })
 }

@@ -47,7 +47,8 @@ function warnIfLocalPathReference(jsonBody: string): void {
       process.stderr.write(
         `Warning: Your payload contains a local path reference ('${pathKey}').\n` +
         `Remote agents cannot access your local filesystem. The path will be interpreted\n` +
-        `by the server, not your local machine. Use --help for more information.\n\n`
+        `by the server, not your local machine.\n\n` +
+        `Tip: Use 'orchagent run <agent>' instead to execute locally with filesystem access.\n\n`
       )
     }
   } catch {
@@ -292,7 +293,7 @@ Paid Agents:
 
           if (isOwner) {
             // Owner: show free message, no balance check needed
-            process.stderr.write(`Cost: FREE (author)\n\n`)
+            if (!options.json) process.stderr.write(`Cost: FREE (author)\n\n`)
           } else {
             // Non-owner: check balance
             const price = agentMeta.price_per_call_cents
@@ -300,7 +301,7 @@ Paid Agents:
 
             if (!price || price <= 0) {
               // Price missing or invalid - warn but proceed (server will enforce)
-              process.stderr.write(`Warning: Pricing data unavailable. The server will verify payment.\n\n`)
+              if (!options.json) process.stderr.write(`Warning: Pricing data unavailable. The server will verify payment.\n\n`)
             } else {
               // Valid price - check balance
               try {
@@ -321,10 +322,10 @@ Paid Agents:
                 }
 
                 // Sufficient balance - show cost preview
-                process.stderr.write(`Cost: $${(price / 100).toFixed(2)}/call\n\n`)
+                if (!options.json) process.stderr.write(`Cost: $${(price / 100).toFixed(2)}/call\n\n`)
               } catch (err) {
                 // Balance check failed - warn but proceed (server will enforce)
-                process.stderr.write(`Warning: Could not verify balance. The server will check payment.\n\n`)
+                if (!options.json) process.stderr.write(`Warning: Could not verify balance. The server will check payment.\n\n`)
               }
             }
           }
@@ -515,9 +516,9 @@ Paid Agents:
 
         const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${parsed.agent}/${parsed.version}/${endpoint}`
 
-        // Make the API call with a spinner
-        const spinner = createSpinner(`Calling ${org}/${parsed.agent}@${parsed.version}...`)
-        spinner.start()
+        // Make the API call with a spinner (suppress in --json mode for clean machine-readable output)
+        const spinner = options.json ? null : createSpinner(`Calling ${org}/${parsed.agent}@${parsed.version}...`)
+        spinner?.start()
 
         let response: Response
         try {
@@ -527,7 +528,7 @@ Paid Agents:
             body,
           })
         } catch (err) {
-          spinner.fail(`Call failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+          spinner?.fail(`Call failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
           throw err
         }
 
@@ -548,7 +549,7 @@ Paid Agents:
 
           // Part 2: Handle 402 Payment Required
           if (response.status === 402 || errorCode === 'INSUFFICIENT_CREDITS') {
-            spinner.fail('Insufficient credits')
+            spinner?.fail('Insufficient credits')
             let errorMessage = 'Insufficient credits to call this agent.\n\n'
 
             // Use pricing info from pre-call check if available
@@ -565,10 +566,24 @@ Paid Agents:
           }
 
           if (errorCode === 'LLM_KEY_REQUIRED') {
-            spinner.fail('LLM key required')
+            spinner?.fail('LLM key required')
             throw new CliError(
               'This public agent requires you to provide an LLM key.\n' +
                 'Use --key <key> --provider <provider> or set OPENAI_API_KEY/ANTHROPIC_API_KEY env var.'
+            )
+          }
+
+          if (errorCode === 'LLM_RATE_LIMITED') {
+            const rateLimitMsg =
+              typeof payload === 'object' && payload
+                ? (payload as { error?: { message?: string } }).error?.message || 'Rate limit exceeded'
+                : 'Rate limit exceeded'
+            spinner?.fail('Rate limited by LLM provider')
+            throw new CliError(
+              rateLimitMsg + '\n\n' +
+                'This is the LLM provider\'s rate limit on your API key, not an OrchAgent limit.\n' +
+                'To switch providers: orch call <agent> --provider <gemini|anthropic|openai>',
+              ExitCodes.RATE_LIMITED
             )
           }
 
@@ -579,14 +594,14 @@ Paid Agents:
                 (payload as { message?: string }).message ||
                 response.statusText
               : response.statusText
-          spinner.fail(`Call failed: ${message}`)
+          spinner?.fail(`Call failed: ${message}`)
           throw new CliError(message)
         }
 
-        spinner.succeed(`Called ${org}/${parsed.agent}@${parsed.version}`)
+        spinner?.succeed(`Called ${org}/${parsed.agent}@${parsed.version}`)
 
-        // After successful call, if it was a paid agent, show cost
-        if (isPaidAgent(agentMeta) && pricingInfo?.price_cents && pricingInfo.price_cents > 0) {
+        // After successful call, if it was a paid agent, show cost (suppress in --json mode)
+        if (!options.json && isPaidAgent(agentMeta) && pricingInfo?.price_cents && pricingInfo.price_cents > 0) {
           process.stderr.write(`\nCost: $${(pricingInfo.price_cents / 100).toFixed(2)} USD\n`)
         }
 

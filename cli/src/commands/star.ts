@@ -35,9 +35,15 @@ export function registerStarCommand(program: Command): void {
         await unstarAgent(config, agentInfo.id)
         process.stdout.write(`Removed star from ${org}/${name}/${version}\n`)
       } else {
-        await starAgent(config, agentInfo.id)
-        await track('cli_star', { agent: `${org}/${name}/${version}` })
-        process.stdout.write(`Starred ${org}/${name}/${version}\n`)
+        const result = await starAgent(config, agentInfo.id)
+        if (result.starred) {
+          await track('cli_star', { agent: `${org}/${name}/${version}` })
+          process.stdout.write(`Starred ${org}/${name}/${version}\n`)
+        } else {
+          // Already starred — toggle off
+          await unstarAgent(config, agentInfo.id)
+          process.stdout.write(`Unstarred ${org}/${name}/${version}\n`)
+        }
       }
     })
 }

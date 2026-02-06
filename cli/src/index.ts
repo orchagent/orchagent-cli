@@ -12,9 +12,11 @@ import { exitWithError } from './lib/errors'
 import { initPostHog, shutdownPostHog } from './lib/analytics'
 import { loadConfig } from './lib/config'
 import { setProgressEnabled } from './lib/spinner'
+import { checkForUpdates, printUpdateNotification } from './lib/update-notifier'
 import packageJson from '../package.json'
 
 initPostHog()
+checkForUpdates()
 
 const program = new Command()
 
@@ -62,4 +64,7 @@ async function main() {
 
 main()
   .catch(exitWithError)
-  .finally(() => shutdownPostHog())
+  .finally(() => {
+    printUpdateNotification()
+    return shutdownPostHog()
+  })

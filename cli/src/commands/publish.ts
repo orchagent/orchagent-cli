@@ -13,6 +13,46 @@ import { createCodeBundle, detectEntrypoint, validateBundle, previewBundle } fro
 import type { AgentManifest } from '../types'
 
 /**
+ * Extract template placeholders from a prompt template.
+ * Matches double-brace patterns like {{variable}}.
+ * Returns unique variable names in order of first appearance.
+ */
+export function extractTemplateVariables(template: string): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  // Match double-brace template variables: two opening braces, word chars, two closing braces
+  const pattern = /\{\{(\w+)\}\}/g
+  let match
+  while ((match = pattern.exec(template)) !== null) {
+    const name = match[1]
+    if (!seen.has(name)) {
+      seen.add(name)
+      result.push(name)
+    }
+  }
+  return result
+}
+
+/**
+ * Derive a JSON Schema input object from template variable names.
+ * Each variable becomes a required string property.
+ */
+export function deriveInputSchema(variables: string[]): object {
+  const properties: Record<string, { type: string; description: string }> = {}
+  for (const name of variables) {
+    properties[name] = {
+      type: 'string',
+      description: `Value for the ${name} template variable`,
+    }
+  }
+  return {
+    type: 'object',
+    properties,
+    required: [...variables],
+  }
+}
+
+/**
  * Type for security flagged response payload
  */
 interface ContentFlaggedPayload {
@@ -323,6 +363,8 @@ export function registerPublishCommand(program: Command): void {
             const price = parseFloat(options.price)
             process.stdout.write(`Pricing: $${price.toFixed(2)} USD per call\n`)
           }
+
+          process.stdout.write(`\nView analytics and usage: https://orchagent.io/dashboard\n`)
         } catch (err) {
           if (handleSecurityFlaggedError(err)) {
             process.exit(1)
@@ -394,16 +436,45 @@ export function registerPublishCommand(program: Command): void {
       // Read schemas
       let inputSchema: object | undefined
       let outputSchema: object | undefined
+      let schemaFromFile = false
       const schemaPath = path.join(cwd, 'schema.json')
       try {
         const raw = await fs.readFile(schemaPath, 'utf-8')
         const schemas = JSON.parse(raw)
         inputSchema = schemas.input
         outputSchema = schemas.output
+        schemaFromFile = true
       } catch (err) {
         // Schema is optional
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
           throw new CliError(`Failed to read schema.json: ${err}`)
+        }
+      }
+
+      // For prompt agents, derive input schema from template variables if needed
+      if (prompt && (manifest.type === 'prompt' || manifest.type === 'skill')) {
+        const templateVars = extractTemplateVariables(prompt)
+        if (templateVars.length > 0) {
+          if (!schemaFromFile) {
+            // No schema.json provided - auto-generate from template variables
+            inputSchema = deriveInputSchema(templateVars)
+          } else if (inputSchema && 'properties' in (inputSchema as any)) {
+            // schema.json exists - check for mismatches with template variables
+            const schemaProps = Object.keys((inputSchema as any).properties || {})
+            const missing = templateVars.filter(v => !schemaProps.includes(v))
+            const extra = schemaProps.filter(p => !templateVars.includes(p))
+            if (missing.length > 0 || extra.length > 0) {
+              const parts: string[] = []
+              if (missing.length > 0) {
+                parts.push(`template uses {{${missing.join('}}, {{')}}} but schema.json doesn't define ${missing.join(', ')}`)
+              }
+              if (extra.length > 0) {
+                parts.push(`schema.json defines ${extra.join(', ')} but template doesn't use {{${extra.join('}}, {{')}}}`)
+              }
+              process.stderr.write(chalk.yellow(`Warning: Schema mismatch - ${parts.join('; ')}.\n`))
+              process.stderr.write(chalk.yellow(`  Consider updating schema.json to match your prompt.md template variables.\n`))
+            }
+          }
         }
       }
 
@@ -457,9 +528,12 @@ export function registerPublishCommand(program: Command): void {
           // Prompt agent validations
           const promptBytes = prompt ? Buffer.byteLength(prompt, 'utf-8') : 0
           process.stderr.write(`  ✓ prompt.md found (${promptBytes.toLocaleString()} bytes)\n`)
-          if (inputSchema || outputSchema) {
+          if (schemaFromFile) {
             const schemaTypes = [inputSchema ? 'input' : null, outputSchema ? 'output' : null].filter(Boolean).join(' + ')
             process.stderr.write(`  ✓ schema.json found (${schemaTypes} schemas)\n`)
+          } else if (inputSchema) {
+            const vars = prompt ? extractTemplateVariables(prompt) : []
+            process.stderr.write(`  ✓ Input schema derived from template variables: ${vars.join(', ')}\n`)
           }
         } else if (manifest.type === 'code') {
           // Code agent validations
@@ -661,5 +735,7 @@ export function registerPublishCommand(program: Command): void {
       if (shouldUploadBundle) {
         process.stdout.write(`\nNote: Hosted code execution is in beta. Contact support for full deployment.\n`)
       }
+
+      process.stdout.write(`\nView analytics and usage: https://orchagent.io/dashboard\n`)
     })
 }

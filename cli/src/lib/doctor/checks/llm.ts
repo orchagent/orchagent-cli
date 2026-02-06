@@ -3,139 +3,166 @@ import { fetchLlmKeys, ApiError } from '../../api'
 
 import type { CheckResult } from '../types'
 
-// Common LLM provider environment variables
-const LLM_ENV_VARS = [
-  { name: 'OPENAI_API_KEY', provider: 'OpenAI' },
-  { name: 'ANTHROPIC_API_KEY', provider: 'Anthropic' },
-  { name: 'GOOGLE_API_KEY', provider: 'Google' },
-  { name: 'GEMINI_API_KEY', provider: 'Gemini' },
-]
+// All supported LLM providers (single source of truth)
+const PROVIDERS = [
+  { id: 'openai', displayName: 'OpenAI', envVars: ['OPENAI_API_KEY'], keyPrefix: 'sk-' },
+  { id: 'anthropic', displayName: 'Anthropic', envVars: ['ANTHROPIC_API_KEY'], keyPrefix: 'sk-ant-' },
+  { id: 'gemini', displayName: 'Gemini', envVars: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'] },
+  { id: 'ollama', displayName: 'Ollama', envVars: ['OLLAMA_HOST'], isEndpoint: true },
+] as const
 
-/**
- * Check if LLM keys are configured on the server.
- */
-export async function checkServerLlmKeys(): Promise<CheckResult> {
-  const config = await getResolvedConfig()
+type Provider = (typeof PROVIDERS)[number]
 
-  if (!config.apiKey) {
-    return {
-      category: 'llm',
-      name: 'server_llm_keys',
-      status: 'warning',
-      message: 'Cannot check server LLM keys (not logged in)',
-      details: { reason: 'no api key' },
-    }
-  }
-
-  try {
-    const keys = await fetchLlmKeys(config)
-
-    if (keys.length === 0) {
-      return {
-        category: 'llm',
-        name: 'server_llm_keys',
-        status: 'warning',
-        message: 'No LLM keys configured on server',
-        fix: 'Run `orch keys add <provider>` or add keys at orchagent.io/settings',
-        details: { count: 0, providers: [] },
-      }
-    }
-
-    const providers = keys.map((k) => k.provider)
-
-    // Warn if only one provider configured (no fallback for rate limits)
-    if (keys.length === 1) {
-      return {
-        category: 'llm',
-        name: 'server_llm_keys',
-        status: 'warning',
-        message: `Only 1 LLM provider configured (${providers[0]}). Consider adding a backup for rate limit fallback.`,
-        fix: 'Run: orchagent keys add <provider>',
-        details: { count: keys.length, providers },
-      }
-    }
-
-    return {
-      category: 'llm',
-      name: 'server_llm_keys',
-      status: 'success',
-      message: `Server LLM keys configured (${providers.join(', ')})`,
-      details: { count: keys.length, providers },
-    }
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 401) {
-      return {
-        category: 'llm',
-        name: 'server_llm_keys',
-        status: 'warning',
-        message: 'Cannot check server LLM keys (auth failed)',
-        details: { error: err.message },
-      }
-    }
-
-    return {
-      category: 'llm',
-      name: 'server_llm_keys',
-      status: 'warning',
-      message: 'Could not check server LLM keys',
-      details: { error: err instanceof Error ? err.message : 'unknown error' },
-    }
-  }
+interface ProviderStatus {
+  providerId: string
+  displayName: string
+  server: boolean | null // null = couldn't check (e.g. gateway unreachable)
+  local: boolean
+  localEnvVar?: string
+  formatHint?: string
 }
 
 /**
- * Check if common LLM provider API keys are set in environment.
+ * Get a format hint for a key value, or null if the format looks OK.
+ * Hints are informational only — never errors or warnings.
  */
-export async function checkLocalLlmEnvVars(): Promise<CheckResult> {
-  const configuredProviders: string[] = []
-  const details: Record<string, boolean> = {}
+function getFormatHint(provider: Provider, value: string): string | null {
+  if ('isEndpoint' in provider && provider.isEndpoint) return null
+  if (!('keyPrefix' in provider) || !provider.keyPrefix) return null
 
-  for (const { name, provider } of LLM_ENV_VARS) {
-    const isSet = !!process.env[name]
-    details[name] = isSet
-    if (isSet) {
-      configuredProviders.push(provider)
-    }
+  const prefix = provider.keyPrefix
+  if (!value.startsWith(prefix)) {
+    return `Key doesn't match expected format (${prefix}...)`
   }
+  return null
+}
 
-  if (configuredProviders.length === 0) {
+/**
+ * Gather per-provider status from server keys and local env vars.
+ */
+function gatherProviderStatuses(serverProviders: string[] | null): ProviderStatus[] {
+  return PROVIDERS.map((provider) => {
+    // Server status
+    const server = serverProviders === null ? null : serverProviders.includes(provider.id)
+
+    // Local status — check each env var
+    let local = false
+    let localEnvVar: string | undefined
+    let formatHint: string | undefined
+
+    for (const envVar of provider.envVars) {
+      const value = process.env[envVar]
+      if (value) {
+        local = true
+        localEnvVar = envVar
+        const hint = getFormatHint(provider, value)
+        if (hint) formatHint = hint
+        break
+      }
+    }
+
     return {
-      category: 'llm',
-      name: 'local_llm_env',
-      status: 'warning',
-      message: 'No local LLM API keys found in environment',
-      fix: 'Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or similar for local runs',
-      details,
+      providerId: provider.id,
+      displayName: provider.displayName,
+      server,
+      local,
+      localEnvVar,
+      formatHint,
+    }
+  })
+}
+
+/**
+ * Build a human-readable location string from server/local status.
+ */
+function locationString(status: ProviderStatus): string {
+  if (status.server === null) {
+    // Server unknown (offline)
+    if (status.local) return 'Server unknown, local configured'
+    return 'Server unknown, not local'
+  }
+  if (status.server && status.local) return 'Configured (server + local)'
+  if (status.server) return 'Configured (server)'
+  if (status.local) return 'Configured (local)'
+  return 'Not configured'
+}
+
+/**
+ * Run all LLM configuration checks with per-provider breakdown.
+ *
+ * When skipServer is true, server status is null for all providers
+ * (shown as "unknown" in output). Use this when the gateway is unreachable.
+ */
+export async function runLlmChecks(options?: { skipServer?: boolean }): Promise<CheckResult[]> {
+  let serverProviders: string[] | null = null
+
+  if (!options?.skipServer) {
+    try {
+      const config = await getResolvedConfig()
+      if (config.apiKey) {
+        const keys = await fetchLlmKeys(config)
+        serverProviders = keys.map((k) => k.provider)
+      }
+    } catch (err) {
+      // If we can't reach the server, treat as unknown
+      if (err instanceof ApiError && err.status === 401) {
+        // Auth failed — server providers unknown
+      }
+      // Network error or other — server providers unknown
     }
   }
 
-  // Deduplicate (Google and Gemini might both be set)
-  const uniqueProviders = [...new Set(configuredProviders)]
+  const statuses = gatherProviderStatuses(serverProviders)
+  const results: CheckResult[] = []
 
-  return {
+  // Per-provider results
+  for (const status of statuses) {
+    const configured = status.server === true || status.local
+    results.push({
+      category: 'llm',
+      name: `llm_provider_${status.providerId}`,
+      status: configured ? 'success' : 'info',
+      message: `${status.providerId} — ${locationString(status)}`,
+      details: {
+        providerId: status.providerId,
+        displayName: status.displayName,
+        server: status.server,
+        local: status.local,
+        ...(status.localEnvVar && { localEnvVar: status.localEnvVar }),
+        ...(status.formatHint && { formatHint: status.formatHint }),
+      },
+    })
+  }
+
+  // Summary result
+  const configuredCount = statuses.filter((s) => s.server === true || s.local).length
+  const firstUnconfigured = statuses.find((s) => s.server !== true && !s.local)
+
+  let summaryStatus: CheckResult['status']
+  let summaryMessage: string
+  let summaryFix: string | undefined
+
+  if (configuredCount === 0) {
+    summaryStatus = 'warning'
+    summaryMessage = 'No LLM providers configured'
+    summaryFix = firstUnconfigured ? `Run: orch keys add ${firstUnconfigured.providerId}` : undefined
+  } else {
+    summaryStatus = 'success'
+    summaryMessage =
+      configuredCount < 2
+        ? 'Tip: Multiple providers enable automatic rate limit fallback.'
+        : `${configuredCount} providers configured`
+    summaryFix = firstUnconfigured ? `Run: orch keys add ${firstUnconfigured.providerId}` : undefined
+  }
+
+  results.push({
     category: 'llm',
-    name: 'local_llm_env',
-    status: 'success',
-    message: `Local LLM keys found (${uniqueProviders.join(', ')})`,
-    details,
-  }
-}
+    name: 'llm_provider_summary',
+    status: summaryStatus,
+    message: summaryMessage,
+    fix: summaryFix,
+    details: { configuredCount, totalProviders: PROVIDERS.length },
+  })
 
-/**
- * Run all LLM configuration checks.
- * If server keys are configured, local keys warning becomes informational.
- */
-export async function runLlmChecks(): Promise<CheckResult[]> {
-  const serverResult = await checkServerLlmKeys()
-  const localResult = await checkLocalLlmEnvVars()
-
-  // If server keys are configured, downgrade local keys warning to info
-  // Users who only use server-side calls don't need local keys
-  if (serverResult.status === 'success' && localResult.status === 'warning') {
-    localResult.status = 'info'
-    localResult.message = 'No local LLM API keys (using server keys)'
-    localResult.fix = undefined
-  }
-
-  return [serverResult, localResult]
+  return results
 }
