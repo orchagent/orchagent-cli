@@ -79,6 +79,7 @@ jobs:
       - name: Publish @orchagent/cli
         env:
           NPM_TAG: ${{ steps.npm_tag.outputs.tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd cli
           npm publish --provenance --access public --tag "$NPM_TAG"
@@ -93,6 +94,7 @@ jobs:
       - name: Publish orchagent wrapper
         env:
           NPM_TAG: ${{ steps.npm_tag.outputs.tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd cli-wrapper
           npm publish --provenance --access public --tag "$NPM_TAG"
