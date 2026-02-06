@@ -27,6 +27,7 @@ import {
   saveConfig,
   getResolvedConfig,
   getConfigPath,
+  unsetConfigKey,
 } from './config'
 
 describe('loadConfig', () => {
@@ -203,6 +204,85 @@ describe('getResolvedConfig', () => {
     const config = await getResolvedConfig()
 
     expect(config.apiKey).toBeUndefined()
+  })
+})
+
+describe('unsetConfigKey', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+    vi.mocked(fs.mkdir).mockResolvedValue(undefined)
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined)
+    vi.mocked(fs.chmod).mockResolvedValue(undefined)
+  })
+
+  it('removes default-provider from config', async () => {
+    const existingConfig = { api_key: 'sk_test', default_provider: 'gemini' }
+    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(existingConfig))
+
+    await unsetConfigKey('default-provider')
+
+    const writeCall = vi.mocked(fs.writeFile).mock.calls[0]
+    const written = JSON.parse(writeCall[1] as string)
+    expect(written).toEqual({ api_key: 'sk_test' })
+    expect(written).not.toHaveProperty('default_provider')
+  })
+
+  it('removes default-scope from config', async () => {
+    const existingConfig = { api_key: 'sk_test', default_scope: 'user' }
+    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(existingConfig))
+
+    await unsetConfigKey('default-scope')
+
+    const writeCall = vi.mocked(fs.writeFile).mock.calls[0]
+    const written = JSON.parse(writeCall[1] as string)
+    expect(written).toEqual({ api_key: 'sk_test' })
+    expect(written).not.toHaveProperty('default_scope')
+  })
+
+  it('removes default-format from config', async () => {
+    const existingConfig = { api_key: 'sk_test', default_formats: ['claude-code'] }
+    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(existingConfig))
+
+    await unsetConfigKey('default-format')
+
+    const writeCall = vi.mocked(fs.writeFile).mock.calls[0]
+    const written = JSON.parse(writeCall[1] as string)
+    expect(written).toEqual({ api_key: 'sk_test' })
+    expect(written).not.toHaveProperty('default_formats')
+  })
+
+  it('throws for unknown config key', async () => {
+    await expect(unsetConfigKey('nonexistent')).rejects.toThrow('Unknown config key')
+  })
+
+  it('succeeds even when key was not previously set', async () => {
+    const existingConfig = { api_key: 'sk_test' }
+    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(existingConfig))
+
+    await unsetConfigKey('default-provider')
+
+    const writeCall = vi.mocked(fs.writeFile).mock.calls[0]
+    const written = JSON.parse(writeCall[1] as string)
+    expect(written).toEqual({ api_key: 'sk_test' })
+  })
+
+  it('preserves other config keys when unsetting one', async () => {
+    const existingConfig = {
+      api_key: 'sk_test',
+      default_provider: 'gemini',
+      default_scope: 'project',
+      default_formats: ['cursor'],
+    }
+    vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(existingConfig))
+
+    await unsetConfigKey('default-provider')
+
+    const writeCall = vi.mocked(fs.writeFile).mock.calls[0]
+    const written = JSON.parse(writeCall[1] as string)
+    expect(written.api_key).toBe('sk_test')
+    expect(written.default_scope).toBe('project')
+    expect(written.default_formats).toEqual(['cursor'])
+    expect(written).not.toHaveProperty('default_provider')
   })
 })
 

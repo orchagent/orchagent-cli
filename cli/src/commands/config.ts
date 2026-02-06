@@ -7,6 +7,7 @@ import {
   setDefaultScope,
   getDefaultProvider,
   setDefaultProvider,
+  unsetConfigKey,
   loadConfig,
   getResolvedConfig,
   VALID_FORMAT_IDS,
@@ -108,6 +109,17 @@ async function getConfigValue(key: string): Promise<void> {
   }
 }
 
+async function unsetConfigValue(key: string): Promise<void> {
+  if (!isValidKey(key)) {
+    throw new CliError(
+      `Unknown config key: ${key}. Supported keys: ${SUPPORTED_KEYS.join(', ')}`
+    )
+  }
+
+  await unsetConfigKey(key)
+  process.stdout.write(`Unset ${key}\n`)
+}
+
 async function listConfigValues(): Promise<void> {
   const config = await loadConfig()
 
@@ -157,6 +169,13 @@ export function registerConfigCommand(program: Command): void {
     .description('Get a configuration value')
     .action(async (key: string) => {
       await getConfigValue(key)
+    })
+
+  config
+    .command('unset <key>')
+    .description('Remove a configuration value (restore to default)')
+    .action(async (key: string) => {
+      await unsetConfigValue(key)
     })
 
   config

@@ -129,3 +129,23 @@ export async function setDefaultProvider(provider: string): Promise<void> {
   config.default_provider = provider
   await saveConfig(config)
 }
+
+/**
+ * Remove a config key, restoring it to "not set" state.
+ * Maps CLI key names (kebab-case) to ConfigFile properties.
+ */
+const CONFIG_KEY_MAP: Record<string, keyof ConfigFile> = {
+  'default-format': 'default_formats',
+  'default-scope': 'default_scope',
+  'default-provider': 'default_provider',
+}
+
+export async function unsetConfigKey(cliKey: string): Promise<void> {
+  const configProp = CONFIG_KEY_MAP[cliKey]
+  if (!configProp) {
+    throw new Error(`Unknown config key: ${cliKey}`)
+  }
+  const config = await loadConfig()
+  delete config[configProp]
+  await saveConfig(config)
+}
