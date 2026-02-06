@@ -34,6 +34,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Get version from tag
         id: get_version
@@ -74,9 +75,10 @@ jobs:
       - name: Publish @orchagent/cli
         env:
           NPM_TAG: ${{ steps.npm_tag.outputs.tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd cli
-          npm publish --provenance --access public --tag "$NPM_TAG"
+          npm publish --access public --tag "$NPM_TAG"
 
       - name: Sync wrapper version
         env:
@@ -88,9 +90,10 @@ jobs:
       - name: Publish orchagent wrapper
         env:
           NPM_TAG: ${{ steps.npm_tag.outputs.tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd cli-wrapper
-          npm publish --provenance --access public --tag "$NPM_TAG"
+          npm publish --access public --tag "$NPM_TAG"
 
       - name: Summary
         env:
@@ -98,8 +101,6 @@ jobs:
           NPM_TAG: ${{ steps.npm_tag.outputs.tag }}
         run: |
           echo "Published successfully!"
-          echo ""
           echo "@orchagent/cli@$VERSION"
           echo "orchagent@$VERSION"
-          echo ""
           echo "Tag: $NPM_TAG"
