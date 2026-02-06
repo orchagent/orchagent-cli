@@ -82,7 +82,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd cli
-          npm publish --provenance --access public --tag "$NPM_TAG"
+          npm publish --access public --tag "$NPM_TAG"
 
       - name: Sync wrapper version
         env:
@@ -97,7 +97,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd cli-wrapper
-          npm publish --provenance --access public --tag "$NPM_TAG"
+          npm publish --access public --tag "$NPM_TAG"
 
       - name: Summary
         env:
