@@ -55,8 +55,8 @@ export function registerAgentsCommand(program: Command): void {
         const price = formatPrice(agent)
         const coloredPrice = isPaidAgent(agent) ? chalk.yellow(price) : chalk.green(price)
         const desc = agent.description
-          ? agent.description.length > 30
-            ? agent.description.slice(0, 27) + '...'
+          ? agent.description.length > 60
+            ? agent.description.slice(0, 57) + '...'
             : agent.description
           : '-'
 

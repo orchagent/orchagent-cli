@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import fs from 'fs/promises'
 import path from 'path'
 
-import { getResolvedConfig, loadConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import { getAgentWithFallback, safeFetchWithRetryForCalls, getCreditsBalance, getOrg } from '../lib/api'
 import { CliError, jsonInputError, ExitCodes } from '../lib/errors'
 import { printJson } from '../lib/output'
@@ -345,16 +345,20 @@ Paid Agents:
         let llmKey: string | undefined
         let llmProvider: string | undefined
 
+        // Resolve effective provider: CLI flag > config default
+        const configDefaultProvider = await getDefaultProvider()
+        const effectiveProvider = options.provider ?? configDefaultProvider
+
         if (options.key) {
           // Explicit key provided - require provider
-          if (!options.provider) {
+          if (!effectiveProvider) {
             throw new CliError(
               'When using --key, you must also specify --provider (openai, anthropic, or gemini)'
             )
           }
-          validateProvider(options.provider)
+          validateProvider(effectiveProvider)
           // Warn on potential model/provider mismatch
-          if (options.model && options.provider) {
+          if (options.model && effectiveProvider) {
             const modelLower = options.model.toLowerCase()
             const providerPatterns: Record<string, RegExp> = {
               openai: /^(gpt-|o1-|o3-|davinci|text-)/,
@@ -362,22 +366,22 @@ Paid Agents:
               gemini: /^gemini-/,
               ollama: /^(llama|mistral|deepseek|phi|qwen)/,
             }
-            const expectedPattern = providerPatterns[options.provider]
+            const expectedPattern = providerPatterns[effectiveProvider]
             if (expectedPattern && !expectedPattern.test(modelLower)) {
               process.stderr.write(
-                `Warning: Model '${options.model}' may not be a ${options.provider} model.\n\n`
+                `Warning: Model '${options.model}' may not be a ${effectiveProvider} model.\n\n`
               )
             }
           }
           llmKey = options.key
-          llmProvider = options.provider
+          llmProvider = effectiveProvider
         } else {
           // Try to detect from environment or server
-          // If --provider specified, prioritize that provider
+          // If provider specified (flag or config default), prioritize that provider
           let providersToCheck = supportedProviders as LlmProvider[]
-          if (options.provider) {
-            validateProvider(options.provider)
-            providersToCheck = [options.provider as LlmProvider]
+          if (effectiveProvider) {
+            validateProvider(effectiveProvider)
+            providersToCheck = [effectiveProvider as LlmProvider]
             // Warn on potential model/provider mismatch
             if (options.model) {
               const modelLower = options.model.toLowerCase()
@@ -387,10 +391,10 @@ Paid Agents:
                 gemini: /^gemini-/,
                 ollama: /^(llama|mistral|deepseek|phi|qwen)/,
               }
-              const expectedPattern = providerPatterns[options.provider]
+              const expectedPattern = providerPatterns[effectiveProvider]
               if (expectedPattern && !expectedPattern.test(modelLower)) {
                 process.stderr.write(
-                  `Warning: Model '${options.model}' may not be a ${options.provider} model.\n\n`
+                  `Warning: Model '${options.model}' may not be a ${effectiveProvider} model.\n\n`
                 )
               }
             }
@@ -413,7 +417,7 @@ Paid Agents:
           }
         } else if (agentMeta.type === 'prompt') {
           // Warn if no key found for prompt-based agent
-          const searchedProviders = options.provider ? [options.provider] : supportedProviders
+          const searchedProviders = effectiveProvider ? [effectiveProvider] : supportedProviders
           const providerList = searchedProviders.join(', ')
           process.stderr.write(
             `Warning: No LLM key found for provider(s): ${providerList}\n` +

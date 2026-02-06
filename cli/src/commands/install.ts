@@ -150,6 +150,7 @@ export function registerInstallCommand(program: Command): void {
     .description('Install agent as sub-agent (Claude Code, Cursor, etc.)')
     .option('--format <formats>', 'Comma-separated format IDs (e.g., claude-code,cursor)')
     .option('--scope <scope>', 'Install scope: user (home dir) or project (current dir)')
+    .option('--global', 'Install to home directory (alias for --scope user)')
     .option('--dry-run', 'Show what would be installed without making changes')
     .option('--json', 'Output result as JSON (for automation/tooling)')
     .addHelpText('after', `
@@ -162,6 +163,7 @@ Note: Paid agents cannot be installed locally - they run on server only.
         options: {
           format?: string
           scope?: string
+          global?: boolean
           dryRun?: boolean
           json?: boolean
         }
@@ -234,8 +236,8 @@ Note: Paid agents cannot be installed locally - they run on server only.
 
         result.formats = targetFormats
 
-        // Resolve scope: CLI flag > config default > fallback to 'user'
-        let scope = (options.scope ?? await getDefaultScope() ?? 'user') as 'user' | 'project'
+        // Resolve scope: --global > --scope > config default > fallback to 'user'
+        let scope = (options.global ? 'user' : (options.scope ?? await getDefaultScope() ?? 'user')) as 'user' | 'project'
         if (scope !== 'user' && scope !== 'project') {
           const errMsg = 'Scope must be "user" or "project"'
           if (jsonMode) {

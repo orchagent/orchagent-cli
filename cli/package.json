@@ -1,6 +1,6 @@
 {
   "name": "@orchagent/cli",
-  "version": "0.3.35",
+  "version": "0.3.36",
   "description": "Command-line interface for the orchagent AI agent marketplace",
   "license": "MIT",
   "author": "orchagent <hello@orchagent.io>",
@@ -40,8 +40,7 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:all": "vitest run && vitest run --config vitest.e2e.config.ts",
-    "prepublishOnly": "npm run build",
-    "postpublish": "cd ../cli-wrapper && npm version $npm_package_version --no-git-tag-version --allow-same-version && npm publish && echo '\n✓ Wrapper published at orchagent@'$npm_package_version"
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@sentry/node": "^9.3.0",

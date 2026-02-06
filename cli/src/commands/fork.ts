@@ -40,7 +40,7 @@ export function registerForkCommand(program: Command): void {
       process.stdout.write(`Forked ${org}/${name}/${version} to your account\n`)
       process.stdout.write(`\nYour forked agent: ${myOrg.slug}/${name}/v1\n`)
       process.stdout.write(`\nNext steps:\n`)
-      process.stdout.write(`  1. Run: orchagent init ${name}\n`)
+      process.stdout.write(`  1. Run: orchagent install ${myOrg.slug}/${name}\n`)
       process.stdout.write(`  2. Edit the prompt and schemas locally\n`)
       process.stdout.write(`  3. Run: orchagent publish\n`)
     })

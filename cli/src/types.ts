@@ -6,6 +6,7 @@ export type ConfigFile = {
   profiles?: Record<string, { api_key: string; api_url?: string }>
   default_formats?: string[]
   default_scope?: 'user' | 'project'
+  default_provider?: string
   no_progress?: boolean
 }
 

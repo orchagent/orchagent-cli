@@ -116,3 +116,16 @@ export async function setDefaultScope(scope: 'user' | 'project'): Promise<void> 
   config.default_scope = scope
   await saveConfig(config)
 }
+
+export const VALID_PROVIDERS = ['openai', 'anthropic', 'gemini'] as const
+
+export async function getDefaultProvider(): Promise<string | undefined> {
+  const config = await loadConfig()
+  return config.default_provider
+}
+
+export async function setDefaultProvider(provider: string): Promise<void> {
+  const config = await loadConfig()
+  config.default_provider = provider
+  await saveConfig(config)
+}
