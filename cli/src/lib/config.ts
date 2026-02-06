@@ -105,3 +105,14 @@ export async function setDefaultFormats(formats: string[]): Promise<void> {
   config.default_formats = formats
   await saveConfig(config)
 }
+
+export async function getDefaultScope(): Promise<'user' | 'project' | undefined> {
+  const config = await loadConfig()
+  return config.default_scope
+}
+
+export async function setDefaultScope(scope: 'user' | 'project'): Promise<void> {
+  const config = await loadConfig()
+  config.default_scope = scope
+  await saveConfig(config)
+}

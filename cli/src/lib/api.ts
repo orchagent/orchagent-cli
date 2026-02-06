@@ -210,9 +210,17 @@ export async function updateOrg(
 }
 
 export async function listPublicAgents(
-  config: ResolvedConfig
+  config: ResolvedConfig,
+  options?: { sort?: 'stars' | 'recent' | 'name'; type?: string }
 ): Promise<PublicAgent[]> {
-  return publicRequest<PublicAgent[]>(config, '/public/agents')
+  const params = new URLSearchParams()
+  if (options?.sort) params.append('sort', options.sort)
+  if (options?.type) params.append('type', options.type)
+  const queryStr = params.toString()
+  return publicRequest<PublicAgent[]>(
+    config,
+    `/public/agents${queryStr ? `?${queryStr}` : ''}`
+  )
 }
 
 export async function getPublicAgent(
@@ -293,17 +301,82 @@ export async function forkAgent(
 export async function searchAgents(
   config: ResolvedConfig,
   query: string,
-  options?: { sort?: 'stars' | 'recent' | 'name'; tags?: string[] }
+  options?: { sort?: 'stars' | 'recent' | 'name'; tags?: string[]; type?: string }
 ): Promise<PublicAgent[]> {
   const params = new URLSearchParams()
   if (query) params.append('search', query)
   if (options?.sort) params.append('sort', options.sort)
   if (options?.tags?.length) params.append('tags', options.tags.join(','))
+  if (options?.type) params.append('type', options.type)
   const queryStr = params.toString()
   return publicRequest<PublicAgent[]>(
     config,
     `/public/agents${queryStr ? `?${queryStr}` : ''}`
   )
+}
+
+/**
+ * Search within the authenticated user's own agents (public and private).
+ * Uses the authenticated /agents endpoint with client-side filtering.
+ */
+export async function searchMyAgents(
+  config: ResolvedConfig,
+  query?: string,
+  options?: { sort?: 'stars' | 'recent' | 'name'; type?: string }
+): Promise<PublicAgent[]> {
+  let agents = await listMyAgents(config)
+
+  // Deduplicate: keep only latest version per agent name
+  const latestByName = new Map<string, Agent>()
+  for (const agent of agents) {
+    const existing = latestByName.get(agent.name)
+    if (!existing || new Date(agent.created_at) > new Date(existing.created_at)) {
+      latestByName.set(agent.name, agent)
+    }
+  }
+  agents = Array.from(latestByName.values())
+
+  // Apply type filter
+  if (options?.type) {
+    const typeFilter = options.type
+    if (typeFilter === 'agents') {
+      agents = agents.filter(a => a.type === 'prompt' || a.type === 'code')
+    } else if (typeFilter === 'skills' || typeFilter === 'skill') {
+      agents = agents.filter(a => a.type === 'skill')
+    } else if (typeFilter === 'code' || typeFilter === 'prompt') {
+      agents = agents.filter(a => a.type === typeFilter)
+    }
+  }
+
+  // Apply search filter (match against name and description)
+  if (query) {
+    const words = query.toLowerCase().replace(/-/g, ' ').split(/\s+/)
+    agents = agents.filter(a => {
+      const name = (a.name || '').toLowerCase().replace(/-/g, ' ')
+      const desc = (a.description || '').toLowerCase()
+      return words.every(w => name.includes(w) || desc.includes(w))
+    })
+  }
+
+  // Map Agent to PublicAgent-compatible objects
+  const org = await getOrg(config)
+  return agents.map(a => ({
+    id: a.id,
+    org_name: org.name || org.slug || 'unknown',
+    org_slug: a.org_slug || org.slug || 'unknown',
+    name: a.name,
+    version: a.version,
+    type: a.type,
+    description: a.description,
+    stars_count: a.stars_count ?? 0,
+    tags: a.tags ?? [],
+    default_endpoint: a.default_endpoint || 'analyze',
+    created_at: a.created_at,
+    supported_providers: a.supported_providers ?? ['any'],
+    is_public: a.is_public,
+    pricing_mode: a.pricing_mode,
+    price_per_call_cents: a.price_per_call_cents,
+  } as PublicAgent))
 }
 
 // LLM Keys (for CLI to fetch server-stored keys)

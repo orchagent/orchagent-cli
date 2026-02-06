@@ -5,6 +5,7 @@ export type ConfigFile = {
   workspace?: string
   profiles?: Record<string, { api_key: string; api_url?: string }>
   default_formats?: string[]
+  default_scope?: 'user' | 'project'
   no_progress?: boolean
 }
 
@@ -42,6 +43,9 @@ export type PublicAgent = {
   stars_count?: number
   tags?: string[]
   supported_providers?: LlmProvider[]
+  // Schema fields (returned by detail endpoint)
+  input_schema?: object
+  output_schema?: object
   // Pricing fields
   org_id?: string
   pricing_mode?: 'free' | 'per_call' | null
@@ -121,6 +125,7 @@ export type Agent = {
   manifest?: object
   code_bundle_url?: string
   entrypoint?: string
+  is_public?: boolean
   default_skills?: string[]
   skills_locked?: boolean
   pricing_mode?: 'free' | 'per_call' | null

@@ -46,6 +46,19 @@ export const cursorAdapter: FormatAdapter = {
     const normalizedName = normalizeAgentName(agent.name)
     const description = agent.description || `Rules from ${agent.name}`
 
+    // Build skills section if present
+    let skillsSection = ''
+    if (agent.resolvedSkills && agent.resolvedSkills.length > 0) {
+      skillsSection = '\n\n## Bundled Skills\n\nThe following skills are bundled with this agent and must be applied.'
+      for (const skill of agent.resolvedSkills) {
+        skillsSection += `\n\n### ${skill.name}`
+        if (skill.description) {
+          skillsSection += `\n\n${skill.description}`
+        }
+        skillsSection += `\n\n${skill.prompt}`
+      }
+    }
+
     // Cursor .mdc format
     const content = `---
 description: ${description}
@@ -55,7 +68,7 @@ alwaysApply: false
 
 # ${agent.name}
 
-${agent.prompt || ''}
+${agent.prompt || ''}${skillsSection}
 `
 
     return [

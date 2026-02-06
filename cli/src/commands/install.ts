@@ -3,11 +3,12 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 
-import { getResolvedConfig, getDefaultFormats, loadConfig } from '../lib/config'
+import { getResolvedConfig, getDefaultFormats, getDefaultScope, loadConfig } from '../lib/config'
 import { publicRequest, ApiError, getOrg, listMyAgents, getPublicAgent, request } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { adapterRegistry, type CanonicalAgent } from '../adapters'
+import { resolveSkills } from '../lib/skill-resolve'
 import { trackInstall, computeHash, type InstalledAgent } from '../lib/installed'
 import { mergeAgentsMdContent } from '../lib/agents-md-utils'
 import { isPaidAgent, formatPrice } from '../lib/pricing'
@@ -148,7 +149,7 @@ export function registerInstallCommand(program: Command): void {
     .command('install <agent>')
     .description('Install agent as sub-agent (Claude Code, Cursor, etc.)')
     .option('--format <formats>', 'Comma-separated format IDs (e.g., claude-code,cursor)')
-    .option('--scope <scope>', 'Install scope: user (home dir) or project (current dir)', 'user')
+    .option('--scope <scope>', 'Install scope: user (home dir) or project (current dir)')
     .option('--dry-run', 'Show what would be installed without making changes')
     .option('--json', 'Output result as JSON (for automation/tooling)')
     .addHelpText('after', `
@@ -233,8 +234,8 @@ Note: Paid agents cannot be installed locally - they run on server only.
 
         result.formats = targetFormats
 
-        // Validate scope
-        let scope = options.scope as 'user' | 'project'
+        // Resolve scope: CLI flag > config default > fallback to 'user'
+        let scope = (options.scope ?? await getDefaultScope() ?? 'user') as 'user' | 'project'
         if (scope !== 'user' && scope !== 'project') {
           const errMsg = 'Scope must be "user" or "project"'
           if (jsonMode) {
@@ -258,6 +259,23 @@ Note: Paid agents cannot be installed locally - they run on server only.
             process.exit(ExitCodes.NOT_FOUND)
           }
           throw err
+        }
+
+        // Resolve default skills if present
+        if (agent.default_skills && agent.default_skills.length > 0) {
+          log(`Resolving ${agent.default_skills.length} bundled skill(s)...\n`)
+          const skills = await resolveSkills(
+            resolved,
+            agent.default_skills,
+            (warning) => {
+              result.warnings.push(warning)
+              logErr(`Warning: ${warning}\n`)
+            }
+          )
+          if (skills.length > 0) {
+            agent.resolvedSkills = skills
+            log(`Bundled ${skills.length} skill(s): ${skills.map(s => s.name).join(', ')}\n`)
+          }
         }
 
         // Install for each format

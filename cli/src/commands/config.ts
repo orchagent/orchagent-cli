@@ -3,6 +3,8 @@ import { Command } from 'commander'
 import {
   getDefaultFormats,
   setDefaultFormats,
+  getDefaultScope,
+  setDefaultScope,
   loadConfig,
   getResolvedConfig,
   VALID_FORMAT_IDS,
@@ -17,7 +19,7 @@ function getAllValidFormatIds(): string[] {
   return [...new Set([...adapterIds, ...skillFormatIds])]
 }
 
-const SUPPORTED_KEYS = ['default-format'] as const
+const SUPPORTED_KEYS = ['default-format', 'default-scope'] as const
 type ConfigKey = (typeof SUPPORTED_KEYS)[number]
 
 function isValidKey(key: string): key is ConfigKey {
@@ -46,6 +48,14 @@ async function setConfigValue(key: string, value: string): Promise<void> {
     await setDefaultFormats(formats)
     process.stdout.write(`Set default-format to: ${formats.join(',')}\n`)
   }
+
+  if (key === 'default-scope') {
+    if (value !== 'user' && value !== 'project') {
+      throw new CliError('Invalid scope. Must be "user" or "project"')
+    }
+    await setDefaultScope(value)
+    process.stdout.write(`Set default-scope to: ${value}\n`)
+  }
 }
 
 async function getConfigValue(key: string): Promise<void> {
@@ -64,6 +74,15 @@ async function getConfigValue(key: string): Promise<void> {
       process.stdout.write(`${formats.join(',')}\n`)
     }
   }
+
+  if (key === 'default-scope') {
+    const scope = await getDefaultScope()
+    if (!scope) {
+      process.stdout.write('(not set)\n')
+    } else {
+      process.stdout.write(`${scope}\n`)
+    }
+  }
 }
 
 async function listConfigValues(): Promise<void> {
@@ -77,6 +96,14 @@ async function listConfigValues(): Promise<void> {
     process.stdout.write(`  default-format: ${formats.join(',')}\n`)
   } else {
     process.stdout.write('  default-format: (not set)\n')
+  }
+
+  // default-scope
+  const scope = config.default_scope
+  if (scope) {
+    process.stdout.write(`  default-scope: ${scope}\n`)
+  } else {
+    process.stdout.write('  default-scope: (not set)\n')
   }
 
   process.stdout.write('\n')

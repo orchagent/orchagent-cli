@@ -3,7 +3,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 
-import { getResolvedConfig, getDefaultFormats, setDefaultFormats, FORMAT_SKILL_DIRS, VALID_FORMAT_IDS, loadConfig, type FormatId } from '../lib/config'
+import { getResolvedConfig, getDefaultFormats, getDefaultScope, setDefaultFormats, FORMAT_SKILL_DIRS, VALID_FORMAT_IDS, loadConfig, type FormatId } from '../lib/config'
 import { publicRequest, ApiError, getOrg, listMyAgents, reportInstall, getPublicAgent, request } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
@@ -286,7 +286,7 @@ Instructions and guidance for AI agents...
     .command('install <skill>')
     .description('Install skill to local AI tool directories (Claude Code, Cursor, etc.)')
     .option('--global', 'Install to home directory (default: current directory)')
-    .option('--scope <scope>', 'Install scope: user or project', 'project')
+    .option('--scope <scope>', 'Install scope: user or project')
     .option('--dry-run', 'Show what would be installed without making changes')
     .option('--format <formats>', 'Comma-separated format IDs (e.g., claude-code,cursor)')
     .option('--all-formats', 'Install to all supported AI tool directories')
@@ -452,8 +452,8 @@ Instructions and guidance for AI agents...
           )
         }
 
-        // Determine scope (--global is legacy alias for --scope user)
-        const scope = options.global ? 'user' : (options.scope || 'project')
+        // Determine scope (--global is legacy alias for --scope user; then config default; then 'project')
+        const scope = options.global ? 'user' : (options.scope || await getDefaultScope() || 'project')
         result.scope = scope
 
         // Build skill content with header
@@ -564,7 +564,7 @@ ${skillData.prompt}
     .command('uninstall <skill>')
     .description('Uninstall skill from local AI tool directories')
     .option('--global', 'Uninstall from home directory (default: current directory)')
-    .option('--scope <scope>', 'Uninstall scope: user or project', 'project')
+    .option('--scope <scope>', 'Uninstall scope: user or project')
     .option('--json', 'Output result as JSON')
     .action(async (skillRef: string, options: { global?: boolean; scope?: 'user' | 'project'; json?: boolean }) => {
       const jsonMode = options.json === true
@@ -600,8 +600,8 @@ ${skillData.prompt}
 
       result.skill = `${org}/${parsed.skill}`
 
-      // Determine scope
-      const scope = options.global ? 'user' : (options.scope || 'project')
+      // Determine scope (--global is legacy alias for --scope user; then config default; then 'project')
+      const scope = options.global ? 'user' : (options.scope || await getDefaultScope() || 'project')
       result.scope = scope
 
       // Remove from all AI tool directories

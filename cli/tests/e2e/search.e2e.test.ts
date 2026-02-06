@@ -34,4 +34,38 @@ describe('search command', () => {
     // Should show leak-finder in results
     expect(outputContains(result.stdout, 'leak-finder', 'leak')).toBe(true)
   })
+
+  it('filters by --type skills to only show skills', async () => {
+    const result = await runOrch(['search', '--popular', '--type', 'skills', '--json'])
+
+    expect(result.code).toBe(0)
+    const agents = JSON.parse(result.stdout)
+    // Every result should be a skill
+    for (const agent of agents) {
+      expect(agent.type).toBe('skill')
+    }
+  })
+
+  it('filters by --type agents to exclude skills', async () => {
+    const result = await runOrch(['search', '--popular', '--type', 'agents', '--json'])
+
+    expect(result.code).toBe(0)
+    const agents = JSON.parse(result.stdout)
+    // No result should be a skill
+    for (const agent of agents) {
+      expect(agent.type).not.toBe('skill')
+    }
+  })
+
+  // Individual type filters (code, prompt, skill) require the gateway update.
+  // After deploying the gateway, enable this test.
+  it.skip('filters by --type code to show only code agents (requires gateway deploy)', async () => {
+    const result = await runOrch(['search', '--popular', '--type', 'code', '--json'])
+
+    expect(result.code).toBe(0)
+    const agents = JSON.parse(result.stdout)
+    for (const agent of agents) {
+      expect(agent.type).toBe('code')
+    }
+  })
 })

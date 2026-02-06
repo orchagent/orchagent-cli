@@ -8,17 +8,20 @@ export function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`)
 }
 
-export function printAgentsTable(agents: PublicAgent[]): void {
-  const table = new Table({
-    head: [
-      chalk.bold('Agent'),
-      chalk.bold('Type'),
-      chalk.bold('Providers'),
-      chalk.bold('Stars'),
-      chalk.bold('Price'),
-      chalk.bold('Description'),
-    ],
-  })
+export function printAgentsTable(
+  agents: PublicAgent[],
+  options?: { showVisibility?: boolean }
+): void {
+  const head = [
+    chalk.bold('Agent'),
+    chalk.bold('Type'),
+    ...(options?.showVisibility ? [chalk.bold('Visibility')] : []),
+    chalk.bold('Providers'),
+    chalk.bold('Stars'),
+    chalk.bold('Price'),
+    chalk.bold('Description'),
+  ]
+  const table = new Table({ head })
 
   agents.forEach((agent) => {
     const fullName = `${agent.org_slug}/${agent.name}`
@@ -33,7 +36,15 @@ export function printAgentsTable(agents: PublicAgent[]): void {
         : agent.description
       : '-'
 
-    table.push([fullName, type, providers, stars.toString(), priceColored, desc])
+    const visibility = (agent as PublicAgent & { is_public?: boolean }).is_public === false
+      ? chalk.yellow('private')
+      : chalk.green('public')
+
+    const row = [fullName, type]
+    if (options?.showVisibility) row.push(visibility)
+    row.push(providers, stars.toString(), priceColored, desc)
+
+    table.push(row)
   })
 
   process.stdout.write(`${table.toString()}\n`)

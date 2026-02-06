@@ -13,6 +13,9 @@ import { isPaidAgent, formatPrice } from '../lib/pricing'
 
 const DEFAULT_VERSION = 'latest'
 
+// Well-known field names for file content in prompt agent schemas (priority order)
+const CONTENT_FIELD_NAMES = ['code', 'content', 'text', 'source', 'input', 'file_content', 'body']
+
 // Keys that might indicate local file path references in JSON payloads
 const LOCAL_PATH_KEYS = ['path', 'directory', 'file', 'filepath', 'dir', 'folder', 'local']
 
@@ -50,6 +53,36 @@ function warnIfLocalPathReference(jsonBody: string): void {
   } catch {
     // If parsing fails, skip the warning (the actual error will be thrown later)
   }
+}
+
+/**
+ * Infer the best JSON field name for file content based on the agent's input schema.
+ * Returns the field name to use, or 'content' as a safe default.
+ */
+function inferFileField(inputSchema?: object): string {
+  if (!inputSchema || typeof inputSchema !== 'object') return 'content'
+  const props = (inputSchema as Record<string, unknown>).properties
+  if (!props || typeof props !== 'object') return 'content'
+
+  const properties = props as Record<string, { type?: string }>
+
+  // Check for well-known field names in priority order
+  for (const field of CONTENT_FIELD_NAMES) {
+    if (properties[field] && properties[field].type === 'string') return field
+  }
+
+  // If there's exactly one required string property, use that
+  const required = ((inputSchema as Record<string, unknown>).required ?? []) as string[]
+  const stringProps = Object.entries(properties)
+    .filter(([, v]) => v.type === 'string')
+    .map(([k]) => k)
+
+  if (stringProps.length === 1) return stringProps[0]
+
+  const requiredStrings = stringProps.filter(k => required.includes(k))
+  if (requiredStrings.length === 1) return requiredStrings[0]
+
+  return 'content'
 }
 
 type AgentRef = {
@@ -162,15 +195,23 @@ export function registerCallCommand(program: Command): void {
     .option('--skills-only <skills>', 'Use only these skills')
     .option('--no-skills', 'Ignore default skills')
     .option('--file <path...>', 'File(s) to upload (can specify multiple)')
+    .option('--file-field <field>', 'Schema field name for file content (prompt agents)')
     .option('--metadata <json>', 'JSON metadata to send with files')
     .addHelpText('after', `
 Examples:
   orch call orchagent/invoice-scanner invoice.pdf
+  orch call orchagent/useeffect-checker --file src/App.tsx
+  orch call orchagent/useeffect-checker --file src/App.tsx --file-field code
   orch call orchagent/leak-finder --data '{"repo_url": "https://github.com/org/repo"}'
   cat input.json | orch call acme/agent --data @-
   orch call acme/image-processor photo.jpg --output result.png
 
 Note: Use 'call' for server-side execution (requires login), 'run' for local execution.
+
+File handling:
+  For prompt agents, file content is read and sent as JSON mapped to the agent's
+  input schema. Use --file-field to specify the field name (auto-detected by default).
+  For code agents, files are uploaded as multipart form data.
 
 Important: Remote agents cannot access your local filesystem. If your --data payload
 contains keys like 'path', 'directory', 'file', etc., those values will be interpreted
@@ -202,6 +243,7 @@ Paid Agents:
           skillsOnly?: string
           noSkills?: boolean
           file?: string[]
+          fileField?: string
           metadata?: string
         }
       ) => {
@@ -411,8 +453,45 @@ Paid Agents:
             body = resolvedBody
           }
           headers['Content-Type'] = 'application/json'
+        } else if ((filePaths.length > 0 || options.metadata) && agentMeta.type === 'prompt') {
+          // Prompt agent + files/metadata: read content and send as JSON
+          const fieldName = options.fileField || inferFileField(agentMeta.input_schema as object | undefined)
+          let bodyObj: Record<string, unknown> = {}
+
+          // Include metadata if provided
+          if (options.metadata) {
+            try {
+              bodyObj = JSON.parse(options.metadata)
+            } catch {
+              throw new CliError('--metadata must be valid JSON.')
+            }
+          }
+
+          if (filePaths.length === 1) {
+            // Single file: map content to the inferred/specified schema field
+            const fileContent = await fs.readFile(filePaths[0], 'utf-8')
+            bodyObj[fieldName] = fileContent
+            sourceLabel = filePaths[0]
+          } else if (filePaths.length > 1) {
+            // Multiple files: map first to the schema field, add all as files object
+            const allContents: Record<string, string> = {}
+            for (const fp of filePaths) {
+              allContents[path.basename(fp)] = await fs.readFile(fp, 'utf-8')
+            }
+            // Set the primary field to the first file's content
+            const firstContent = await fs.readFile(filePaths[0], 'utf-8')
+            bodyObj[fieldName] = firstContent
+            bodyObj.files = allContents
+            sourceLabel = `${filePaths.length} files`
+          }
+
+          if (llmCredentials) {
+            bodyObj.llm_credentials = llmCredentials
+          }
+          body = JSON.stringify(bodyObj)
+          headers['Content-Type'] = 'application/json'
         } else if (filePaths.length > 0 || options.metadata) {
-          // Handle multipart file uploads
+          // Code agent: handle multipart file uploads
           // Inject llm_credentials into metadata if available
           let metadata = options.metadata
           if (llmCredentials) {

@@ -81,6 +81,18 @@ export const claudeCodeAdapter: FormatAdapter = {
       body += `\n\n## Output Schema\n\nThis agent should return output matching:\n\`\`\`json\n${JSON.stringify(agent.output_schema, null, 2)}\n\`\`\``
     }
 
+    // Embed resolved skills
+    if (agent.resolvedSkills && agent.resolvedSkills.length > 0) {
+      body += '\n\n## Bundled Skills\n\nThe following skills are bundled with this agent and must be applied.'
+      for (const skill of agent.resolvedSkills) {
+        body += `\n\n### ${skill.name}`
+        if (skill.description) {
+          body += `\n\n${skill.description}`
+        }
+        body += `\n\n${skill.prompt}`
+      }
+    }
+
     // Combine frontmatter + body
     const content = `---\n${yaml.stringify(frontmatter).trim()}\n---\n\n${body.trim()}\n`
 

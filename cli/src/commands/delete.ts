@@ -5,6 +5,7 @@ import chalk from 'chalk'
 import { getResolvedConfig } from '../lib/config'
 import { listMyAgents, checkAgentDelete, deleteAgent } from '../lib/api'
 import { CliError } from '../lib/errors'
+import { parseAgentRef } from '../lib/agent-ref'
 import { track } from '../lib/analytics'
 
 async function promptText(message: string): Promise<string> {
@@ -22,17 +23,6 @@ async function promptConfirm(message: string): Promise<boolean> {
   return answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes'
 }
 
-function parseAgentArg(value: string): { name: string; version: string } {
-  const atIndex = value.lastIndexOf('@')
-  if (atIndex === -1 || atIndex === 0) {
-    return { name: value, version: 'latest' }
-  }
-  return {
-    name: value.slice(0, atIndex),
-    version: value.slice(atIndex + 1) || 'latest',
-  }
-}
-
 export function registerDeleteCommand(program: Command): void {
   program
     .command('delete <agent>')
@@ -41,12 +31,12 @@ export function registerDeleteCommand(program: Command): void {
     .option('--dry-run', 'Show what would be deleted without making changes')
     .addHelpText('after', `
 Examples:
-  orch delete my-agent           # Delete latest version
-  orch delete my-agent@v1        # Delete specific version
-  orch delete my-agent --dry-run # Preview deletion
+  orch delete org/my-agent           # Delete latest version
+  orch delete org/my-agent@v1        # Delete specific version
+  orch delete org/my-agent --dry-run # Preview deletion
 `)
     .action(async (agent: string, options: { yes?: boolean; dryRun?: boolean }) => {
-      const { name: agentName, version } = parseAgentArg(agent)
+      const ref = parseAgentRef(agent)
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Not logged in. Run `orch login` first.')
@@ -54,20 +44,22 @@ Examples:
 
       process.stdout.write('Finding agent...\n')
 
-      // Find the agent
+      // Find the agent by name, filtering by org if provided
       const agents = await listMyAgents(config)
-      const matching = agents.filter(a => a.name === agentName)
+      const matching = agents.filter(a =>
+        a.name === ref.agent && (!a.org_slug || a.org_slug === ref.org)
+      )
 
       if (matching.length === 0) {
-        throw new CliError(`Agent '${agentName}' not found`)
+        throw new CliError(`Agent '${ref.org}/${ref.agent}' not found`)
       }
 
       // Select version
       let selectedAgent
-      if (version !== 'latest') {
-        selectedAgent = matching.find(a => a.version === version)
+      if (ref.version !== 'latest') {
+        selectedAgent = matching.find(a => a.version === ref.version)
         if (!selectedAgent) {
-          throw new CliError(`Version '${version}' not found for agent '${agentName}'`)
+          throw new CliError(`Version '${ref.version}' not found for agent '${ref.org}/${ref.agent}'`)
         }
       } else {
         // Get latest version

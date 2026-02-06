@@ -64,31 +64,56 @@ export function registerInitCommand(program: Command): void {
     .option('--type <type>', 'Type: prompt, code, or skill (default: prompt)', 'prompt')
     .action(async (name: string | undefined, options: { type: string }) => {
       const cwd = process.cwd()
+
+      // When a name is provided, create a subdirectory for the project
+      const targetDir = name ? path.join(cwd, name) : cwd
       const agentName = name || path.basename(cwd)
+
+      // Create the subdirectory if a name was provided
+      if (name) {
+        await fs.mkdir(targetDir, { recursive: true })
+      }
 
       // Handle skill type separately
       if (options.type === 'skill') {
-        const skillPath = path.join(cwd, 'SKILL.md')
+        const skillPath = path.join(targetDir, 'SKILL.md')
+
+        // Check if already initialized
+        try {
+          await fs.access(skillPath)
+          throw new CliError(`Already initialized (SKILL.md exists in ${name ? name + '/' : 'current directory'})`)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw err
+          }
+        }
+
         const skillContent = SKILL_TEMPLATE.replace('my-skill', agentName)
         await fs.writeFile(skillPath, skillContent)
 
-        process.stdout.write(`Initialized skill "${agentName}" in ${cwd}\n`)
+        process.stdout.write(`Initialized skill "${agentName}" in ${targetDir}\n`)
         process.stdout.write(`\nFiles created:\n`)
-        process.stdout.write(`  SKILL.md - Skill content with frontmatter\n`)
+        process.stdout.write(`  ${name ? name + '/' : ''}SKILL.md - Skill content with frontmatter\n`)
         process.stdout.write(`\nNext steps:\n`)
-        process.stdout.write(`  1. Edit SKILL.md with your skill content\n`)
-        process.stdout.write(`  2. Run: orchagent publish\n`)
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+          process.stdout.write(`  2. Edit SKILL.md with your skill content\n`)
+          process.stdout.write(`  3. Run: orchagent publish\n`)
+        } else {
+          process.stdout.write(`  1. Edit SKILL.md with your skill content\n`)
+          process.stdout.write(`  2. Run: orchagent publish\n`)
+        }
         return
       }
 
-      const manifestPath = path.join(cwd, 'orchagent.json')
-      const promptPath = path.join(cwd, 'prompt.md')
-      const schemaPath = path.join(cwd, 'schema.json')
+      const manifestPath = path.join(targetDir, 'orchagent.json')
+      const promptPath = path.join(targetDir, 'prompt.md')
+      const schemaPath = path.join(targetDir, 'schema.json')
 
       // Check if already initialized
       try {
         await fs.access(manifestPath)
-        throw new CliError(`Already initialized (orchagent.json exists)`)
+        throw new CliError(`Already initialized (orchagent.json exists in ${name ? name + '/' : 'current directory'})`)
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
           throw err
@@ -109,22 +134,31 @@ export function registerInitCommand(program: Command): void {
       // Create schema template
       await fs.writeFile(schemaPath, SCHEMA_TEMPLATE)
 
-      process.stdout.write(`Initialized agent "${agentName}" in ${cwd}\n`)
+      process.stdout.write(`Initialized agent "${agentName}" in ${targetDir}\n`)
       process.stdout.write(`\nFiles created:\n`)
-      process.stdout.write(`  orchagent.json - Agent configuration\n`)
+      const prefix = name ? name + '/' : ''
+      process.stdout.write(`  ${prefix}orchagent.json - Agent configuration\n`)
       if (options.type !== 'code') {
-        process.stdout.write(`  prompt.md      - Prompt template\n`)
+        process.stdout.write(`  ${prefix}prompt.md      - Prompt template\n`)
       }
-      process.stdout.write(`  schema.json    - Input/output schemas\n`)
+      process.stdout.write(`  ${prefix}schema.json    - Input/output schemas\n`)
       process.stdout.write(`\nNext steps:\n`)
       if (options.type !== 'code') {
-        process.stdout.write(`  1. Edit prompt.md with your prompt template\n`)
-        process.stdout.write(`  2. Edit schema.json with your input/output schemas\n`)
-        process.stdout.write(`  3. Run: orchagent publish\n`)
+        const stepNum = name ? 2 : 1
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+        }
+        process.stdout.write(`  ${stepNum}. Edit prompt.md with your prompt template\n`)
+        process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
+        process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish\n`)
       } else {
-        process.stdout.write(`  1. Edit schema.json with your input/output schemas\n`)
-        process.stdout.write(`  2. Deploy your code and get the URL\n`)
-        process.stdout.write(`  3. Run: orchagent publish --url <your-agent-url>\n`)
+        const stepNum = name ? 2 : 1
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+        }
+        process.stdout.write(`  ${stepNum}. Edit schema.json with your input/output schemas\n`)
+        process.stdout.write(`  ${stepNum + 1}. Deploy your code and get the URL\n`)
+        process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish --url <your-agent-url>\n`)
       }
     })
 }

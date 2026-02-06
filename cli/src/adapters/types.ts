@@ -1,8 +1,17 @@
 import type { Agent } from '../types'
 
+// Skill content resolved from a skill reference (e.g., "org/skill@v1")
+export type ResolvedSkill = {
+  ref: string         // Original reference, e.g., "org/skill@v1"
+  name: string
+  description?: string
+  prompt: string
+}
+
 // The canonical agent data from orchagent
 export type CanonicalAgent = Agent & {
   org_slug: string
+  resolvedSkills?: ResolvedSkill[]
 }
 
 // Content types that can be converted

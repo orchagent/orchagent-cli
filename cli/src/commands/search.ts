@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 
 import { getResolvedConfig } from '../lib/config'
-import { searchAgents, listPublicAgents } from '../lib/api'
+import { searchAgents, listPublicAgents, searchMyAgents } from '../lib/api'
 import { printAgentsTable, printJson } from '../lib/output'
 import { track } from '../lib/analytics'
 import { isPaidAgent } from '../lib/pricing'
@@ -15,7 +15,8 @@ export function registerSearchCommand(program: Command): void {
     .argument('[query]', 'Search query (required unless using --popular or --recent)')
     .option('--popular', 'Show top agents/skills by stars')
     .option('--recent', 'Show most recently published')
-    .option('--type <type>', 'Filter by type: agents, skills, all (default: all)', 'all')
+    .option('--mine', 'Show only your own agents (including private)')
+    .option('--type <type>', 'Filter by type: agents, skills, code, prompt, skill, all (default: all)', 'all')
     .option('--limit <n>', `Max results (default: ${DEFAULT_LIMIT})`, String(DEFAULT_LIMIT))
     .option('--free', 'Show only free agents')
     .option('--paid', 'Show only paid agents')
@@ -24,10 +25,14 @@ export function registerSearchCommand(program: Command): void {
 Pricing Filters:
   --free    Show only free agents
   --paid    Show only paid agents
+
+Ownership Filters:
+  --mine    Show your own agents (public and private). Requires login.
 `)
     .action(async (query: string | undefined, options: {
       popular?: boolean
       recent?: boolean
+      mine?: boolean
       type: string
       limit: string
       free?: boolean
@@ -37,25 +42,34 @@ Pricing Filters:
       const config = await getResolvedConfig()
       const limit = parseInt(options.limit, 10) || DEFAULT_LIMIT
 
-      // Default to popular when no args
-      if (!query && !options.popular && !options.recent) {
-        options.popular = true
-      }
+      // Map type filter for API (null means no filter)
+      const typeFilter = options.type === 'all' ? undefined : options.type
+      const sort = options.popular ? 'stars' as const : options.recent ? 'recent' as const : undefined
 
       let agents
-      if (query) {
-        agents = await searchAgents(config, query)
-        await track('cli_search', { query, type: options.type })
-      } else {
-        agents = await listPublicAgents(config)
-        await track('cli_search', { mode: options.popular ? 'popular' : 'recent', type: options.type })
-      }
 
-      // Filter by type
-      if (options.type === 'agents') {
-        agents = agents.filter(a => a.type !== 'skill')
-      } else if (options.type === 'skills') {
-        agents = agents.filter(a => a.type === 'skill')
+      if (options.mine) {
+        // --mine: search within user's own agents (public + private)
+        if (!config.apiKey) {
+          process.stderr.write('Error: --mine requires authentication. Run `orchagent login` first.\n')
+          process.exitCode = 1
+          return
+        }
+        agents = await searchMyAgents(config, query, { sort, type: typeFilter })
+        await track('cli_search', { query, type: options.type, mine: true })
+      } else {
+        // Default to popular when no args
+        if (!query && !options.popular && !options.recent) {
+          options.popular = true
+        }
+
+        if (query) {
+          agents = await searchAgents(config, query, { sort, type: typeFilter })
+          await track('cli_search', { query, type: options.type })
+        } else {
+          agents = await listPublicAgents(config, { sort, type: typeFilter })
+          await track('cli_search', { mode: options.popular ? 'popular' : 'recent', type: options.type })
+        }
       }
 
       // Filter by pricing if requested
@@ -67,7 +81,7 @@ Pricing Filters:
       }
 
       // Sort results
-      if (options.popular || (!query && !options.recent)) {
+      if (options.popular || (!query && !options.recent && !options.mine)) {
         agents.sort((a, b) => (b.stars_count ?? 0) - (a.stars_count ?? 0))
       } else if (options.recent) {
         agents.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
@@ -82,16 +96,27 @@ Pricing Filters:
       }
 
       if (agents.length === 0) {
-        process.stdout.write(query ? 'No results found matching your search.\n' : 'No public agents found.\n')
-        process.stdout.write('\nBrowse all agents at: https://orchagent.io/explore\n')
+        if (options.mine) {
+          process.stdout.write(query
+            ? `No agents found matching "${query}" in your account.\n`
+            : 'You have no published agents yet.\n')
+          process.stdout.write('\nTip: Run "orchagent init" to create your first agent.\n')
+        } else {
+          process.stdout.write(query ? 'No results found matching your search.\n' : 'No public agents found.\n')
+          process.stdout.write('\nBrowse all agents at: https://orchagent.io/explore\n')
+        }
         return
       }
 
-      printAgentsTable(agents)
+      printAgentsTable(agents, { showVisibility: options.mine })
 
       if (agents.length === limit) {
         process.stdout.write(`\nShowing top ${limit} results. Use --limit <n> for more.\n`)
       }
-      process.stdout.write('\nTip: Run "orchagent info <agent>" to see input schema and details.\n')
+      if (options.mine) {
+        process.stdout.write('\nTip: Run "orchagent info <agent>" to see details, or "orchagent delete <agent>" to remove.\n')
+      } else {
+        process.stdout.write('\nTip: Run "orchagent info <agent>" to see input schema and details.\n')
+      }
     })
 }
