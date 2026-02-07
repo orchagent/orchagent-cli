@@ -21,7 +21,7 @@ type SkillRef = {
 }
 
 type SkillDownload = {
-  type: 'prompt' | 'code' | 'skill'
+  type: 'prompt' | 'code' | 'skill' | 'agentic'
   name: string
   version: string
   description?: string

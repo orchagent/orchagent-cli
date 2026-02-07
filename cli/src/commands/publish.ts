@@ -359,15 +359,15 @@ export function registerPublishCommand(program: Command): void {
         )
       }
 
-      // Read prompt (for prompt-based agents and skills)
+      // Read prompt (for prompt-based, agentic, and skill agents)
       let prompt: string | undefined
-      if (manifest.type === 'prompt' || manifest.type === 'skill') {
+      if (manifest.type === 'prompt' || manifest.type === 'skill' || manifest.type === 'agentic') {
         const promptPath = path.join(cwd, 'prompt.md')
         try {
           prompt = await fs.readFile(promptPath, 'utf-8')
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-            const agentTypeName = manifest.type === 'skill' ? 'skill' : 'prompt-based agent'
+            const agentTypeName = manifest.type === 'skill' ? 'skill' : manifest.type === 'agentic' ? 'agentic agent' : 'prompt-based agent'
             throw new CliError(
               `No prompt.md found for ${agentTypeName}.\n\n` +
               'Create a prompt.md file in the current directory with your prompt template.\n' +
@@ -375,6 +375,45 @@ export function registerPublishCommand(program: Command): void {
             )
           }
           throw err
+        }
+      }
+
+      // For agentic agents, validate custom_tools and build manifest
+      if (manifest.type === 'agentic') {
+        // Validate custom_tools format
+        if (manifest.custom_tools) {
+          for (const tool of manifest.custom_tools) {
+            if (!tool.name || !tool.command) {
+              throw new CliError(
+                `Invalid custom_tool: each tool must have 'name' and 'command' fields.\n` +
+                `Found: ${JSON.stringify(tool)}`
+              )
+            }
+          }
+        }
+
+        // Validate max_turns
+        if (manifest.max_turns !== undefined) {
+          if (typeof manifest.max_turns !== 'number' || manifest.max_turns < 1 || manifest.max_turns > 50) {
+            throw new CliError('max_turns must be a number between 1 and 50')
+          }
+        }
+
+        // Store agentic config in manifest field
+        const agenticManifest: Record<string, unknown> = {
+          ...(manifest.manifest || {}),
+        }
+        if (manifest.custom_tools) {
+          agenticManifest.custom_tools = manifest.custom_tools
+        }
+        if (manifest.max_turns) {
+          agenticManifest.max_turns = manifest.max_turns
+        }
+        manifest.manifest = agenticManifest as any
+
+        // Agentic agents default to anthropic provider
+        if (!manifest.supported_providers) {
+          manifest.supported_providers = ['anthropic']
         }
       }
 
@@ -396,7 +435,8 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      // For prompt agents, derive input schema from template variables if needed
+      // For prompt/skill agents, derive input schema from template variables if needed
+      // (Agentic agents use schema.json directly — no template variable derivation)
       if (prompt && (manifest.type === 'prompt' || manifest.type === 'skill')) {
         const templateVars = extractTemplateVariables(prompt)
         if (templateVars.length > 0) {
@@ -424,10 +464,25 @@ export function registerPublishCommand(program: Command): void {
       }
 
       // For code-based agents, either --url is required OR we bundle the code
+      // For agentic agents, use internal placeholder (no user code, platform handles execution)
       let agentUrl = options.url
       let shouldUploadBundle = false
 
-      if (manifest.type === 'code' && !options.url) {
+      if (manifest.type === 'agentic') {
+        // Agentic agents don't need a URL or code bundle
+        agentUrl = agentUrl || 'https://agentic-agent.internal'
+        // But they can include a Dockerfile for custom environments
+        if (options.docker) {
+          const dockerfilePath = path.join(cwd, 'Dockerfile')
+          try {
+            await fs.access(dockerfilePath)
+            shouldUploadBundle = true
+            process.stdout.write(`Including Dockerfile for custom environment\n`)
+          } catch {
+            throw new CliError('--docker flag specified but no Dockerfile found in project directory')
+          }
+        }
+      } else if (manifest.type === 'code' && !options.url) {
         // Check if this looks like a Python or JS project that can be bundled
         const entrypoint = manifest.entrypoint || await detectEntrypoint(cwd)
         if (entrypoint) {
@@ -480,6 +535,17 @@ export function registerPublishCommand(program: Command): void {
             const vars = prompt ? extractTemplateVariables(prompt) : []
             process.stderr.write(`  ✓ Input schema derived from template variables: ${vars.join(', ')}\n`)
           }
+        } else if (manifest.type === 'agentic') {
+          // Agentic agent validations
+          const promptBytes = prompt ? Buffer.byteLength(prompt, 'utf-8') : 0
+          process.stderr.write(`  ✓ prompt.md found (${promptBytes.toLocaleString()} bytes)\n`)
+          if (schemaFromFile) {
+            const schemaTypes = [inputSchema ? 'input' : null, outputSchema ? 'output' : null].filter(Boolean).join(' + ')
+            process.stderr.write(`  ✓ schema.json found (${schemaTypes} schemas)\n`)
+          }
+          const customToolCount = manifest.custom_tools?.length || 0
+          process.stderr.write(`  ✓ Custom tools: ${customToolCount}\n`)
+          process.stderr.write(`  ✓ Max turns: ${manifest.max_turns || 25}\n`)
         } else if (manifest.type === 'code') {
           // Code agent validations
           const entrypoint = manifest.entrypoint || await detectEntrypoint(cwd)
@@ -566,7 +632,7 @@ export function registerPublishCommand(program: Command): void {
       const assignedVersion = result.agent?.version || 'v1'
       const agentId = result.agent?.id
 
-      // Upload code bundle if this is a hosted code agent
+      // Upload code bundle if this is a hosted code agent or agentic agent with --docker
       if (shouldUploadBundle && agentId) {
         process.stdout.write(`\nBundling code...\n`)
 
@@ -587,8 +653,20 @@ export function registerPublishCommand(program: Command): void {
             }
           }
 
+          // For agentic agents, also include requirements.txt if present
+          if (manifest.type === 'agentic') {
+            const reqPath = path.join(cwd, 'requirements.txt')
+            try {
+              await fs.access(reqPath)
+              includePatterns.push('requirements.txt')
+              process.stdout.write(`  Including requirements.txt for sandbox dependencies\n`)
+            } catch {
+              // Optional
+            }
+          }
+
           const bundleResult = await createCodeBundle(cwd, bundlePath, {
-            entrypoint: manifest.entrypoint,
+            entrypoint: manifest.type === 'agentic' ? undefined : manifest.entrypoint,
             exclude: manifest.bundle?.exclude,
             include: includePatterns.length > 0 ? includePatterns : undefined,
           })

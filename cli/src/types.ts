@@ -39,7 +39,7 @@ export type PublicAgent = {
   default_endpoint?: string
   created_at?: string | null
   // GitHub-like fields
-  type?: 'prompt' | 'code' | 'skill'
+  type?: 'prompt' | 'code' | 'skill' | 'agentic'
   description?: string | null
   stars_count?: number
   tags?: string[]
@@ -61,11 +61,20 @@ export type AgentManifest = {
   name: string
   version: string
   description?: string
-  type: 'prompt' | 'code' | 'skill'
+  type: 'prompt' | 'code' | 'skill' | 'agentic'
   prompt?: string
   input_schema?: object
   output_schema?: object
   tags?: string[]
+  // Agentic agent fields
+  custom_tools?: Array<{
+    name: string
+    description: string
+    command: string
+    input_schema?: object
+  }>
+  max_turns?: number
+  timeout_seconds?: number
   // New: which LLM providers this agent supports
   supported_providers?: LlmProvider[]
   // New: default model per provider (optional)
@@ -107,7 +116,7 @@ export type Agent = {
   id: string
   name: string
   version: string
-  type: 'prompt' | 'code' | 'skill'
+  type: 'prompt' | 'code' | 'skill' | 'agentic'
   description?: string
   stars_count?: number
   tags?: string[]

@@ -117,27 +117,29 @@ function formatSummaryOutput(result: ScanResult): void {
   process.stdout.write(`${chalk.bold('Attacks Tested:')} ${result.total_attacks}\n`)
   process.stdout.write(`${chalk.bold('Vulnerabilities Found:')} ${result.vulnerabilities_found}\n\n`)
 
-  // Breakdown by severity
+  // Breakdown by severity — show all tested levels, not just those with leaks
   if (Object.keys(result.summary.by_severity).length > 0) {
     process.stdout.write(chalk.bold('By Severity:\n'))
     const severityOrder = ['critical', 'high', 'medium', 'low']
-    for (const sev of severityOrder) {
-      const count = extractCount(result.summary.by_severity[sev])
-      if (count > 0) {
-        process.stdout.write(`  ${severityColor(sev)}: ${count}\n`)
-      }
+    const entries = Object.entries(result.summary.by_severity)
+      .sort(([a], [b]) => {
+        const ai = severityOrder.indexOf(a)
+        const bi = severityOrder.indexOf(b)
+        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+      })
+    for (const [sev, rawCount] of entries) {
+      const count = extractCount(rawCount)
+      process.stdout.write(`  ${severityColor(sev)}: ${count}\n`)
     }
     process.stdout.write('\n')
   }
 
-  // Breakdown by category
+  // Breakdown by category — show all tested categories
   if (Object.keys(result.summary.by_category).length > 0) {
     process.stdout.write(chalk.bold('By Category:\n'))
     for (const [cat, rawCount] of Object.entries(result.summary.by_category)) {
       const count = extractCount(rawCount)
-      if (count > 0) {
-        process.stdout.write(`  ${cat}: ${count}\n`)
-      }
+      process.stdout.write(`  ${cat}: ${count}\n`)
     }
     process.stdout.write('\n')
   }
@@ -353,7 +355,7 @@ Examples:
     )
 }
 
-function generateMarkdownReport(result: ScanResult): string {
+export function generateMarkdownReport(result: ScanResult): string {
   const lines: string[] = []
 
   lines.push('# Security Scan Report')
@@ -373,9 +375,7 @@ function generateMarkdownReport(result: ScanResult): string {
     lines.push('')
     for (const [sev, rawCount] of Object.entries(result.summary.by_severity)) {
       const count = extractCount(rawCount)
-      if (count > 0) {
-        lines.push(`- ${sev.toUpperCase()}: ${count}`)
-      }
+      lines.push(`- ${sev.toUpperCase()}: ${count}`)
     }
     lines.push('')
   }
@@ -385,9 +385,7 @@ function generateMarkdownReport(result: ScanResult): string {
     lines.push('')
     for (const [cat, rawCount] of Object.entries(result.summary.by_category)) {
       const count = extractCount(rawCount)
-      if (count > 0) {
-        lines.push(`- ${cat}: ${count}`)
-      }
+      lines.push(`- ${cat}: ${count}`)
     }
     lines.push('')
   }

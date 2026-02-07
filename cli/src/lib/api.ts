@@ -247,7 +247,7 @@ export async function createAgent(
   data: {
     name: string
     version?: string  // Server auto-assigns if not provided
-    type: 'prompt' | 'code' | 'skill'
+    type: 'prompt' | 'code' | 'skill' | 'agentic'
     description?: string
     prompt?: string
     url?: string

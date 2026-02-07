@@ -8,7 +8,7 @@ import { CliError } from '../lib/errors'
 interface TreeNode {
   agent: string
   accessible: boolean
-  type: 'prompt' | 'code' | 'skill' | null
+  type: 'prompt' | 'code' | 'skill' | 'agentic' | null
   skills: string[]
   skills_locked: boolean
   dependencies: TreeNode[]
@@ -23,7 +23,7 @@ interface TreeSummary {
 
 interface TreeResponse {
   agent: string
-  type: 'prompt' | 'code' | 'skill' | null
+  type: 'prompt' | 'code' | 'skill' | 'agentic' | null
   skills: string[]
   skills_locked: boolean
   dependencies: TreeNode[]

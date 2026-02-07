@@ -85,10 +85,10 @@ if __name__ == "__main__":
 function readmeTemplate(agentName: string, type: string): string {
   const callExample = type === 'code'
     ? `orchagent call ${agentName} input-file.txt`
-    : `orchagent call ${agentName} --data '{"input": "Hello world"}'`
+    : `orchagent call ${agentName} --data '{"${type === 'agentic' ? 'task' : 'input'}": "Hello world"}'`
   const runExample = type === 'code'
     ? `orchagent run ${agentName} --input '{"file_path": "src/app.py"}'`
-    : `orchagent run ${agentName} --input '{"input": "Hello world"}'`
+    : `orchagent run ${agentName} --input '{"${type === 'agentic' ? 'task' : 'input'}": "Hello world"}'`
 
   return `# ${agentName}
 
@@ -122,6 +122,64 @@ ${runExample}
 `
 }
 
+const AGENTIC_MANIFEST_TEMPLATE = `{
+  "name": "my-agent",
+  "description": "An agentic AI agent with tool use",
+  "type": "agentic",
+  "supported_providers": ["anthropic"],
+  "max_turns": 25,
+  "timeout_seconds": 300,
+  "custom_tools": [
+    {
+      "name": "run_tests",
+      "description": "Run the test suite",
+      "command": "pytest"
+    }
+  ]
+}
+`
+
+const AGENTIC_PROMPT_TEMPLATE = `You are a helpful AI agent with access to a sandboxed environment.
+
+Given the input, complete the task using the available tools:
+- Use bash to run commands
+- Use read_file and write_file to work with files
+- Use custom tools defined by the agent author
+- Call submit_result when you're done
+
+Input: The caller's input will be provided as JSON.
+
+Work step by step, verify your results, and submit the final output.
+`
+
+const AGENTIC_SCHEMA_TEMPLATE = `{
+  "input": {
+    "type": "object",
+    "properties": {
+      "task": {
+        "type": "string",
+        "description": "The task to complete"
+      }
+    },
+    "required": ["task"]
+  },
+  "output": {
+    "type": "object",
+    "properties": {
+      "result": {
+        "type": "string",
+        "description": "The result of the task"
+      },
+      "success": {
+        "type": "boolean",
+        "description": "Whether the task completed successfully"
+      }
+    },
+    "required": ["result", "success"]
+  }
+}
+`
+
 const SKILL_TEMPLATE = `---
 name: my-skill
 description: When to use this skill
@@ -138,7 +196,7 @@ export function registerInitCommand(program: Command): void {
     .command('init')
     .description('Initialize a new agent project')
     .argument('[name]', 'Agent name (default: current directory name)')
-    .option('--type <type>', 'Type: prompt, code, or skill (default: prompt)', 'prompt')
+    .option('--type <type>', 'Type: prompt, code, agentic, or skill (default: prompt)', 'prompt')
     .action(async (name: string | undefined, options: { type: string }) => {
       const cwd = process.cwd()
 
@@ -197,22 +255,30 @@ export function registerInitCommand(program: Command): void {
         }
       }
 
-      // Create manifest
-      const manifest = JSON.parse(MANIFEST_TEMPLATE)
-      manifest.name = agentName
-      manifest.type = ['code', 'skill'].includes(options.type) ? options.type : 'prompt'
-      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
-
-      // Create prompt template (for prompt-based agents) or entrypoint (for code agents)
-      if (options.type === 'code') {
-        const entrypointPath = path.join(targetDir, 'main.py')
-        await fs.writeFile(entrypointPath, CODE_TEMPLATE_PY)
+      // Create manifest and type-specific files
+      if (options.type === 'agentic') {
+        const manifest = JSON.parse(AGENTIC_MANIFEST_TEMPLATE)
+        manifest.name = agentName
+        await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+        await fs.writeFile(promptPath, AGENTIC_PROMPT_TEMPLATE)
+        await fs.writeFile(schemaPath, AGENTIC_SCHEMA_TEMPLATE)
       } else {
-        await fs.writeFile(promptPath, PROMPT_TEMPLATE)
-      }
+        const manifest = JSON.parse(MANIFEST_TEMPLATE)
+        manifest.name = agentName
+        manifest.type = ['code', 'skill'].includes(options.type) ? options.type : 'prompt'
+        await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
 
-      // Create schema template
-      await fs.writeFile(schemaPath, SCHEMA_TEMPLATE)
+        // Create prompt template (for prompt-based agents) or entrypoint (for code agents)
+        if (options.type === 'code') {
+          const entrypointPath = path.join(targetDir, 'main.py')
+          await fs.writeFile(entrypointPath, CODE_TEMPLATE_PY)
+        } else {
+          await fs.writeFile(promptPath, PROMPT_TEMPLATE)
+        }
+
+        // Create schema template
+        await fs.writeFile(schemaPath, SCHEMA_TEMPLATE)
+      }
 
       // Create README
       const readmePath = path.join(targetDir, 'README.md')
@@ -230,7 +296,16 @@ export function registerInitCommand(program: Command): void {
       process.stdout.write(`  ${prefix}schema.json    - Input/output schemas\n`)
       process.stdout.write(`  ${prefix}README.md      - Agent documentation\n`)
       process.stdout.write(`\nNext steps:\n`)
-      if (options.type !== 'code') {
+      if (options.type === 'agentic') {
+        const stepNum = name ? 2 : 1
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+        }
+        process.stdout.write(`  ${stepNum}. Edit prompt.md with your agent instructions\n`)
+        process.stdout.write(`  ${stepNum + 1}. Edit custom_tools in orchagent.json for your environment\n`)
+        process.stdout.write(`  ${stepNum + 2}. Edit schema.json with your input/output schemas\n`)
+        process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
+      } else if (options.type !== 'code') {
         const stepNum = name ? 2 : 1
         if (name) {
           process.stdout.write(`  1. cd ${name}\n`)

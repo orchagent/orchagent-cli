@@ -57,7 +57,7 @@ interface ImportResult {
   name: string
   org_slug: string
   version: string
-  type: 'prompt' | 'code' | 'skill'
+  type: 'prompt' | 'code' | 'skill' | 'agentic'
 }
 
 // Helper functions

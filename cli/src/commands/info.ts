@@ -19,7 +19,7 @@ type Schema = {
 }
 
 type AgentDownload = {
-  type: 'prompt' | 'code' | 'skill'
+  type: 'prompt' | 'code' | 'skill' | 'agentic'
   name: string
   version: string
   description?: string

@@ -59,7 +59,7 @@ type AgentDependency = {
 
 type AgentDownload = {
   id?: string              // Agent ID (for private agents)
-  type: 'prompt' | 'code' | 'skill'
+  type: 'prompt' | 'code' | 'skill' | 'agentic'
   name: string
   version: string
   description?: string
