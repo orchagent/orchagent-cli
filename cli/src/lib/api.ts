@@ -247,7 +247,7 @@ export async function createAgent(
   data: {
     name: string
     version?: string  // Server auto-assigns if not provided
-    type: 'prompt' | 'code' | 'skill' | 'agentic'
+    type: 'prompt' | 'tool' | 'skill' | 'agent'
     description?: string
     prompt?: string
     url?: string
@@ -257,7 +257,7 @@ export async function createAgent(
     is_public?: boolean
     supported_providers?: string[]
     default_models?: Record<string, string>
-    // Local run support for code agents
+    // Local run support for tool agents
     source_url?: string
     pip_package?: string
     run_command?: string
@@ -343,10 +343,10 @@ export async function searchMyAgents(
   if (options?.type) {
     const typeFilter = options.type
     if (typeFilter === 'agents') {
-      agents = agents.filter(a => a.type === 'prompt' || a.type === 'code')
+      agents = agents.filter(a => a.type === 'prompt' || a.type === 'tool')
     } else if (typeFilter === 'skills' || typeFilter === 'skill') {
       agents = agents.filter(a => a.type === 'skill')
-    } else if (typeFilter === 'code' || typeFilter === 'prompt') {
+    } else if (typeFilter === 'tool' || typeFilter === 'prompt') {
       agents = agents.filter(a => a.type === typeFilter)
     }
   }
@@ -397,7 +397,7 @@ export async function fetchLlmKeys(config: ResolvedConfig): Promise<LlmKey[]> {
 }
 
 /**
- * Download a code bundle for local execution.
+ * Download a tool bundle for local execution.
  */
 export async function downloadCodeBundle(
   config: ResolvedConfig,
@@ -418,7 +418,7 @@ export async function downloadCodeBundle(
 }
 
 /**
- * Upload a code bundle for a hosted code agent.
+ * Upload a code bundle for a hosted tool agent.
  */
 export async function uploadCodeBundle(
   config: ResolvedConfig,
@@ -528,7 +528,7 @@ export async function getAgentWithFallback(
 }
 
 /**
- * Download a code bundle for a private agent using authenticated endpoint.
+ * Download a tool bundle for a private agent using authenticated endpoint.
  */
 export async function downloadCodeBundleAuthenticated(
   config: ResolvedConfig,

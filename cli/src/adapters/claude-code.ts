@@ -27,10 +27,10 @@ export const claudeCodeAdapter: FormatAdapter = {
     const warnings: string[] = []
     const errors: string[] = []
 
-    // Code agents cannot be converted
-    if (agent.type === 'code') {
+    // Tool agents cannot be converted
+    if (agent.type === 'tool') {
       errors.push(
-        'Code agents cannot be converted to Claude Code sub-agents (they require execution)'
+        'Tool agents cannot be converted to Claude Code sub-agents (they require execution)'
       )
       return { canConvert: false, warnings, errors }
     }

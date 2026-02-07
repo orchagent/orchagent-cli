@@ -25,7 +25,7 @@ export function printAgentsTable(
 
   agents.forEach((agent) => {
     const fullName = `${agent.org_slug}/${agent.name}`
-    const type = agent.type || 'code'
+    const type = agent.type || 'tool'
     const providers = formatProviders(agent.supported_providers)
     const stars = agent.stars_count ?? 0
     const price = formatPrice(agent)

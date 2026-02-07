@@ -59,7 +59,7 @@ type AgentDependency = {
 
 type AgentDownload = {
   id?: string              // Agent ID (for private agents)
-  type: 'prompt' | 'code' | 'skill' | 'agentic'
+  type: 'prompt' | 'tool' | 'skill' | 'agent'
   name: string
   version: string
   description?: string
@@ -68,7 +68,7 @@ type AgentDownload = {
   output_schema?: object
   supported_providers: string[]
   default_models?: Record<string, string>
-  // For code agents - local execution
+  // For tool agents - local execution
   source_url?: string      // Git URL to pip install from
   pip_package?: string     // PyPI package name
   run_command?: string     // Command to run (e.g., "python -m leak_finder.cli")
@@ -339,9 +339,9 @@ async function downloadDependenciesRecursively(
           await saveBundleLocally(config, org, agent, status.dep.version, status.agentData!.id)
         }
 
-        // Install if it's a pip/source code agent
-        if (status.agentData!.type === 'code' && (status.agentData!.source_url || status.agentData!.pip_package)) {
-          await installCodeAgent(status.agentData!)
+        // Install if it's a pip/source tool agent
+        if (status.agentData!.type === 'tool' && (status.agentData!.source_url || status.agentData!.pip_package)) {
+          await installTool(status.agentData!)
         }
       },
       { successText: `Downloaded ${depRef}` }
@@ -619,12 +619,12 @@ async function checkPackageInstalled(packageName: string): Promise<boolean> {
   }
 }
 
-async function installCodeAgent(agentData: AgentDownload): Promise<void> {
+async function installTool(agentData: AgentDownload): Promise<void> {
   const installSource = agentData.pip_package || agentData.source_url
 
   if (!installSource) {
     throw new CliError(
-      'This code agent does not support local execution.\n' +
+      'This tool does not support local execution.\n' +
       'Use `orch call` to run it on the server instead.'
     )
   }
@@ -659,19 +659,19 @@ async function installCodeAgent(agentData: AgentDownload): Promise<void> {
   )
 }
 
-async function executeCodeAgent(
+async function executeTool(
   agentData: AgentDownload,
   args: string[]
 ): Promise<void> {
   if (!agentData.run_command) {
     throw new CliError(
-      'This code agent does not have a run command defined.\n' +
+      'This tool does not have a run command defined.\n' +
       'Use `orch call` to run it on the server instead.'
     )
   }
 
   // Install the agent if needed
-  await installCodeAgent(agentData)
+  await installTool(agentData)
 
   // Parse the run command and append user args
   const [cmd, ...cmdArgs] = agentData.run_command.split(' ')
@@ -971,7 +971,7 @@ async function saveAgentLocally(org: string, agent: string, agentData: AgentDown
     await fs.writeFile(path.join(agentDir, 'prompt.md'), agentData.prompt)
   }
 
-  // For code agents, save files if provided
+  // For tools, save files if provided
   if (agentData.files) {
     for (const file of agentData.files) {
       const filePath = path.join(agentDir, file.path)
@@ -1139,7 +1139,7 @@ Paid Agents:
               // Fall back to getting public agent info if download endpoint not available
               const agentMeta = await getPublicAgent(resolved, org, parsed.agent, parsed.version)
               return {
-                type: agentMeta.type || 'code',
+                type: agentMeta.type || 'tool',
                 name: agentMeta.name,
                 version: agentMeta.version,
                 description: agentMeta.description || undefined,
@@ -1161,11 +1161,11 @@ Paid Agents:
           )
         }
 
-        // Agentic agents require a sandbox with tool use — cannot run locally
-        if (agentData.type === 'agentic') {
+        // Agent type requires a sandbox with tool use — cannot run locally
+        if (agentData.type === 'agent') {
           throw new CliError(
-            'Agentic agents cannot be run locally.\n\n' +
-            'Agentic agents require a sandbox environment with tool use capabilities.\n\n' +
+            'Agent type cannot be run locally.\n\n' +
+            'Agent type requires a sandbox environment with tool use capabilities.\n\n' +
             'Use server execution instead:\n' +
             `  orchagent call ${org}/${parsed.agent}@${parsed.version} --data '{"task": "..."}'`
           )
@@ -1228,16 +1228,16 @@ Paid Agents:
         const agentDir = await saveAgentLocally(org, parsed.agent, agentData)
         process.stderr.write(`\nAgent saved to: ${agentDir}\n`)
 
-        if (agentData.type === 'code') {
+        if (agentData.type === 'tool') {
           // Check if this agent has a bundle available for local execution
           if (agentData.has_bundle) {
             if (options.downloadOnly) {
-              process.stdout.write(`\nCode agent has bundle available for local execution.\n`)
+              process.stdout.write(`\nTool has bundle available for local execution.\n`)
               process.stdout.write(`Run with: orch run ${org}/${parsed.agent} [args...]\n`)
               return
             }
 
-            // Execute the bundle-based code agent locally
+            // Execute the bundle-based tool locally
             await executeBundleAgent(resolved, org, parsed.agent, parsed.version, agentData, args, options.input)
             return
           }
@@ -1245,18 +1245,18 @@ Paid Agents:
           // Check for pip/source-based local execution (legacy)
           if (agentData.run_command && (agentData.source_url || agentData.pip_package)) {
             if (options.downloadOnly) {
-              process.stdout.write(`\nCode agent ready for local execution.\n`)
+              process.stdout.write(`\nTool ready for local execution.\n`)
               process.stdout.write(`Run with: orch run ${org}/${parsed.agent} [args...]\n`)
               return
             }
 
-            // Execute the code agent locally
-            await executeCodeAgent(agentData, args)
+            // Execute the tool locally
+            await executeTool(agentData, args)
             return
           }
 
           // Fallback: agent doesn't support local execution
-          process.stdout.write(`\nThis is a code-based agent that runs on the server.\n`)
+          process.stdout.write(`\nThis is a tool-based agent that runs on the server.\n`)
           process.stdout.write(`\nUse: orch call ${org}/${parsed.agent}@${parsed.version} --input '{...}'\n`)
           return
         }

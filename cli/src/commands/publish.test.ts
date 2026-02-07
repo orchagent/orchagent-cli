@@ -232,11 +232,11 @@ describe('publish command', () => {
       )
     })
 
-    it('requires URL or entrypoint for code-based agents', async () => {
+    it('requires URL or entrypoint for tool-type agents', async () => {
       const manifest = {
-        name: 'code-agent',
+        name: 'my-tool',
         version: 'v1',
-        type: 'code',
+        type: 'tool',
       }
 
       mockFs.readFile.mockImplementation(async (filePath: unknown) => {
@@ -257,16 +257,16 @@ describe('publish command', () => {
       mockDetectEntrypoint.mockResolvedValue(null)
 
       await expect(program.parseAsync(['node', 'test', 'publish'])).rejects.toThrow(
-        'Code agent requires either --url'
+        'Tool requires either --url'
       )
     })
 
-    it('publishes code agent with --url option', async () => {
+    it('publishes tool with --url option', async () => {
       const manifest = {
-        name: 'code-agent',
+        name: 'my-tool',
         version: 'v1',
-        type: 'code',
-        description: 'Code agent',
+        type: 'tool',
+        description: 'A tool',
       }
 
       mockFs.readFile.mockImplementation(async (filePath: unknown) => {
@@ -294,8 +294,8 @@ describe('publish command', () => {
       expect(mockCreateAgent).toHaveBeenCalledWith(
         expect.any(Object),
         expect.objectContaining({
-          name: 'code-agent',
-          type: 'code',
+          name: 'my-tool',
+          type: 'tool',
           url: 'https://my-agent.run.app',
         })
       )

@@ -244,7 +244,7 @@ async function clearDefault(
 export function registerEnvCommand(program: Command): void {
   const env = program
     .command('env')
-    .description('Manage custom Docker environments for code agents')
+    .description('Manage custom Docker environments for tools')
 
   env
     .command('list')

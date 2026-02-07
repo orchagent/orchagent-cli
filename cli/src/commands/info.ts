@@ -19,7 +19,7 @@ type Schema = {
 }
 
 type AgentDownload = {
-  type: 'prompt' | 'code' | 'skill' | 'agentic'
+  type: 'prompt' | 'tool' | 'skill' | 'agent'
   name: string
   version: string
   description?: string
@@ -232,7 +232,7 @@ export function registerInfoCommand(program: Command): void {
         process.stdout.write(chalk.gray('      Owners can still download for development/testing\n'))
       }
 
-      if (agentData.type === 'code') {
+      if (agentData.type === 'tool') {
         // Don't show internal routing URLs - they confuse users
         if (agentData.url && !agentData.url.includes('.internal')) {
           process.stdout.write(`Server: ${agentData.url}\n`)

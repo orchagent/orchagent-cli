@@ -6,7 +6,7 @@
  * - Creating agent project in current directory (no name)
  * - Skill type initialization
  * - Already initialized detection
- * - Code type (no prompt.md)
+ * - Tool type (no prompt.md)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -145,9 +145,9 @@ describe('init command', () => {
     })
   })
 
-  describe('code type', () => {
-    it('does not create prompt.md for code type', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-code-agent', '--type', 'code'])
+  describe('tool type', () => {
+    it('does not create prompt.md for tool type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-tool', '--type', 'tool'])
 
       const promptCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('prompt.md')
@@ -155,8 +155,8 @@ describe('init command', () => {
       expect(promptCall).toBeUndefined()
     })
 
-    it('still creates orchagent.json and schema.json for code type', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-code-agent', '--type', 'code'])
+    it('still creates orchagent.json and schema.json for tool type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-tool', '--type', 'tool'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
@@ -168,14 +168,14 @@ describe('init command', () => {
       expect(schemaCall).toBeDefined()
     })
 
-    it('sets type to code in manifest', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-code-agent', '--type', 'code'])
+    it('sets type to tool in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-tool', '--type', 'tool'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.type).toBe('code')
+      expect(manifest.type).toBe('tool')
     })
   })
 

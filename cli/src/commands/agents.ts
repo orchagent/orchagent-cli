@@ -50,7 +50,7 @@ export function registerAgentsCommand(program: Command): void {
       filteredAgents.forEach((agent) => {
         const name = agent.name
         const version = agent.version
-        const type = agent.type || 'code'
+        const type = agent.type || 'tool'
         const stars = agent.stars_count ?? 0
         const price = formatPrice(agent)
         const coloredPrice = isPaidAgent(agent) ? chalk.yellow(price) : chalk.green(price)

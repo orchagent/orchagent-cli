@@ -39,7 +39,7 @@ export type PublicAgent = {
   default_endpoint?: string
   created_at?: string | null
   // GitHub-like fields
-  type?: 'prompt' | 'code' | 'skill' | 'agentic'
+  type?: 'prompt' | 'tool' | 'skill' | 'agent'
   description?: string | null
   stars_count?: number
   tags?: string[]
@@ -61,12 +61,12 @@ export type AgentManifest = {
   name: string
   version: string
   description?: string
-  type: 'prompt' | 'code' | 'skill' | 'agentic'
+  type: 'prompt' | 'tool' | 'skill' | 'agent'
   prompt?: string
   input_schema?: object
   output_schema?: object
   tags?: string[]
-  // Agentic agent fields
+  // Agent type fields
   custom_tools?: Array<{
     name: string
     description: string
@@ -83,14 +83,14 @@ export type AgentManifest = {
     anthropic?: string
     gemini?: string
   }
-  // For local execution of code agents
+  // For local execution of tool agents
   source_url?: string      // Git URL to install from (e.g., "git+https://github.com/org/repo#subdirectory=agents/name")
   pip_package?: string     // PyPI package name if published there
   run_command?: string     // Command to run locally (e.g., "python -m leak_finder.cli")
   // Skills composition: default skills to inject
   default_skills?: string[]
   skills_locked?: boolean
-  // Code hosting configuration
+  // Tool hosting configuration
   entrypoint?: string      // Entry point file (default: main.py)
   bundle?: {
     include?: string[]     // Glob patterns to include
@@ -116,7 +116,7 @@ export type Agent = {
   id: string
   name: string
   version: string
-  type: 'prompt' | 'code' | 'skill' | 'agentic'
+  type: 'prompt' | 'tool' | 'skill' | 'agent'
   description?: string
   stars_count?: number
   tags?: string[]

@@ -71,7 +71,7 @@ describe('run command - agent ref parsing', () => {
 
   it('parses org/agent@version format', async () => {
     mockPublicRequest.mockResolvedValue({
-      type: 'code',
+      type: 'tool',
       name: 'my-agent',
       version: 'v2',
       supported_providers: ['any'],
@@ -87,7 +87,7 @@ describe('run command - agent ref parsing', () => {
 
   it('parses org/agent format with default version', async () => {
     mockPublicRequest.mockResolvedValue({
-      type: 'code',
+      type: 'tool',
       name: 'my-agent',
       version: 'latest',
       supported_providers: ['any'],
@@ -103,7 +103,7 @@ describe('run command - agent ref parsing', () => {
 
   it('uses defaultOrg when no org specified', async () => {
     mockPublicRequest.mockResolvedValue({
-      type: 'code',
+      type: 'tool',
       name: 'my-agent',
       version: 'latest',
       supported_providers: ['any'],
@@ -119,7 +119,7 @@ describe('run command - agent ref parsing', () => {
 
   it('parses agent@version format', async () => {
     mockPublicRequest.mockResolvedValue({
-      type: 'code',
+      type: 'tool',
       name: 'my-agent',
       version: 'v3',
       supported_providers: ['any'],
@@ -210,7 +210,7 @@ describe('run command - download agent', () => {
       org_id: 'org-123',
       name: 'fallback-agent',
       version: 'v1',
-      type: 'code',
+      type: 'tool',
       supported_providers: ['any'],
       is_public: true,
     })

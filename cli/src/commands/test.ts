@@ -198,12 +198,12 @@ async function detectAgentType(agentDir: string): Promise<AgentType> {
       const manifest: AgentManifest = JSON.parse(raw)
       if (manifest.type === 'prompt') return 'prompt'
       if (manifest.type === 'skill') return 'skill'
-      if (manifest.type === 'code') {
+      if (manifest.type === 'tool') {
         // Detect language
         if (await fileExists(path.join(agentDir, 'requirements.txt'))) return 'code-python'
         if (await fileExists(path.join(agentDir, 'pyproject.toml'))) return 'code-python'
         if (await fileExists(path.join(agentDir, 'package.json'))) return 'code-js'
-        // Default to Python for code agents
+        // Default to Python for tool agents
         return 'code-python'
       }
     } catch {

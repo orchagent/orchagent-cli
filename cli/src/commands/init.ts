@@ -46,10 +46,10 @@ const SCHEMA_TEMPLATE = `{
 `
 
 const CODE_TEMPLATE_PY = `"""
-orchagent code agent entrypoint.
+orchagent tool entrypoint.
 
 Reads JSON input from stdin, processes it, and writes JSON output to stdout.
-This is the standard orchagent code agent protocol.
+This is the standard orchagent tool protocol.
 
 Usage:
   echo '{"input": "hello"}' | python main.py
@@ -83,12 +83,12 @@ if __name__ == "__main__":
 `
 
 function readmeTemplate(agentName: string, type: string): string {
-  const callExample = type === 'code'
+  const callExample = type === 'tool'
     ? `orchagent call ${agentName} input-file.txt`
-    : `orchagent call ${agentName} --data '{"${type === 'agentic' ? 'task' : 'input'}": "Hello world"}'`
-  const runExample = type === 'code'
+    : `orchagent call ${agentName} --data '{"${type === 'agent' ? 'task' : 'input'}": "Hello world"}'`
+  const runExample = type === 'tool'
     ? `orchagent run ${agentName} --input '{"file_path": "src/app.py"}'`
-    : `orchagent run ${agentName} --input '{"${type === 'agentic' ? 'task' : 'input'}": "Hello world"}'`
+    : `orchagent run ${agentName} --input '{"${type === 'agent' ? 'task' : 'input'}": "Hello world"}'`
 
   return `# ${agentName}
 
@@ -112,7 +112,7 @@ ${runExample}
 
 | Field | Type | Description |
 |-------|------|-------------|
-| \`${type === 'agentic' ? 'task' : 'input'}\` | string | ${type === 'agentic' ? 'The task to perform' : 'The input to process'} |
+| \`${type === 'agent' ? 'task' : 'input'}\` | string | ${type === 'agent' ? 'The task to perform' : 'The input to process'} |
 
 ## Output
 
@@ -122,10 +122,10 @@ ${runExample}
 `
 }
 
-const AGENTIC_MANIFEST_TEMPLATE = `{
+const AGENT_MANIFEST_TEMPLATE = `{
   "name": "my-agent",
-  "description": "An agentic AI agent with tool use",
-  "type": "agentic",
+  "description": "An AI agent with tool use",
+  "type": "agent",
   "supported_providers": ["anthropic"],
   "max_turns": 25,
   "custom_tools": [
@@ -138,7 +138,7 @@ const AGENTIC_MANIFEST_TEMPLATE = `{
 }
 `
 
-const AGENTIC_PROMPT_TEMPLATE = `You are a helpful AI agent with access to a sandboxed environment.
+const AGENT_PROMPT_TEMPLATE = `You are a helpful AI agent with access to a sandboxed environment.
 
 Given the input, complete the task using the available tools:
 - Use bash to run commands
@@ -151,7 +151,7 @@ Input: The caller's input will be provided as JSON.
 Work step by step, verify your results, and submit the final output.
 `
 
-const AGENTIC_SCHEMA_TEMPLATE = `{
+const AGENT_SCHEMA_TEMPLATE = `{
   "input": {
     "type": "object",
     "properties": {
@@ -195,7 +195,7 @@ export function registerInitCommand(program: Command): void {
     .command('init')
     .description('Initialize a new agent project')
     .argument('[name]', 'Agent name (default: current directory name)')
-    .option('--type <type>', 'Type: prompt, code, agentic, or skill (default: prompt)', 'prompt')
+    .option('--type <type>', 'Type: prompt, tool, agent, or skill (default: prompt)', 'prompt')
     .action(async (name: string | undefined, options: { type: string }) => {
       const cwd = process.cwd()
 
@@ -255,20 +255,20 @@ export function registerInitCommand(program: Command): void {
       }
 
       // Create manifest and type-specific files
-      if (options.type === 'agentic') {
-        const manifest = JSON.parse(AGENTIC_MANIFEST_TEMPLATE)
+      if (options.type === 'agent') {
+        const manifest = JSON.parse(AGENT_MANIFEST_TEMPLATE)
         manifest.name = agentName
         await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
-        await fs.writeFile(promptPath, AGENTIC_PROMPT_TEMPLATE)
-        await fs.writeFile(schemaPath, AGENTIC_SCHEMA_TEMPLATE)
+        await fs.writeFile(promptPath, AGENT_PROMPT_TEMPLATE)
+        await fs.writeFile(schemaPath, AGENT_SCHEMA_TEMPLATE)
       } else {
         const manifest = JSON.parse(MANIFEST_TEMPLATE)
         manifest.name = agentName
-        manifest.type = ['code', 'skill'].includes(options.type) ? options.type : 'prompt'
+        manifest.type = ['tool', 'skill'].includes(options.type) ? options.type : 'prompt'
         await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
 
-        // Create prompt template (for prompt-based agents) or entrypoint (for code agents)
-        if (options.type === 'code') {
+        // Create prompt template (for prompt-based agents) or entrypoint (for tool agents)
+        if (options.type === 'tool') {
           const entrypointPath = path.join(targetDir, 'main.py')
           await fs.writeFile(entrypointPath, CODE_TEMPLATE_PY)
         } else {
@@ -287,7 +287,7 @@ export function registerInitCommand(program: Command): void {
       process.stdout.write(`\nFiles created:\n`)
       const prefix = name ? name + '/' : ''
       process.stdout.write(`  ${prefix}orchagent.json - Agent configuration\n`)
-      if (options.type === 'code') {
+      if (options.type === 'tool') {
         process.stdout.write(`  ${prefix}main.py        - Agent entrypoint (stdin/stdout JSON)\n`)
       } else {
         process.stdout.write(`  ${prefix}prompt.md      - Prompt template\n`)
@@ -295,7 +295,7 @@ export function registerInitCommand(program: Command): void {
       process.stdout.write(`  ${prefix}schema.json    - Input/output schemas\n`)
       process.stdout.write(`  ${prefix}README.md      - Agent documentation\n`)
       process.stdout.write(`\nNext steps:\n`)
-      if (options.type === 'agentic') {
+      if (options.type === 'agent') {
         const stepNum = name ? 2 : 1
         if (name) {
           process.stdout.write(`  1. cd ${name}\n`)
@@ -304,7 +304,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum + 1}. Edit custom_tools in orchagent.json for your environment\n`)
         process.stdout.write(`  ${stepNum + 2}. Edit schema.json with your input/output schemas\n`)
         process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
-      } else if (options.type !== 'code') {
+      } else if (options.type !== 'tool') {
         const stepNum = name ? 2 : 1
         if (name) {
           process.stdout.write(`  1. cd ${name}\n`)

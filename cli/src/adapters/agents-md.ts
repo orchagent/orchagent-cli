@@ -20,8 +20,8 @@ export const agentsMdAdapter: FormatAdapter = {
     const warnings: string[] = []
     const errors: string[] = []
 
-    if (agent.type === 'code') {
-      errors.push('Code agents cannot be converted to AGENTS.md')
+    if (agent.type === 'tool') {
+      errors.push('Tool agents cannot be converted to AGENTS.md')
       return { canConvert: false, warnings, errors }
     }
 

@@ -346,7 +346,7 @@ export function registerPublishCommand(program: Command): void {
           `These must be nested under a "manifest" key. Example:\n\n` +
           `  {\n` +
           `    "name": "${manifest.name}",\n` +
-          `    "type": "${manifest.type || 'code'}",\n` +
+          `    "type": "${manifest.type || 'tool'}",\n` +
           `    "manifest": {\n` +
           `      "manifest_version": 1,\n` +
           `      "dependencies": [...],\n` +
@@ -359,15 +359,15 @@ export function registerPublishCommand(program: Command): void {
         )
       }
 
-      // Read prompt (for prompt-based, agentic, and skill agents)
+      // Read prompt (for prompt-based, agent, and skill agents)
       let prompt: string | undefined
-      if (manifest.type === 'prompt' || manifest.type === 'skill' || manifest.type === 'agentic') {
+      if (manifest.type === 'prompt' || manifest.type === 'skill' || manifest.type === 'agent') {
         const promptPath = path.join(cwd, 'prompt.md')
         try {
           prompt = await fs.readFile(promptPath, 'utf-8')
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-            const agentTypeName = manifest.type === 'skill' ? 'skill' : manifest.type === 'agentic' ? 'agentic agent' : 'prompt-based agent'
+            const agentTypeName = manifest.type === 'skill' ? 'skill' : manifest.type === 'agent' ? 'agent' : 'prompt-based agent'
             throw new CliError(
               `No prompt.md found for ${agentTypeName}.\n\n` +
               'Create a prompt.md file in the current directory with your prompt template.\n' +
@@ -378,8 +378,8 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      // For agentic agents, validate custom_tools and build manifest
-      if (manifest.type === 'agentic') {
+      // For agent type, validate custom_tools and build manifest
+      if (manifest.type === 'agent') {
         // Validate custom_tools format
         if (manifest.custom_tools) {
           const reservedNames = new Set(['bash', 'read_file', 'write_file', 'list_files', 'submit_result'])
@@ -411,19 +411,19 @@ export function registerPublishCommand(program: Command): void {
           }
         }
 
-        // Store agentic config in manifest field
-        const agenticManifest: Record<string, unknown> = {
+        // Store agent config in manifest field
+        const agentManifest: Record<string, unknown> = {
           ...(manifest.manifest || {}),
         }
         if (manifest.custom_tools) {
-          agenticManifest.custom_tools = manifest.custom_tools
+          agentManifest.custom_tools = manifest.custom_tools
         }
         if (manifest.max_turns) {
-          agenticManifest.max_turns = manifest.max_turns
+          agentManifest.max_turns = manifest.max_turns
         }
-        manifest.manifest = agenticManifest as any
+        manifest.manifest = agentManifest as any
 
-        // Agentic agents default to anthropic provider
+        // Agent type defaults to anthropic provider
         if (!manifest.supported_providers) {
           manifest.supported_providers = ['anthropic']
         }
@@ -448,7 +448,7 @@ export function registerPublishCommand(program: Command): void {
       }
 
       // For prompt/skill agents, derive input schema from template variables if needed
-      // (Agentic agents use schema.json directly — no template variable derivation)
+      // (Agent type uses schema.json directly — no template variable derivation)
       if (prompt && (manifest.type === 'prompt' || manifest.type === 'skill')) {
         const templateVars = extractTemplateVariables(prompt)
         if (templateVars.length > 0) {
@@ -475,14 +475,14 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      // For code-based agents, either --url is required OR we bundle the code
-      // For agentic agents, use internal placeholder (no user code, platform handles execution)
+      // For tool-based agents, either --url is required OR we bundle the code
+      // For agent type, use internal placeholder (no user code, platform handles execution)
       let agentUrl = options.url
       let shouldUploadBundle = false
 
-      if (manifest.type === 'agentic') {
-        // Agentic agents don't need a URL or code bundle
-        agentUrl = agentUrl || 'https://agentic-agent.internal'
+      if (manifest.type === 'agent') {
+        // Agent type doesn't need a URL or code bundle
+        agentUrl = agentUrl || 'https://agent.internal'
         // But they can include a Dockerfile for custom environments
         if (options.docker) {
           const dockerfilePath = path.join(cwd, 'Dockerfile')
@@ -494,18 +494,18 @@ export function registerPublishCommand(program: Command): void {
             throw new CliError('--docker flag specified but no Dockerfile found in project directory')
           }
         }
-      } else if (manifest.type === 'code' && !options.url) {
+      } else if (manifest.type === 'tool' && !options.url) {
         // Check if this looks like a Python or JS project that can be bundled
         const entrypoint = manifest.entrypoint || await detectEntrypoint(cwd)
         if (entrypoint) {
-          // This is a hosted code agent - we'll bundle and upload
+          // This is a hosted tool - we'll bundle and upload
           shouldUploadBundle = true
           // Set a placeholder URL that tells the gateway to use sandbox execution
-          agentUrl = 'https://code-agent.internal'
-          process.stdout.write(`Detected code project with entrypoint: ${entrypoint}\n`)
+          agentUrl = 'https://tool.internal'
+          process.stdout.write(`Detected tool project with entrypoint: ${entrypoint}\n`)
         } else {
           throw new CliError(
-            'Code agent requires either --url <url> or an entry point file (main.py, app.py, index.js, etc.)'
+            'Tool requires either --url <url> or an entry point file (main.py, app.py, index.js, etc.)'
           )
         }
       }
@@ -516,9 +516,9 @@ export function registerPublishCommand(program: Command): void {
       // Default to 'any' provider if not specified
       const supportedProviders = manifest.supported_providers || ['any']
 
-      // Detect SDK compatibility for code agents
+      // Detect SDK compatibility for tool agents
       let sdkCompatible = false
-      if (manifest.type === 'code') {
+      if (manifest.type === 'tool') {
         sdkCompatible = await detectSdkCompatible(cwd)
         if (sdkCompatible && !options.dryRun) {
           process.stdout.write(`SDK detected - agent will be marked as Local Ready\n`)
@@ -547,8 +547,8 @@ export function registerPublishCommand(program: Command): void {
             const vars = prompt ? extractTemplateVariables(prompt) : []
             process.stderr.write(`  ✓ Input schema derived from template variables: ${vars.join(', ')}\n`)
           }
-        } else if (manifest.type === 'agentic') {
-          // Agentic agent validations
+        } else if (manifest.type === 'agent') {
+          // Agent type validations
           const promptBytes = prompt ? Buffer.byteLength(prompt, 'utf-8') : 0
           process.stderr.write(`  ✓ prompt.md found (${promptBytes.toLocaleString()} bytes)\n`)
           if (schemaFromFile) {
@@ -558,8 +558,8 @@ export function registerPublishCommand(program: Command): void {
           const customToolCount = manifest.custom_tools?.length || 0
           process.stderr.write(`  ✓ Custom tools: ${customToolCount}\n`)
           process.stderr.write(`  ✓ Max turns: ${manifest.max_turns || 25}\n`)
-        } else if (manifest.type === 'code') {
-          // Code agent validations
+        } else if (manifest.type === 'tool') {
+          // Tool agent validations
           const entrypoint = manifest.entrypoint || await detectEntrypoint(cwd)
           process.stderr.write(`  ✓ Entrypoint: ${entrypoint}\n`)
           if (sdkCompatible) {
@@ -569,7 +569,7 @@ export function registerPublishCommand(program: Command): void {
 
         process.stderr.write(`  ✓ Authentication valid (org: ${org.slug})\n`)
 
-        // For code agents with bundles, show bundle preview
+        // For tools with bundles, show bundle preview
         if (shouldUploadBundle) {
           const bundlePreview = await previewBundle(cwd, {
             entrypoint: manifest.entrypoint,
@@ -625,7 +625,7 @@ export function registerPublishCommand(program: Command): void {
           is_public: options.public ? true : false,
           supported_providers: supportedProviders,
           default_models: manifest.default_models,
-          // Local run fields for code agents
+          // Local run fields for tool agents
           source_url: manifest.source_url,
           pip_package: manifest.pip_package,
           run_command: manifest.run_command,
@@ -644,7 +644,7 @@ export function registerPublishCommand(program: Command): void {
       const assignedVersion = result.agent?.version || 'v1'
       const agentId = result.agent?.id
 
-      // Upload code bundle if this is a hosted code agent or agentic agent with --docker
+      // Upload code bundle if this is a hosted tool agent or agent type with --docker
       if (shouldUploadBundle && agentId) {
         process.stdout.write(`\nBundling code...\n`)
 
@@ -665,8 +665,8 @@ export function registerPublishCommand(program: Command): void {
             }
           }
 
-          // For agentic agents, also include requirements.txt if present
-          if (manifest.type === 'agentic') {
+          // For agent type, also include requirements.txt if present
+          if (manifest.type === 'agent') {
             const reqPath = path.join(cwd, 'requirements.txt')
             try {
               await fs.access(reqPath)
@@ -678,10 +678,10 @@ export function registerPublishCommand(program: Command): void {
           }
 
           const bundleResult = await createCodeBundle(cwd, bundlePath, {
-            entrypoint: manifest.type === 'agentic' ? undefined : manifest.entrypoint,
+            entrypoint: manifest.type === 'agent' ? undefined : manifest.entrypoint,
             exclude: manifest.bundle?.exclude,
             include: includePatterns.length > 0 ? includePatterns : undefined,
-            skipEntrypointCheck: manifest.type === 'agentic',
+            skipEntrypointCheck: manifest.type === 'agent',
           })
 
           process.stdout.write(`  Created bundle: ${bundleResult.fileCount} files, ${(bundleResult.sizeBytes / 1024).toFixed(1)}KB\n`)

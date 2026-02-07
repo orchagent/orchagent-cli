@@ -1,5 +1,5 @@
 /**
- * Code bundling utilities for hosted code agents.
+ * Code bundling utilities for hosted tools.
  *
  * Creates zip bundles from project directories for upload to orchagent.
  */
@@ -17,7 +17,7 @@ export interface BundleOptions {
   include?: string[]
   /** Entry point file (default: main.py) */
   entrypoint?: string
-  /** Skip entrypoint file check (for agentic agents that have no code) */
+  /** Skip entrypoint file check (for agent type that has no code) */
   skipEntrypointCheck?: boolean
 }
 
@@ -146,7 +146,7 @@ export async function createCodeBundle(
     throw new Error(`Source path is not a directory: ${sourceDir}`)
   }
 
-  // Verify entrypoint exists if specified (skip for agentic agents that have no code)
+  // Verify entrypoint exists if specified (skip for agent type that has no code)
   if (!options.skipEntrypointCheck) {
     const entrypoint = options.entrypoint || 'main.py'
     const entrypointPath = path.join(sourceDir, entrypoint)

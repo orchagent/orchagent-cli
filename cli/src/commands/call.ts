@@ -212,7 +212,7 @@ Note: Use 'call' for server-side execution (requires login), 'run' for local exe
 File handling:
   For prompt agents, file content is read and sent as JSON mapped to the agent's
   input schema. Use --file-field to specify the field name (auto-detected by default).
-  For code agents, files are uploaded as multipart form data.
+  For tools, files are uploaded as multipart form data.
 
 Important: Remote agents cannot access your local filesystem. If your --data payload
 contains keys like 'path', 'directory', 'file', etc., those values will be interpreted
@@ -496,7 +496,7 @@ Paid Agents:
           body = JSON.stringify(bodyObj)
           headers['Content-Type'] = 'application/json'
         } else if (filePaths.length > 0 || options.metadata) {
-          // Code agent: handle multipart file uploads
+          // Tool: handle multipart file uploads
           // Inject llm_credentials into metadata if available
           let metadata = options.metadata
           if (llmCredentials) {

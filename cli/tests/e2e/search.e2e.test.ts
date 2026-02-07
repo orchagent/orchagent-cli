@@ -57,15 +57,15 @@ describe('search command', () => {
     }
   })
 
-  // Individual type filters (code, prompt, skill) require the gateway update.
+  // Individual type filters (tool, prompt, skill) require the gateway update.
   // After deploying the gateway, enable this test.
-  it.skip('filters by --type code to show only code agents (requires gateway deploy)', async () => {
-    const result = await runOrch(['search', '--popular', '--type', 'code', '--json'])
+  it.skip('filters by --type tool to show only tools (requires gateway deploy)', async () => {
+    const result = await runOrch(['search', '--popular', '--type', 'tool', '--json'])
 
     expect(result.code).toBe(0)
     const agents = JSON.parse(result.stdout)
     for (const agent of agents) {
-      expect(agent.type).toBe('code')
+      expect(agent.type).toBe('tool')
     }
   })
 })
