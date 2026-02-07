@@ -382,6 +382,8 @@ export function registerPublishCommand(program: Command): void {
       if (manifest.type === 'agentic') {
         // Validate custom_tools format
         if (manifest.custom_tools) {
+          const reservedNames = new Set(['bash', 'read_file', 'write_file', 'list_files', 'submit_result'])
+          const seenNames = new Set<string>()
           for (const tool of manifest.custom_tools) {
             if (!tool.name || !tool.command) {
               throw new CliError(
@@ -389,6 +391,16 @@ export function registerPublishCommand(program: Command): void {
                 `Found: ${JSON.stringify(tool)}`
               )
             }
+            if (reservedNames.has(tool.name)) {
+              throw new CliError(
+                `Custom tool '${tool.name}' conflicts with a built-in tool name.\n` +
+                `Reserved names: ${[...reservedNames].join(', ')}`
+              )
+            }
+            if (seenNames.has(tool.name)) {
+              throw new CliError(`Duplicate custom tool name: '${tool.name}'`)
+            }
+            seenNames.add(tool.name)
           }
         }
 
@@ -669,6 +681,7 @@ export function registerPublishCommand(program: Command): void {
             entrypoint: manifest.type === 'agentic' ? undefined : manifest.entrypoint,
             exclude: manifest.bundle?.exclude,
             include: includePatterns.length > 0 ? includePatterns : undefined,
+            skipEntrypointCheck: manifest.type === 'agentic',
           })
 
           process.stdout.write(`  Created bundle: ${bundleResult.fileCount} files, ${(bundleResult.sizeBytes / 1024).toFixed(1)}KB\n`)

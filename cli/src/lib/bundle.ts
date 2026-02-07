@@ -17,6 +17,8 @@ export interface BundleOptions {
   include?: string[]
   /** Entry point file (default: main.py) */
   entrypoint?: string
+  /** Skip entrypoint file check (for agentic agents that have no code) */
+  skipEntrypointCheck?: boolean
 }
 
 export interface BundlePreview {
@@ -144,13 +146,15 @@ export async function createCodeBundle(
     throw new Error(`Source path is not a directory: ${sourceDir}`)
   }
 
-  // Verify entrypoint exists if specified
-  const entrypoint = options.entrypoint || 'main.py'
-  const entrypointPath = path.join(sourceDir, entrypoint)
-  try {
-    await fs.access(entrypointPath)
-  } catch {
-    throw new Error(`Entrypoint file not found: ${entrypoint}`)
+  // Verify entrypoint exists if specified (skip for agentic agents that have no code)
+  if (!options.skipEntrypointCheck) {
+    const entrypoint = options.entrypoint || 'main.py'
+    const entrypointPath = path.join(sourceDir, entrypoint)
+    try {
+      await fs.access(entrypointPath)
+    } catch {
+      throw new Error(`Entrypoint file not found: ${entrypoint}`)
+    }
   }
 
   // Create output directory if needed

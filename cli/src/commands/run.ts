@@ -1161,6 +1161,16 @@ Paid Agents:
           )
         }
 
+        // Agentic agents require a sandbox with tool use — cannot run locally
+        if (agentData.type === 'agentic') {
+          throw new CliError(
+            'Agentic agents cannot be run locally.\n\n' +
+            'Agentic agents require a sandbox environment with tool use capabilities.\n\n' +
+            'Use server execution instead:\n' +
+            `  orchagent call ${org}/${parsed.agent}@${parsed.version} --data '{"task": "..."}'`
+          )
+        }
+
         // Check for dependencies (orchestrator agents)
         if (agentData.dependencies && agentData.dependencies.length > 0) {
           const depStatuses = await withSpinner(

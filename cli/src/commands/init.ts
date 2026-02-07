@@ -112,7 +112,7 @@ ${runExample}
 
 | Field | Type | Description |
 |-------|------|-------------|
-| \`input\` | string | The input to process |
+| \`${type === 'agentic' ? 'task' : 'input'}\` | string | ${type === 'agentic' ? 'The task to perform' : 'The input to process'} |
 
 ## Output
 
@@ -128,7 +128,6 @@ const AGENTIC_MANIFEST_TEMPLATE = `{
   "type": "agentic",
   "supported_providers": ["anthropic"],
   "max_turns": 25,
-  "timeout_seconds": 300,
   "custom_tools": [
     {
       "name": "run_tests",
