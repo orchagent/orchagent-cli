@@ -1,6 +1,7 @@
 import { execSync } from 'child_process'
 
 import packageJson from '../../../../package.json'
+import { DIST_TAGS_URL, writeCache } from '../../update-notifier'
 
 import type { CheckResult } from '../types'
 
@@ -40,9 +41,10 @@ export async function checkCliVersion(): Promise<CheckResult> {
   const installedVersion = packageJson.version
 
   try {
-    // Fetch latest version from npm registry
+    // Fetch latest version from the same dist-tags endpoint the update banner uses,
+    // so both always agree on the latest version (fixes D-1 inconsistency).
     const response = await fetch(
-      'https://registry.npmjs.org/@orchagent/cli/latest',
+      DIST_TAGS_URL,
       { signal: AbortSignal.timeout(5000) }
     )
 
@@ -56,8 +58,11 @@ export async function checkCliVersion(): Promise<CheckResult> {
       }
     }
 
-    const data = (await response.json()) as { version: string }
-    const latestVersion = data.version
+    const data = (await response.json()) as { latest: string }
+    const latestVersion = data.latest
+
+    // Sync the update-notifier cache so the banner shows the same version
+    writeCache(latestVersion)
 
     if (installedVersion === latestVersion) {
       return {

@@ -27,6 +27,9 @@ const CACHE_PATH = path.join(CACHE_DIR, 'update-check.json')
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
 const REQUEST_TIMEOUT_MS = 5000
 
+/** npm dist-tags endpoint — single source of truth for latest version. */
+export const DIST_TAGS_URL = `https://registry.npmjs.org/-/package/${PACKAGE_NAME}/dist-tags`
+
 interface UpdateCache {
   latest: string
   checkedAt: number
@@ -47,7 +50,7 @@ function readCache(): UpdateCache | null {
   }
 }
 
-function writeCache(latest: string): void {
+export function writeCache(latest: string): void {
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true })
     fs.writeFileSync(
