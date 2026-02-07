@@ -270,6 +270,8 @@ export async function createAgent(
     skills_locked?: boolean
     // SC-05: Multi-file skill content
     skill_files?: { path: string; content: string; size: number }[]
+    // Local download toggle
+    allow_local_download?: boolean
   }
 ): Promise<{ agent: Agent; service_key?: string }> {
   return request(config, 'POST', '/agents', {
@@ -822,12 +824,14 @@ export async function setAgentPricing(
   config: ResolvedConfig,
   agentId: string,
   pricingMode: 'free' | 'per_call',
-  pricePerCallCents?: number
+  pricePerCallCents?: number,
+  allowLocalDownload?: boolean
 ): Promise<{ success: boolean }> {
   return request<{ success: boolean }>(config, 'PUT', `/agents/${agentId}/pricing`, {
     body: JSON.stringify({
       pricing_mode: pricingMode,
       price_per_call_cents: pricePerCallCents,
+      allow_local_download: allowLocalDownload,
     }),
     headers: { 'Content-Type': 'application/json' },
   })

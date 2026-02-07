@@ -9,7 +9,9 @@ export function registerPricingCommand(program: Command): void {
   program
     .command('pricing <agent> <mode>')
     .description('Set pricing for your agent (free or per-call in USD)')
-    .action(async (agentRef: string, mode: string) => {
+    .option('--local-download', 'Allow users to download and run locally')
+    .option('--no-local-download', 'Restrict to server-only (orch call)')
+    .action(async (agentRef: string, mode: string, options: { localDownload?: boolean }) => {
       const resolved = await getResolvedConfig()
 
       // Parse agent reference
@@ -67,8 +69,20 @@ export function registerPricingCommand(program: Command): void {
         pricePerCallCents = Math.round(priceFloat * 100)
       }
 
+      // Determine allow_local_download value
+      let allowLocalDownload: boolean | undefined
+      if (pricingMode === 'per_call') {
+        // Paid agents are always server-only
+        allowLocalDownload = false
+        if (options.localDownload) {
+          process.stderr.write(chalk.yellow('Note: Paid agents are always server-only. --local-download ignored.\n'))
+        }
+      } else if (options.localDownload !== undefined) {
+        allowLocalDownload = options.localDownload
+      }
+
       // Set pricing
-      await setAgentPricing(resolved, agent.id, pricingMode, pricePerCallCents)
+      await setAgentPricing(resolved, agent.id, pricingMode, pricePerCallCents, allowLocalDownload)
 
       // Show confirmation
       process.stdout.write(chalk.green('✓ Pricing updated\n'))
@@ -76,9 +90,15 @@ export function registerPricingCommand(program: Command): void {
 
       if (pricingMode === 'free') {
         process.stdout.write(`Mode: FREE\n`)
+        if (allowLocalDownload === true) {
+          process.stdout.write(`Local download: enabled\n`)
+        } else if (allowLocalDownload === false) {
+          process.stdout.write(`Local download: disabled (server-only)\n`)
+        }
       } else {
         process.stdout.write(`Mode: Pay per call\n`)
         process.stdout.write(`Price: $${(pricePerCallCents! / 100).toFixed(2)} USD per call\n`)
+        process.stdout.write(`Local download: disabled (paid agents are server-only)\n`)
       }
     })
 }

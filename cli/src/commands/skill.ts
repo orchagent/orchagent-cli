@@ -152,6 +152,49 @@ async function downloadSkillWithFallback(
     }
   }
 
+  // Check if download is disabled (server-only skill)
+  if (skillMeta && skillMeta.allow_local_download === false) {
+    if (config.apiKey) {
+      const callerOrg = await getOrg(config)
+      const isOwner = (skillMeta.org_id && callerOrg.id === skillMeta.org_id) ||
+                      (skillMeta.org_slug && callerOrg.slug === skillMeta.org_slug)
+
+      if (isOwner) {
+        // Owner - fetch from authenticated endpoint
+        const myAgents = await listMyAgents(config)
+        const matching = myAgents.filter(a => a.name === skill && a.type === 'skill')
+
+        if (matching.length > 0) {
+          let targetAgent: Agent
+          if (version === 'latest') {
+            targetAgent = matching.sort((a, b) =>
+              new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            )[0]
+          } else {
+            const found = matching.find(a => a.version === version)
+            if (!found) {
+              throw new ApiError(`Skill '${org}/${skill}@${version}' not found`, 404)
+            }
+            targetAgent = found
+          }
+
+          const skillData = await request<Agent>(config, 'GET', `/agents/${targetAgent.id}`)
+          return {
+            type: skillData.type,
+            name: skillData.name,
+            version: skillData.version,
+            description: skillData.description,
+            prompt: skillData.prompt,
+          }
+        }
+      }
+    }
+    throw new CliError(
+      `This skill is server-only and cannot be downloaded.\n\n` +
+      `Skills are loaded automatically during server execution via 'orch call'.`
+    )
+  }
+
   // Free skill or public metadata available - proceed with normal download
   if (skillMeta) {
     try {
@@ -164,11 +207,16 @@ async function downloadSkillWithFallback(
       if (err instanceof ApiError && err.status === 403) {
         const payload = err.payload as any
         if (payload?.error?.code === 'PAID_AGENT_SERVER_ONLY') {
-          // Legacy error handling (shouldn't reach here with new logic)
           const price = payload.error.price_per_call_cents || 0
           throw new CliError(
             `This skill costs $${(price/100).toFixed(2)}/call and runs on server only.\n\n` +
             `Use: orch call ${org}/${skill}@${version} --input '{...}'`
+          )
+        }
+        if (payload?.error?.code === 'DOWNLOAD_DISABLED') {
+          throw new CliError(
+            `This skill is server-only and cannot be downloaded.\n\n` +
+            `Skills are loaded automatically during server execution via 'orch call'.`
           )
         }
       }

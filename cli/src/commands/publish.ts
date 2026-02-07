@@ -6,7 +6,7 @@ import yaml from 'yaml'
 import chalk from 'chalk'
 
 import { getResolvedConfig } from '../lib/config'
-import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion, ApiError, setAgentPricing } from '../lib/api'
+import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion, setAgentPricing } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { createCodeBundle, detectEntrypoint, validateBundle, previewBundle } from '../lib/bundle'
@@ -50,60 +50,6 @@ export function deriveInputSchema(variables: string[]): object {
     properties,
     required: [...variables],
   }
-}
-
-/**
- * Type for security flagged response payload
- */
-interface ContentFlaggedPayload {
-  error?: string
-  message?: string
-  concerns?: Array<{
-    category: string
-    description: string
-    file_path?: string
-    severity: string
-  }>
-  summary?: string
-  confidence?: number
-}
-
-/**
- * Handle security flagged error response (422 with error: 'content_flagged')
- * Returns true if the error was handled, false otherwise
- */
-function handleSecurityFlaggedError(err: unknown): boolean {
-  if (!(err instanceof ApiError) || err.status !== 422) {
-    return false
-  }
-
-  const payload = err.payload as ContentFlaggedPayload
-
-  if (payload?.error !== 'content_flagged') {
-    return false
-  }
-
-  process.stderr.write('\n')
-  process.stderr.write('Error: Skill flagged for security review\n\n')
-
-  if (payload.concerns && payload.concerns.length > 0) {
-    process.stderr.write('Concerns found:\n')
-    for (const concern of payload.concerns) {
-      const severityLabel = concern.severity.toUpperCase()
-      const fileInfo = concern.file_path ? ` in ${concern.file_path}` : ''
-      process.stderr.write(`  [${severityLabel}] ${concern.category}${fileInfo}\n`)
-      process.stderr.write(`    "${concern.description}"\n\n`)
-    }
-  }
-
-  if (payload.summary) {
-    process.stderr.write(`Summary: ${payload.summary}\n\n`)
-  }
-
-  process.stderr.write('Please review and remove suspicious patterns before publishing.\n')
-  process.stderr.write('If you believe this is a false positive, contact support@orchagent.com\n')
-
-  return true
 }
 
 interface SkillFrontmatter {
@@ -244,7 +190,8 @@ export function registerPublishCommand(program: Command): void {
     .option('--docker', 'Include Dockerfile for custom environment (builds E2B template)')
     .option('--price <amount>', 'Set price per call in USD (e.g., 0.50 for $0.50/call)')
     .option('--pricing-mode <mode>', 'Pricing mode: free or per_call (default: free)')
-    .action(async (options: { url?: string; public?: boolean; private?: boolean; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; price?: string; pricingMode?: string }) => {
+    .option('--local-download', 'Allow users to download and run locally (default: server-only)')
+    .action(async (options: { url?: string; public?: boolean; private?: boolean; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; price?: string; pricingMode?: string; localDownload?: boolean }) => {
       if (options.private) {
         process.stderr.write('Warning: --private is deprecated (private is now the default). You can safely remove it.\n')
       }
@@ -316,6 +263,7 @@ export function registerPublishCommand(program: Command): void {
             skills_locked: options.skillsLocked || undefined,
             // SC-05: Include all skill files for UI preview
             skill_files: hasMultipleFiles ? skillFiles : undefined,
+            allow_local_download: options.localDownload || false,
           })
           const skillVersion = skillResult.agent?.version || 'v1'
           const skillAgentId = skillResult.agent?.id
@@ -366,9 +314,6 @@ export function registerPublishCommand(program: Command): void {
 
           process.stdout.write(`\nView analytics and usage: https://orchagent.io/dashboard\n`)
         } catch (err) {
-          if (handleSecurityFlaggedError(err)) {
-            process.exit(1)
-          }
           throw err
         }
         return
@@ -612,11 +557,9 @@ export function registerPublishCommand(program: Command): void {
           manifest: manifest.manifest,
           default_skills: skillsFromFlag || manifest.default_skills,
           skills_locked: manifest.skills_locked || options.skillsLocked || undefined,
+          allow_local_download: options.localDownload || false,
         })
       } catch (err) {
-        if (handleSecurityFlaggedError(err)) {
-          process.exit(1)
-        }
         throw err
       }
 

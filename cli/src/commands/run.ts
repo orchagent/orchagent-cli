@@ -94,11 +94,12 @@ async function downloadAgent(
       `/public/agents/${org}/${agent}/${version}/download`
     )
   } catch (err) {
-    // Check for paid-agent error
+    // Check for paid-agent or download-disabled error
     if (err instanceof ApiError && err.status === 403) {
       const payload = err.payload as any
-      if (payload?.error?.code === 'PAID_AGENT_SERVER_ONLY') {
-        // Paid agent - try owner path if authenticated
+      const errorCode = payload?.error?.code
+      if (errorCode === 'PAID_AGENT_SERVER_ONLY' || errorCode === 'DOWNLOAD_DISABLED') {
+        // Try owner path if authenticated
         if (config.apiKey) {
           try {
             const myAgents = await listMyAgents(config)
@@ -134,12 +135,19 @@ async function downloadAgent(
         }
 
         // Non-owner - block with helpful message
-        const price = payload.error.price_per_call_cents || 0
-        const priceStr = price ? `$${(price / 100).toFixed(2)}/call` : 'PAID'
-        throw new CliError(
-          `This agent is paid (${priceStr}) and runs on server only.\n\n` +
-          `Use: orch call ${org}/${agent}@${version} --input '{...}'`
-        )
+        if (errorCode === 'PAID_AGENT_SERVER_ONLY') {
+          const price = payload.error.price_per_call_cents || 0
+          const priceStr = price ? `$${(price / 100).toFixed(2)}/call` : 'PAID'
+          throw new CliError(
+            `This agent is paid (${priceStr}) and runs on server only.\n\n` +
+            `Use: orch call ${org}/${agent}@${version} --input '{...}'`
+          )
+        } else {
+          throw new CliError(
+            `This agent is server-only and cannot be downloaded.\n\n` +
+            `Use: orch call ${org}/${agent}@${version} --input '{...}'`
+          )
+        }
       }
     }
     if (!(err instanceof ApiError) || err.status !== 404) throw err

@@ -101,6 +101,42 @@ async function downloadAgentWithFallback(
     }
   }
 
+  // Check if download is disabled (server-only agent)
+  if (publicMeta && publicMeta.allow_local_download === false) {
+    // Check if owner (can bypass)
+    if (config.apiKey) {
+      const callerOrg = await getOrg(config)
+      const isOwner = (publicMeta.org_id && callerOrg.id === publicMeta.org_id) ||
+                      (publicMeta.org_slug && callerOrg.slug === publicMeta.org_slug)
+
+      if (isOwner) {
+        // Owner - fetch from authenticated endpoint
+        const myAgents = await listMyAgents(config)
+        const matching = myAgents.filter(a => a.name === name)
+        if (matching.length > 0) {
+          let targetAgent: Agent
+          if (version === 'latest') {
+            targetAgent = matching.sort((a, b) =>
+              new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            )[0]
+          } else {
+            const found = matching.find(a => a.version === version)
+            if (!found) {
+              throw new ApiError(`Agent '${org}/${name}@${version}' not found`, 404)
+            }
+            targetAgent = found
+          }
+          const agentData = await request<Agent>(config, 'GET', `/agents/${targetAgent.id}`)
+          return { ...agentData, org_slug: org }
+        }
+      }
+    }
+    throw new CliError(
+      `This agent is server-only and cannot be downloaded.\n\n` +
+      `Use: orch call ${org}/${name}@${version} --input '{...}'`
+    )
+  }
+
   // Free agent - proceed normally with public data
   if (publicMeta) {
     // Cast PublicAgent to Agent for use as CanonicalAgent

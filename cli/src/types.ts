@@ -51,6 +51,7 @@ export type PublicAgent = {
   org_id?: string
   pricing_mode?: 'free' | 'per_call' | null
   price_per_call_cents?: number | null
+  allow_local_download?: boolean
 }
 
 export type LlmProvider = 'openai' | 'anthropic' | 'gemini' | 'any'
@@ -131,6 +132,7 @@ export type Agent = {
   skills_locked?: boolean
   pricing_mode?: 'free' | 'per_call' | null
   price_per_call_cents?: number | null
+  allow_local_download?: boolean
 }
 
 export type User = {
