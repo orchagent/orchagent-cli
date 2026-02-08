@@ -10,7 +10,7 @@ export function registerPricingCommand(program: Command): void {
     .command('pricing <agent> <mode>')
     .description('Set pricing for your agent (free or per-call in USD)')
     .option('--local-download', 'Allow users to download and run locally')
-    .option('--no-local-download', 'Restrict to server-only (orch call)')
+    .option('--no-local-download', 'Restrict to server-only (cloud execution)')
     .action(async (agentRef: string, mode: string, options: { localDownload?: boolean }) => {
       const resolved = await getResolvedConfig()
 

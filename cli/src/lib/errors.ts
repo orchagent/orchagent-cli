@@ -106,7 +106,7 @@ export function jsonInputError(flag: 'data' | 'input'): CliError {
     '  - Any shell: Use a file: --data @input.json\n\n' +
     'Alternatives:\n' +
     `  - Use a file:  --${flag} @input.json\n` +
-    `  - Use stdin:   echo '{"key":"value"}' | orch call agent --${flag} @-`,
+    `  - Use stdin:   echo '{"key":"value"}' | orch run agent --${flag} @-`,
     ExitCodes.INVALID_INPUT
   )
 }

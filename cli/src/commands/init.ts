@@ -83,12 +83,12 @@ if __name__ == "__main__":
 `
 
 function readmeTemplate(agentName: string, type: string): string {
-  const callExample = type === 'tool'
-    ? `orchagent call ${agentName} input-file.txt`
-    : `orchagent call ${agentName} --data '{"${type === 'agent' ? 'task' : 'input'}": "Hello world"}'`
-  const runExample = type === 'tool'
-    ? `orchagent run ${agentName} --input '{"file_path": "src/app.py"}'`
-    : `orchagent run ${agentName} --input '{"${type === 'agent' ? 'task' : 'input'}": "Hello world"}'`
+  const cloudExample = type === 'tool'
+    ? `orchagent run ${agentName} input-file.txt`
+    : `orchagent run ${agentName} --data '{"${type === 'agent' ? 'task' : 'input'}": "Hello world"}'`
+  const localExample = type === 'tool'
+    ? `orchagent run ${agentName} --local --data '{"file_path": "src/app.py"}'`
+    : `orchagent run ${agentName} --local --data '{"${type === 'agent' ? 'task' : 'input'}": "Hello world"}'`
 
   return `# ${agentName}
 
@@ -96,16 +96,16 @@ A brief description of what this agent does.
 
 ## Usage
 
-### Server execution
+### Cloud execution (default)
 
 \`\`\`sh
-${callExample}
+${cloudExample}
 \`\`\`
 
 ### Local execution
 
 \`\`\`sh
-${runExample}
+${localExample}
 \`\`\`
 
 ## Input

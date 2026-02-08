@@ -1,9 +1,9 @@
 /**
  * Tests for the run command and LLM utilities.
  *
- * These tests cover downloading and running agents locally:
+ * These tests cover:
  * - parseAgentRef() parsing org/agent@version formats
- * - downloadAgent() fetching from API
+ * - Local execution (--local) path: downloading and running agents locally
  * - LLM key detection from environment
  * - Building prompts with variable substitution
  */
@@ -15,10 +15,17 @@ import { Command } from 'commander'
 vi.mock('fs/promises')
 vi.mock('../lib/config')
 vi.mock('../lib/api')
+vi.mock('../lib/analytics', () => ({
+  track: vi.fn().mockResolvedValue(undefined),
+}))
+vi.mock('../lib/pricing', () => ({
+  isPaidAgent: vi.fn().mockReturnValue(false),
+  formatPrice: vi.fn().mockReturnValue('FREE'),
+}))
 
 import fs from 'fs/promises'
 import { registerRunCommand } from './run'
-import { getResolvedConfig, loadConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import { publicRequest, getPublicAgent } from '../lib/api'
 import {
   detectLlmKeyFromEnv,
@@ -31,10 +38,11 @@ import {
 const mockFs = vi.mocked(fs)
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockLoadConfig = vi.mocked(loadConfig)
+const mockGetDefaultProvider = vi.mocked(getDefaultProvider)
 const mockPublicRequest = vi.mocked(publicRequest)
 const mockGetPublicAgent = vi.mocked(getPublicAgent)
 
-describe('run command - agent ref parsing', () => {
+describe('run command --local - agent ref parsing', () => {
   let program: Command
   let stdoutSpy: ReturnType<typeof vi.spyOn>
   let stderrSpy: ReturnType<typeof vi.spyOn>
@@ -55,10 +63,9 @@ describe('run command - agent ref parsing', () => {
       defaultOrg: 'default-org',
     })
 
-    // Mock loadConfig to return empty config (no workspace set)
     mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
 
-    // Mock mkdir for agent saving
     mockFs.mkdir.mockResolvedValue(undefined)
     mockFs.writeFile.mockResolvedValue(undefined)
   })
@@ -77,7 +84,7 @@ describe('run command - agent ref parsing', () => {
       supported_providers: ['any'],
     })
 
-    await program.parseAsync(['node', 'test', 'run', 'myorg/my-agent@v2'])
+    await program.parseAsync(['node', 'test', 'run', 'myorg/my-agent@v2', '--local'])
 
     expect(mockPublicRequest).toHaveBeenCalledWith(
       expect.any(Object),
@@ -93,7 +100,7 @@ describe('run command - agent ref parsing', () => {
       supported_providers: ['any'],
     })
 
-    await program.parseAsync(['node', 'test', 'run', 'myorg/my-agent'])
+    await program.parseAsync(['node', 'test', 'run', 'myorg/my-agent', '--local'])
 
     expect(mockPublicRequest).toHaveBeenCalledWith(
       expect.any(Object),
@@ -109,7 +116,7 @@ describe('run command - agent ref parsing', () => {
       supported_providers: ['any'],
     })
 
-    await program.parseAsync(['node', 'test', 'run', 'my-agent'])
+    await program.parseAsync(['node', 'test', 'run', 'my-agent', '--local'])
 
     expect(mockPublicRequest).toHaveBeenCalledWith(
       expect.any(Object),
@@ -125,7 +132,7 @@ describe('run command - agent ref parsing', () => {
       supported_providers: ['any'],
     })
 
-    await program.parseAsync(['node', 'test', 'run', 'my-agent@v3'])
+    await program.parseAsync(['node', 'test', 'run', 'my-agent@v3', '--local'])
 
     expect(mockPublicRequest).toHaveBeenCalledWith(
       expect.any(Object),
@@ -140,18 +147,18 @@ describe('run command - agent ref parsing', () => {
     })
 
     await expect(
-      program.parseAsync(['node', 'test', 'run', 'just-agent'])
+      program.parseAsync(['node', 'test', 'run', 'just-agent', '--local'])
     ).rejects.toThrow('Missing org')
   })
 
   it('throws error for too many segments', async () => {
     await expect(
-      program.parseAsync(['node', 'test', 'run', 'a/b/c/d'])
+      program.parseAsync(['node', 'test', 'run', 'a/b/c/d', '--local'])
     ).rejects.toThrow('Invalid agent reference')
   })
 })
 
-describe('run command - download agent', () => {
+describe('run command --local - download agent', () => {
   let program: Command
   let stdoutSpy: ReturnType<typeof vi.spyOn>
   let stderrSpy: ReturnType<typeof vi.spyOn>
@@ -172,8 +179,8 @@ describe('run command - download agent', () => {
       defaultOrg: 'test-org',
     })
 
-    // Mock loadConfig to return empty config (no workspace set)
     mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
 
     mockFs.mkdir.mockResolvedValue(undefined)
     mockFs.writeFile.mockResolvedValue(undefined)
@@ -195,7 +202,7 @@ describe('run command - download agent', () => {
       supported_providers: ['openai'],
     })
 
-    await program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1'])
+    await program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1', '--local'])
 
     expect(mockPublicRequest).toHaveBeenCalledWith(
       { apiKey: 'sk_test_123', apiUrl: 'https://api.test.com', defaultOrg: 'test-org' },
@@ -215,7 +222,7 @@ describe('run command - download agent', () => {
       is_public: true,
     })
 
-    await program.parseAsync(['node', 'test', 'run', 'test-org/fallback-agent@v1'])
+    await program.parseAsync(['node', 'test', 'run', 'test-org/fallback-agent@v1', '--local'])
 
     expect(mockGetPublicAgent).toHaveBeenCalledWith(
       expect.any(Object),
@@ -234,7 +241,7 @@ describe('run command - download agent', () => {
       supported_providers: ['any'],
     })
 
-    await program.parseAsync(['node', 'test', 'run', 'test-org/saved-agent@v1'])
+    await program.parseAsync(['node', 'test', 'run', 'test-org/saved-agent@v1', '--local'])
 
     expect(mockFs.mkdir).toHaveBeenCalled()
     expect(mockFs.writeFile).toHaveBeenCalledWith(
@@ -252,7 +259,7 @@ describe('run command - download agent', () => {
       supported_providers: ['any'],
     })
 
-    await program.parseAsync(['node', 'test', 'run', 'test-org/prompt-agent@v1'])
+    await program.parseAsync(['node', 'test', 'run', 'test-org/prompt-agent@v1', '--local'])
 
     expect(mockFs.writeFile).toHaveBeenCalledWith(
       expect.stringContaining('prompt.md'),
@@ -274,10 +281,66 @@ describe('run command - download agent', () => {
       'test',
       'run',
       'test-org/download-only-agent@v1',
+      '--local',
       '--download-only',
     ])
 
     expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Agent downloaded'))
+  })
+})
+
+describe('run command - cloud execution (default)', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('requires API key for cloud execution', async () => {
+    mockGetResolvedConfig.mockResolvedValue({
+      apiUrl: 'https://api.test.com',
+      // No apiKey
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'run', 'test-org/agent'])
+    ).rejects.toThrow('Missing API key')
+  })
+
+  it('requires org for cloud execution', async () => {
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      // No defaultOrg
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'run', 'just-agent'])
+    ).rejects.toThrow('Missing org')
   })
 })
 

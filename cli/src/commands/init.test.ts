@@ -7,6 +7,7 @@
  * - Skill type initialization
  * - Already initialized detection
  * - Tool type (no prompt.md)
+ * - Agent type (custom_tools, max_turns, agent-specific templates)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -220,6 +221,92 @@ describe('init command', () => {
       await program.parseAsync(['node', 'test', 'init', 'my-skill', '--type', 'skill'])
 
       expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('cd my-skill'))
+    })
+  })
+
+  describe('agent type', () => {
+    it('sets type to agent in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      expect(manifestCall).toBeDefined()
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+    })
+
+    it('includes custom_tools array in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.custom_tools).toBeDefined()
+      expect(Array.isArray(manifest.custom_tools)).toBe(true)
+      expect(manifest.custom_tools.length).toBeGreaterThan(0)
+      expect(manifest.custom_tools[0]).toHaveProperty('name')
+      expect(manifest.custom_tools[0]).toHaveProperty('command')
+    })
+
+    it('includes max_turns in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.max_turns).toBe(25)
+    })
+
+    it('includes supported_providers in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.supported_providers).toEqual(['anthropic'])
+    })
+
+    it('creates prompt.md with agent-specific content', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const promptCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('prompt.md')
+      )
+      expect(promptCall).toBeDefined()
+      const content = promptCall![1] as string
+      expect(content).toContain('submit_result')
+      expect(content).not.toContain('{{input}}')
+    })
+
+    it('creates schema.json with task input field', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const schemaCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('schema.json')
+      )
+      expect(schemaCall).toBeDefined()
+      const schema = JSON.parse(schemaCall![1] as string)
+      expect(schema.input.properties).toHaveProperty('task')
+      expect(schema.output.properties).toHaveProperty('success')
+    })
+
+    it('does not create main.py', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainCall).toBeUndefined()
+    })
+
+    it('shows custom_tools in next steps', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('custom_tools'))
     })
   })
 

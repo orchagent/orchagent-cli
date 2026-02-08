@@ -109,7 +109,7 @@ Ownership Filters:
           process.stdout.write('\nTip: Run "orchagent init" to create your first agent.\n')
         } else {
           process.stdout.write(query ? 'No results found matching your search.\n' : 'No public agents found.\n')
-          process.stdout.write('\nBrowse all agents at: https://orchagent.io/explore\n')
+          process.stdout.write('\nView all agents at: https://orchagent.io/explore\n')
         }
         return
       }

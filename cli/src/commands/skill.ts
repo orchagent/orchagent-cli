@@ -191,7 +191,7 @@ async function downloadSkillWithFallback(
     }
     throw new CliError(
       `This skill is server-only and cannot be downloaded.\n\n` +
-      `Skills are loaded automatically during server execution via 'orch call'.`
+      `Skills are loaded automatically during server execution via 'orch run'.`
     )
   }
 
@@ -210,13 +210,13 @@ async function downloadSkillWithFallback(
           const price = payload.error.price_per_call_cents || 0
           throw new CliError(
             `This skill costs $${(price/100).toFixed(2)}/call and runs on server only.\n\n` +
-            `Use: orch call ${org}/${skill}@${version} --input '{...}'`
+            `Use: orch run ${org}/${skill}@${version} --data '{...}'`
           )
         }
         if (payload?.error?.code === 'DOWNLOAD_DISABLED') {
           throw new CliError(
             `This skill is server-only and cannot be downloaded.\n\n` +
-            `Skills are loaded automatically during server execution via 'orch call'.`
+            `Skills are loaded automatically during server execution via 'orch run'.`
           )
         }
       }
@@ -288,7 +288,7 @@ export function registerSkillCommand(program: Command): void {
         '  orchagent search <query> --type skills   Search skills by keyword\n' +
         '  orchagent search --popular --type skills Top skills by stars\n' +
         '  orchagent search --recent --type skills  Most recently published\n\n' +
-        'Browse all skills at: https://orchagent.io/explore\n'
+        'View all skills at: https://orchagent.io/explore\n'
       )
       process.exit(0)
     })

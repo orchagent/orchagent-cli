@@ -88,7 +88,7 @@ async function downloadAgentWithFallback(
         const price = formatPrice(publicMeta)
         throw new CliError(
           `This agent is paid (${price}) and runs on server only.\n\n` +
-          `Use: orch call ${org}/${name}@${version} --input '{...}'`
+          `Use: orch run ${org}/${name}@${version} --data '{...}'`
         )
       }
     } else {
@@ -96,7 +96,7 @@ async function downloadAgentWithFallback(
       const price = formatPrice(publicMeta)
       throw new CliError(
         `This agent is paid (${price}) and runs on server only.\n\n` +
-        `Use: orch call ${org}/${name}@${version} --input '{...}'`
+        `Use: orch run ${org}/${name}@${version} --data '{...}'`
       )
     }
   }
@@ -133,7 +133,7 @@ async function downloadAgentWithFallback(
     }
     throw new CliError(
       `This agent is server-only and cannot be downloaded.\n\n` +
-      `Use: orch call ${org}/${name}@${version} --input '{...}'`
+      `Use: orch run ${org}/${name}@${version} --data '{...}'`
     )
   }
 
@@ -191,7 +191,7 @@ export function registerInstallCommand(program: Command): void {
     .option('--json', 'Output result as JSON (for automation/tooling)')
     .addHelpText('after', `
 Note: Paid agents cannot be installed locally - they run on server only.
-      Use 'orch call' to execute paid agents.
+      Use 'orch run' to execute paid agents.
 `)
     .action(
       async (

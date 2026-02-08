@@ -27,8 +27,7 @@ program
   .option('--no-progress', 'Disable progress spinners (useful for CI/scripts)')
   .addHelpText('after', `
 Quick Reference:
-  run   Download and run an agent locally (your machine)
-  call  Execute an agent on orchagent servers (requires login)
+  run   Run an agent (cloud by default, --local for local execution)
   info  Show agent details and input/output schemas
 
 Installation:

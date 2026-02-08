@@ -228,7 +228,7 @@ export function registerInfoCommand(program: Command): void {
 
       // If paid, show server-only message for non-owners
       if (isPaidAgent(agentData)) {
-        process.stdout.write(chalk.gray('Note: Paid agents run on server only (use orch call)\n'))
+        process.stdout.write(chalk.gray('Note: Paid agents run on server only (use orch run)\n'))
         process.stdout.write(chalk.gray('      Owners can still download for development/testing\n'))
       }
 

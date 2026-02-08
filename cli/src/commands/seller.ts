@@ -17,12 +17,12 @@ import { printJson } from '../lib/output'
 export function registerSellerCommand(program: Command): void {
   const seller = program
     .command('seller')
-    .description('Manage seller account for monetizing your agents')
+    .description('Manage monetization account for your agents')
 
   // orch seller onboard
   seller
     .command('onboard')
-    .description('Start Stripe seller onboarding process')
+    .description('Start Stripe monetization onboarding process')
     .option('--country <code>', 'Country code (default: GB)', 'GB')
     .action(async (options) => {
       const resolved = await getResolvedConfig()
@@ -41,7 +41,7 @@ export function registerSellerCommand(program: Command): void {
   // orch seller status
   seller
     .command('status')
-    .description('Check seller account status')
+    .description('Check monetization account status')
     .option('--json', 'Output as JSON')
     .action(async (options) => {
       const resolved = await getResolvedConfig()
@@ -55,7 +55,7 @@ export function registerSellerCommand(program: Command): void {
       // Display status
       if (!status.onboarded) {
         process.stdout.write(chalk.yellow('\nNot onboarded\n\n'))
-        process.stdout.write('Start selling: orch seller onboard\n')
+        process.stdout.write('Enable monetization: orch seller onboard\n')
         return
       }
 
@@ -90,7 +90,7 @@ export function registerSellerCommand(program: Command): void {
         process.stdout.write(chalk.gray(`If browser doesn't open, visit:\n${response.dashboard_url}\n`))
       } catch (err) {
         if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
-          process.stdout.write(chalk.yellow('\nNo seller account found\n\n'))
+          process.stdout.write(chalk.yellow('\nNo monetization account found\n\n'))
           process.stdout.write('Complete onboarding: orch seller onboard\n')
           process.exit(ExitCodes.NOT_FOUND)
         }

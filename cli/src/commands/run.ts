@@ -4,9 +4,21 @@ import path from 'path'
 import os from 'os'
 import { spawn } from 'child_process'
 
-import { getResolvedConfig, loadConfig } from '../lib/config'
-import { getPublicAgent, publicRequest, downloadCodeBundle, ApiError, getOrg, listMyAgents, downloadCodeBundleAuthenticated, request } from '../lib/api'
-import { CliError, jsonInputError } from '../lib/errors'
+import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
+import {
+  getPublicAgent,
+  publicRequest,
+  downloadCodeBundle,
+  ApiError,
+  getOrg,
+  listMyAgents,
+  downloadCodeBundleAuthenticated,
+  request,
+  getAgentWithFallback,
+  safeFetchWithRetryForCalls,
+  getCreditsBalance,
+} from '../lib/api'
+import { CliError, jsonInputError, ExitCodes } from '../lib/errors'
 import { printJson } from '../lib/output'
 import { createSpinner, withSpinner } from '../lib/spinner'
 import {
@@ -20,6 +32,8 @@ import {
   type ProviderConfig,
   PROVIDER_ENV_VARS,
 } from '../lib/llm'
+import { track } from '../lib/analytics'
+import { isPaidAgent, formatPrice } from '../lib/pricing'
 import type { ResolvedConfig, PublicAgent, Agent } from '../types'
 
 const DEFAULT_VERSION = 'latest'
@@ -32,6 +46,12 @@ const CALL_CHAIN_ENV = 'ORCHAGENT_CALL_CHAIN'
 const DEADLINE_MS_ENV = 'ORCHAGENT_DEADLINE_MS'
 const MAX_HOPS_ENV = 'ORCHAGENT_MAX_HOPS'
 const DOWNSTREAM_REMAINING_ENV = 'ORCHAGENT_DOWNSTREAM_REMAINING'
+
+// Well-known field names for file content in prompt agent schemas (priority order)
+const CONTENT_FIELD_NAMES = ['code', 'content', 'text', 'source', 'input', 'file_content', 'body']
+
+// Keys that might indicate local file path references in JSON payloads
+const LOCAL_PATH_KEYS = ['path', 'directory', 'file', 'filepath', 'dir', 'folder', 'local']
 
 type AgentRef = {
   org?: string
@@ -81,6 +101,138 @@ type AgentDownload = {
   dependencies?: AgentDependency[]
 }
 
+// ─── Cloud execution helpers (from call.ts) ─────────────────────────────────
+
+function findLocalPathKey(obj: unknown): string | undefined {
+  if (typeof obj !== 'object' || obj === null) {
+    return undefined
+  }
+  const keys = Object.keys(obj as Record<string, unknown>)
+  for (const key of keys) {
+    if (LOCAL_PATH_KEYS.includes(key.toLowerCase())) {
+      return key
+    }
+  }
+  return undefined
+}
+
+function warnIfLocalPathReference(jsonBody: string): void {
+  try {
+    const parsed = JSON.parse(jsonBody)
+    const pathKey = findLocalPathKey(parsed)
+    if (pathKey) {
+      process.stderr.write(
+        `Warning: Your payload contains a local path reference ('${pathKey}').\n` +
+        `Remote agents cannot access your local filesystem. The path will be interpreted\n` +
+        `by the server, not your local machine.\n\n` +
+        `Tip: Use 'orch run <agent> --local' to execute locally with filesystem access.\n\n`
+      )
+    }
+  } catch {
+    // If parsing fails, skip the warning
+  }
+}
+
+function inferFileField(inputSchema?: object): string {
+  if (!inputSchema || typeof inputSchema !== 'object') return 'content'
+  const props = (inputSchema as Record<string, unknown>).properties
+  if (!props || typeof props !== 'object') return 'content'
+
+  const properties = props as Record<string, { type?: string }>
+
+  for (const field of CONTENT_FIELD_NAMES) {
+    if (properties[field] && properties[field].type === 'string') return field
+  }
+
+  const required = ((inputSchema as Record<string, unknown>).required ?? []) as string[]
+  const stringProps = Object.entries(properties)
+    .filter(([, v]) => v.type === 'string')
+    .map(([k]) => k)
+
+  if (stringProps.length === 1) return stringProps[0]
+
+  const requiredStrings = stringProps.filter(k => required.includes(k))
+  if (requiredStrings.length === 1) return requiredStrings[0]
+
+  return 'content'
+}
+
+async function readStdin(): Promise<Buffer | null> {
+  if (process.stdin.isTTY) return null
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.from(chunk))
+  }
+  if (!chunks.length) return null
+  return Buffer.concat(chunks)
+}
+
+async function buildMultipartBody(
+  filePaths: string[] | undefined,
+  metadata?: string
+): Promise<{ body?: FormData; sourceLabel?: string }> {
+  if (!filePaths || filePaths.length === 0) {
+    const stdinData = await readStdin()
+    if (stdinData) {
+      const form = new FormData()
+      form.append('files[]', new Blob([new Uint8Array(stdinData)]), 'stdin')
+      if (metadata) {
+        form.append('metadata', metadata)
+      }
+      return { body: form, sourceLabel: 'stdin' }
+    }
+    if (metadata) {
+      const form = new FormData()
+      form.append('metadata', metadata)
+      return { body: form, sourceLabel: 'metadata' }
+    }
+    return {}
+  }
+
+  const form = new FormData()
+  for (const filePath of filePaths) {
+    const buffer = await fs.readFile(filePath)
+    const filename = path.basename(filePath)
+    form.append('files[]', new Blob([new Uint8Array(buffer)]), filename)
+  }
+
+  if (metadata) {
+    form.append('metadata', metadata)
+  }
+
+  return {
+    body: form,
+    sourceLabel: filePaths.length === 1 ? filePaths[0] : `${filePaths.length} files`,
+  }
+}
+
+async function resolveJsonBody(input: string): Promise<string> {
+  let raw = input
+  if (input.startsWith('@')) {
+    const source = input.slice(1)
+    if (!source) {
+      throw new CliError('Invalid JSON input. Use a JSON string or @file.')
+    }
+    if (source === '-') {
+      const stdinData = await readStdin()
+      if (!stdinData) {
+        throw new CliError('No stdin provided for JSON input.')
+      }
+      raw = stdinData.toString('utf8')
+    } else {
+      raw = await fs.readFile(source, 'utf8')
+    }
+  }
+
+  try {
+    return JSON.stringify(JSON.parse(raw))
+  } catch {
+    throw jsonInputError('data')
+  }
+}
+
+// ─── Local execution helpers ────────────────────────────────────────────────
+
 async function downloadAgent(
   config: ResolvedConfig,
   org: string,
@@ -109,7 +261,6 @@ async function downloadAgent(
             if (matchingAgent) {
               // Owner! Fetch from authenticated endpoint
               const agentData = await request<Agent>(config, 'GET', `/agents/${matchingAgent.id}`)
-              // Convert Agent to AgentDownload format
               return {
                 id: agentData.id,
                 type: agentData.type,
@@ -140,12 +291,12 @@ async function downloadAgent(
           const priceStr = price ? `$${(price / 100).toFixed(2)}/call` : 'PAID'
           throw new CliError(
             `This agent is paid (${priceStr}) and runs on server only.\n\n` +
-            `Use: orch call ${org}/${agent}@${version} --input '{...}'`
+            `Run without --local: orch run ${org}/${agent}@${version} --data '{...}'`
           )
         } else {
           throw new CliError(
             `This agent is server-only and cannot be downloaded.\n\n` +
-            `Use: orch call ${org}/${agent}@${version} --input '{...}'`
+            `Run without --local: orch run ${org}/${agent}@${version} --data '{...}'`
           )
         }
       }
@@ -183,7 +334,6 @@ async function downloadAgent(
     )[0]
   }
 
-  // Convert Agent to AgentDownload format
   return {
     id: targetAgent.id,
     type: targetAgent.type,
@@ -211,14 +361,12 @@ async function downloadBundleWithFallback(
   version: string,
   agentId?: string
 ): Promise<Buffer> {
-  // Try public endpoint first
   try {
     return await downloadCodeBundle(config, org, agentName, version)
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 404) throw err
   }
 
-  // Fallback to authenticated endpoint
   if (!config.apiKey || !agentId) {
     throw new ApiError(`Bundle for '${org}/${agentName}@${version}' not found`, 404)
   }
@@ -245,7 +393,6 @@ async function checkDependencies(
       const downloadable = !!(agentData.source_url || agentData.pip_package || agentData.has_bundle || agentData.type === 'prompt')
       results.push({ dep, downloadable, agentData })
     } catch {
-      // Agent not found or not downloadable
       results.push({ dep, downloadable: false })
     }
   }
@@ -254,10 +401,9 @@ async function checkDependencies(
 }
 
 async function promptUserForDeps(depStatuses: DepStatus[]): Promise<'server' | 'local' | 'cancel'> {
-  // In non-interactive mode (CI, piped input), skip deps by default and let agent run
   if (!process.stdin.isTTY) {
     process.stderr.write('Non-interactive mode: skipping dependencies (use --with-deps to include them).\n')
-    return 'local'  // Skip deps, let agent run
+    return 'local'
   }
 
   const readline = await import('readline')
@@ -282,7 +428,7 @@ async function promptUserForDeps(depStatuses: DepStatus[]): Promise<'server' | '
   }
 
   process.stderr.write('Options:\n')
-  process.stderr.write('  [1] Run on server (orch call) - recommended\n')
+  process.stderr.write('  [1] Run on server (orch run) - recommended\n')
   if (downloadableCount > 0) {
     process.stderr.write(`  [2] Download ${downloadableCount} available deps, run locally\n`)
   }
@@ -331,15 +477,12 @@ async function downloadDependenciesRecursively(
     await withSpinner(
       `Downloading dependency: ${depRef}...`,
       async () => {
-        // Save the dependency metadata locally
         await saveAgentLocally(org, agent, status.agentData!)
 
-        // For bundle-based agents, also extract the bundle
         if (status.agentData!.has_bundle) {
           await saveBundleLocally(config, org, agent, status.dep.version, status.agentData!.id)
         }
 
-        // Install if it's a pip/source tool agent
         if (status.agentData!.type === 'tool' && (status.agentData!.source_url || status.agentData!.pip_package)) {
           await installTool(status.agentData!)
         }
@@ -347,18 +490,15 @@ async function downloadDependenciesRecursively(
       { successText: `Downloaded ${depRef}` }
     )
 
-    // Download default skills
     const defaultSkills = (status.agentData as AgentDownload & { default_skills?: string[] }).default_skills || []
     for (const skillRef of defaultSkills) {
       try {
         await downloadSkillDependency(config, skillRef, org)
       } catch {
-        // Skill download failed - not critical, continue
         process.stderr.write(`  Warning: Failed to download skill ${skillRef}\n`)
       }
     }
 
-    // Recursively download its dependencies
     if (status.agentData.dependencies && status.agentData.dependencies.length > 0) {
       const nestedStatuses = await checkDependencies(config, status.agentData.dependencies)
       await downloadDependenciesRecursively(config, nestedStatuses, visited)
@@ -366,10 +506,6 @@ async function downloadDependenciesRecursively(
   }
 }
 
-/**
- * Detect all available LLM providers from environment and server.
- * Returns array of provider configs for fallback support.
- */
 async function detectAllLlmKeys(
   supportedProviders: LlmProvider[],
   config?: ResolvedConfig
@@ -377,10 +513,8 @@ async function detectAllLlmKeys(
   const providers: ProviderConfig[] = []
   const seen = new Set<string>()
 
-  // Check environment variables for all providers
   for (const provider of supportedProviders) {
     if (provider === 'any') {
-      // Check all known providers
       for (const [p, envVar] of Object.entries(PROVIDER_ENV_VARS)) {
         const key = process.env[envVar]
         if (key && !seen.has(p)) {
@@ -400,7 +534,6 @@ async function detectAllLlmKeys(
     }
   }
 
-  // Also check server keys if available
   if (config?.apiKey) {
     try {
       const { fetchLlmKeys } = await import('../lib/api')
@@ -431,26 +564,21 @@ async function executePromptLocally(
   providerOverride?: string,
   modelOverride?: string
 ): Promise<object> {
-  // If provider override specified, validate and use only that provider
   if (providerOverride) {
     validateProvider(providerOverride)
   }
 
-  // Determine which providers to check for keys
   const providersToCheck = providerOverride
     ? [providerOverride as LlmProvider]
     : (agentData.supported_providers as LlmProvider[])
 
-  // Combine skill prompts with agent prompt (skills first, then agent)
   let basePrompt = agentData.prompt || ''
   if (skillPrompts.length > 0) {
     basePrompt = [...skillPrompts, basePrompt].join('\n\n---\n\n')
   }
 
-  // Build the prompt with input data (matches server behavior)
   const prompt = buildPrompt(basePrompt, inputData)
 
-  // When no provider override, detect all available providers for fallback support
   if (!providerOverride) {
     const allProviders = await detectAllLlmKeys(providersToCheck, config)
 
@@ -462,7 +590,6 @@ async function executePromptLocally(
       )
     }
 
-    // Warn if --model specified without --provider and multiple providers available
     if (modelOverride && !providerOverride && allProviders.length > 1) {
       process.stderr.write(
         `Warning: --model specified without --provider. The model '${modelOverride}' will be used for all ${allProviders.length} fallback providers, which may cause errors if the model is incompatible.\n` +
@@ -470,19 +597,16 @@ async function executePromptLocally(
       )
     }
 
-    // Apply agent default models to each provider config
     const providersWithModels = allProviders.map((p) => ({
       ...p,
       model: modelOverride || p.model || agentData.default_models?.[p.provider] || getDefaultModel(p.provider),
     }))
 
-    // Show which provider is being used (primary)
     const primary = providersWithModels[0]
     const spinnerText = providersWithModels.length > 1
       ? `Running with ${primary.provider} (${primary.model}), ${providersWithModels.length - 1} fallback(s) available...`
       : `Running with ${primary.provider} (${primary.model})...`
 
-    // Use fallback if multiple providers, otherwise single call
     return await withSpinner(
       spinnerText,
       async () => {
@@ -496,7 +620,6 @@ async function executePromptLocally(
     )
   }
 
-  // Provider override: use single provider (existing behavior)
   const detected = await detectLlmKey(providersToCheck, config)
 
   if (!detected) {
@@ -508,10 +631,8 @@ async function executePromptLocally(
   }
 
   const { provider, key, model: serverModel } = detected
-  // Priority: CLI override > server config model > agent default model > hardcoded default
   const model = modelOverride || serverModel || agentData.default_models?.[provider] || getDefaultModel(provider)
 
-  // Call the LLM with spinner
   return await withSpinner(
     `Running with ${provider} (${model})...`,
     async () => {
@@ -554,19 +675,16 @@ async function loadSkillPrompts(
       throw new CliError(`Missing org for skill: ${ref}. Use org/skill format.`)
     }
 
-    // Fetch skill metadata
     const skillMeta = await publicRequest<PublicAgent>(
       config,
       `/public/agents/${org}/${parsed.skill}/${parsed.version}`
     )
 
-    // Verify it's a skill
     const skillType = skillMeta.type as string | undefined
     if (skillType !== 'skill') {
       throw new CliError(`${org}/${parsed.skill} is not a skill (type: ${skillType || 'prompt'})`)
     }
 
-    // Get the skill prompt (need to download for full content)
     const skillData = await publicRequest<AgentDownload>(
       config,
       `/public/agents/${org}/${parsed.skill}/${parsed.version}/download`
@@ -625,11 +743,10 @@ async function installTool(agentData: AgentDownload): Promise<void> {
   if (!installSource) {
     throw new CliError(
       'This tool does not support local execution.\n' +
-      'Use `orch call` to run it on the server instead.'
+      'Remove the --local flag to run it on the server.'
     )
   }
 
-  // Check if already installed (for pip packages)
   if (agentData.pip_package) {
     const installed = await checkPackageInstalled(agentData.pip_package)
     if (installed) {
@@ -666,14 +783,12 @@ async function executeTool(
   if (!agentData.run_command) {
     throw new CliError(
       'This tool does not have a run command defined.\n' +
-      'Use `orch call` to run it on the server instead.'
+      'Remove the --local flag to run it on the server.'
     )
   }
 
-  // Install the agent if needed
   await installTool(agentData)
 
-  // Parse the run command and append user args
   const [cmd, ...cmdArgs] = agentData.run_command.split(' ')
   const fullArgs = [...cmdArgs, ...args]
 
@@ -686,7 +801,6 @@ async function executeTool(
 }
 
 async function unzipBundle(zipPath: string, destDir: string): Promise<void> {
-  // Use spawn with array arguments to avoid shell injection
   return new Promise((resolve, reject) => {
     const proc = spawn('unzip', ['-q', zipPath, '-d', destDir], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -724,9 +838,7 @@ async function executeBundleAgent(
   args: string[],
   inputOption?: string
 ): Promise<void> {
-  // Capture the user's working directory before we change anything
   const userCwd = process.cwd()
-  // Create temp directory for the bundle
   const tempDir = path.join(os.tmpdir(), `orchagent-${agentName}-${Date.now()}`)
   await fs.mkdir(tempDir, { recursive: true })
 
@@ -734,7 +846,6 @@ async function executeBundleAgent(
   const extractDir = path.join(tempDir, 'agent')
 
   try {
-    // Download the bundle with spinner
     const bundleBuffer = await withSpinner(
       `Downloading ${org}/${agentName}@${version} bundle...`,
       async () => {
@@ -745,7 +856,6 @@ async function executeBundleAgent(
       { successText: (buf) => `Downloaded bundle (${buf.length} bytes)` }
     )
 
-    // Extract the bundle with spinner
     await fs.mkdir(extractDir, { recursive: true })
     await withSpinner(
       'Extracting bundle...',
@@ -755,7 +865,6 @@ async function executeBundleAgent(
       { successText: 'Bundle extracted' }
     )
 
-    // Check if requirements.txt exists and install dependencies
     const requirementsPath = path.join(extractDir, 'requirements.txt')
     try {
       await fs.access(requirementsPath)
@@ -773,28 +882,21 @@ async function executeBundleAgent(
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw err
       }
-      // requirements.txt doesn't exist, skip installation
     }
 
-    // Determine entrypoint
     const entrypoint = agentData.entrypoint || 'sandbox_main.py'
     const entrypointPath = path.join(extractDir, entrypoint)
 
-    // Verify entrypoint exists
     try {
       await fs.access(entrypointPath)
     } catch {
       throw new CliError(`Entrypoint not found: ${entrypoint}`)
     }
 
-    // Build input JSON from --input option or positional args
     let inputJson = '{}'
     if (inputOption) {
-      // --input was provided, use it directly (should be valid JSON)
       try {
-        // Parse and re-stringify to validate JSON
         const parsed = JSON.parse(inputOption)
-        // Resolve any relative paths in the input to absolute paths
         if (typeof parsed === 'object' && parsed !== null) {
           for (const key of ['path', 'directory', 'file_path']) {
             if (typeof parsed[key] === 'string' && !path.isAbsolute(parsed[key])) {
@@ -808,66 +910,50 @@ async function executeBundleAgent(
       }
     } else if (args.length > 0) {
       const firstArg = args[0]
-      // Resolve to absolute path relative to user's working directory
       const resolvedArg = path.isAbsolute(firstArg) ? firstArg : path.resolve(userCwd, firstArg)
-      // Check if it's a file path
       try {
         const stat = await fs.stat(resolvedArg)
         if (stat.isFile()) {
-          // Read file content as input
           const fileContent = await fs.readFile(resolvedArg, 'utf-8')
-          // Check if it's already JSON
           try {
             JSON.parse(fileContent)
             inputJson = fileContent
           } catch {
-            // Wrap as file_path in JSON (use absolute path)
             inputJson = JSON.stringify({ file_path: resolvedArg })
           }
         } else if (stat.isDirectory()) {
-          // Pass directory path (use absolute path)
           inputJson = JSON.stringify({ directory: resolvedArg })
         }
       } catch {
-        // Not a file, check if it's JSON
         try {
           JSON.parse(firstArg)
           inputJson = firstArg
         } catch {
-          // Treat as a simple string input (could be a URL)
           inputJson = JSON.stringify({ input: firstArg })
         }
       }
     }
 
-    // Run the entrypoint with input via stdin
     process.stderr.write(`\nRunning: python3 ${entrypoint}\n\n`)
 
-    // Pass auth credentials to subprocess for orchestrator agents calling sub-agents
     const subprocessEnv: Record<string, string | undefined> = { ...process.env }
     if (config.apiKey) {
       subprocessEnv.ORCHAGENT_SERVICE_KEY = config.apiKey
       subprocessEnv.ORCHAGENT_API_URL = config.apiUrl
     }
 
-    // For orchestrator agents with dependencies, enable local execution mode
     if (agentData.dependencies && agentData.dependencies.length > 0) {
       subprocessEnv[LOCAL_EXECUTION_ENV] = 'true'
       subprocessEnv[AGENTS_DIR_ENV] = AGENTS_DIR
 
-      // Initialize call chain with this agent
       const agentRef = `${org}/${agentName}@${version}`
       subprocessEnv[CALL_CHAIN_ENV] = agentRef
 
-      // Set deadline from manifest timeout (default 120s)
       const manifest = agentData as AgentDownload & { manifest?: { timeout_ms?: number; max_hops?: number; per_call_downstream_cap?: number } }
       const timeoutMs = manifest.manifest?.timeout_ms || 120000
       subprocessEnv[DEADLINE_MS_ENV] = String(Date.now() + timeoutMs)
 
-      // Set max hops from manifest (default 10)
       subprocessEnv[MAX_HOPS_ENV] = String(manifest.manifest?.max_hops || 10)
-
-      // Set downstream cap
       subprocessEnv[DOWNSTREAM_REMAINING_ENV] = String(manifest.manifest?.per_call_downstream_cap || 100)
     }
 
@@ -877,11 +963,9 @@ async function executeBundleAgent(
       env: subprocessEnv,
     })
 
-    // Send input JSON via stdin
     proc.stdin.write(inputJson)
     proc.stdin.end()
 
-    // Collect output
     let stdout = ''
     let stderr = ''
 
@@ -906,34 +990,28 @@ async function executeBundleAgent(
       })
     })
 
-    // Handle output - check for errors in stdout even on failure
     if (stdout.trim()) {
       try {
         const result = JSON.parse(stdout.trim())
 
-        // Check if it's an error response
         if (exitCode !== 0 && typeof result === 'object' && result !== null && 'error' in result) {
           throw new CliError(`Agent error: ${(result as { error: string }).error}`)
         }
 
         if (exitCode !== 0) {
-          // Non-zero exit but output isn't an error object - show it and fail
           printJson(result)
           throw new CliError(`Agent exited with code ${exitCode}`)
         }
 
-        // Success - print result
         printJson(result)
       } catch (err) {
         if (err instanceof CliError) throw err
-        // Not JSON, print as-is
         process.stdout.write(stdout)
         if (exitCode !== 0) {
           throw new CliError(`Agent exited with code ${exitCode}`)
         }
       }
     } else if (exitCode !== 0) {
-      // No stdout, check stderr
       if (stderr.trim()) {
         throw new CliError(`Agent exited with code ${exitCode}\n\nError output:\n${stderr.trim()}`)
       }
@@ -947,7 +1025,6 @@ async function executeBundleAgent(
       )
     }
   } finally {
-    // Clean up temp directory
     try {
       await fs.rm(tempDir, { recursive: true, force: true })
     } catch {
@@ -960,18 +1037,15 @@ async function saveAgentLocally(org: string, agent: string, agentData: AgentDown
   const agentDir = path.join(AGENTS_DIR, org, agent)
   await fs.mkdir(agentDir, { recursive: true })
 
-  // Save metadata
   await fs.writeFile(
     path.join(agentDir, 'agent.json'),
     JSON.stringify(agentData, null, 2)
   )
 
-  // For prompt agents, save the prompt
   if (agentData.type === 'prompt' && agentData.prompt) {
     await fs.writeFile(path.join(agentDir, 'prompt.md'), agentData.prompt)
   }
 
-  // For tools, save files if provided
   if (agentData.files) {
     for (const file of agentData.files) {
       const filePath = path.join(agentDir, file.path)
@@ -993,16 +1067,14 @@ async function saveBundleLocally(
   const agentDir = path.join(AGENTS_DIR, org, agent)
   const bundleDir = path.join(agentDir, 'bundle')
 
-  // Check if already extracted with same version
   const metaPath = path.join(agentDir, 'agent.json')
   try {
     const existingMeta = await fs.readFile(metaPath, 'utf-8')
     const existing = JSON.parse(existingMeta)
     if (existing.version === version) {
-      // Check if bundle dir exists
       try {
         await fs.access(bundleDir)
-        return bundleDir // Already cached
+        return bundleDir
       } catch {
         // Bundle dir doesn't exist, need to extract
       }
@@ -1011,7 +1083,6 @@ async function saveBundleLocally(
     // Metadata doesn't exist, need to download
   }
 
-  // Download and extract bundle
   const bundleBuffer = await withSpinner(
     `Downloading bundle for ${org}/${agent}@${version}...`,
     async () => downloadBundleWithFallback(config, org, agent, version, agentId),
@@ -1021,7 +1092,6 @@ async function saveBundleLocally(
   const tempZip = path.join(os.tmpdir(), `bundle-${Date.now()}.zip`)
   await fs.writeFile(tempZip, bundleBuffer)
 
-  // Clean and recreate bundle directory
   try {
     await fs.rm(bundleDir, { recursive: true, force: true })
   } catch {
@@ -1030,7 +1100,6 @@ async function saveBundleLocally(
   await fs.mkdir(bundleDir, { recursive: true })
   await unzipBundle(tempZip, bundleDir)
 
-  // Clean up temp file
   try {
     await fs.rm(tempZip)
   } catch {
@@ -1040,283 +1109,697 @@ async function saveBundleLocally(
   return bundleDir
 }
 
+// ─── Cloud execution path ───────────────────────────────────────────────────
+
+async function executeCloud(
+  agentRef: string,
+  file: string | undefined,
+  options: RunOptions
+): Promise<void> {
+  // Merge --input alias into --data
+  const dataValue = options.data || options.input
+  options.data = dataValue
+
+  const resolved = await getResolvedConfig()
+  if (!resolved.apiKey) {
+    throw new CliError('Missing API key. Run `orchagent login` first.')
+  }
+
+  const parsed = parseAgentRef(agentRef)
+  const configFile = await loadConfig()
+  const org = parsed.org ?? configFile.workspace ?? resolved.defaultOrg
+  if (!org) {
+    throw new CliError('Missing org. Use org/agent or set default org.')
+  }
+
+  const agentMeta = await getAgentWithFallback(
+    resolved,
+    org,
+    parsed.agent,
+    parsed.version
+  )
+
+  // Pre-call balance check for paid agents
+  let pricingInfo: { price_cents: number | null } | undefined
+  if (isPaidAgent(agentMeta)) {
+    let isOwner = false
+    try {
+      const callerOrg = await getOrg(resolved)
+      const agentOrgId = agentMeta.org_id
+      const agentOrgSlug = agentMeta.org_slug
+      if (agentOrgId && callerOrg.id === agentOrgId) {
+        isOwner = true
+      } else if (agentOrgSlug && callerOrg.slug === agentOrgSlug) {
+        isOwner = true
+      }
+    } catch {
+      isOwner = false
+    }
+
+    if (isOwner) {
+      if (!options.json) process.stderr.write(`Cost: FREE (author)\n\n`)
+    } else {
+      const price = agentMeta.price_per_call_cents
+      pricingInfo = { price_cents: price ?? null }
+
+      if (!price || price <= 0) {
+        if (!options.json) process.stderr.write(`Warning: Pricing data unavailable. The server will verify payment.\n\n`)
+      } else {
+        try {
+          const balanceData = await getCreditsBalance(resolved)
+          const balance = balanceData.balance_cents
+
+          if (balance < price) {
+            process.stderr.write(
+              `Insufficient credits:\n` +
+              `  Balance:  $${(balance / 100).toFixed(2)}\n` +
+              `  Required: $${(price / 100).toFixed(2)}\n\n` +
+              `Add credits:\n` +
+              `  orch billing add 5\n` +
+              `  orch billing balance  # check current balance\n`
+            )
+            process.exit(ExitCodes.PERMISSION_DENIED)
+          }
+
+          if (!options.json) process.stderr.write(`Cost: $${(price / 100).toFixed(2)}/call\n\n`)
+        } catch (err) {
+          if (!options.json) process.stderr.write(`Warning: Could not verify balance. The server will check payment.\n\n`)
+        }
+      }
+    }
+  }
+
+  const endpoint =
+    options.endpoint?.trim() || agentMeta.default_endpoint || 'analyze'
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${resolved.apiKey}`,
+  }
+  if (options.tenant) {
+    headers['X-OrchAgent-Tenant'] = options.tenant
+  }
+
+  const supportedProviders = agentMeta.supported_providers || ['any']
+  let llmKey: string | undefined
+  let llmProvider: string | undefined
+
+  const configDefaultProvider = await getDefaultProvider()
+  const effectiveProvider = options.provider ?? configDefaultProvider
+
+  if (options.key) {
+    if (!effectiveProvider) {
+      throw new CliError(
+        'When using --key, you must also specify --provider (openai, anthropic, or gemini)'
+      )
+    }
+    validateProvider(effectiveProvider)
+    if (options.model && effectiveProvider) {
+      const modelLower = options.model.toLowerCase()
+      const providerPatterns: Record<string, RegExp> = {
+        openai: /^(gpt-|o1-|o3-|davinci|text-)/,
+        anthropic: /^claude-/,
+        gemini: /^gemini-/,
+        ollama: /^(llama|mistral|deepseek|phi|qwen)/,
+      }
+      const expectedPattern = providerPatterns[effectiveProvider]
+      if (expectedPattern && !expectedPattern.test(modelLower)) {
+        process.stderr.write(
+          `Warning: Model '${options.model}' may not be a ${effectiveProvider} model.\n\n`
+        )
+      }
+    }
+    llmKey = options.key
+    llmProvider = effectiveProvider
+  } else {
+    let providersToCheck = supportedProviders as LlmProvider[]
+    if (effectiveProvider) {
+      validateProvider(effectiveProvider)
+      providersToCheck = [effectiveProvider as LlmProvider]
+      if (options.model) {
+        const modelLower = options.model.toLowerCase()
+        const providerPatterns: Record<string, RegExp> = {
+          openai: /^(gpt-|o1-|o3-|davinci|text-)/,
+          anthropic: /^claude-/,
+          gemini: /^gemini-/,
+          ollama: /^(llama|mistral|deepseek|phi|qwen)/,
+        }
+        const expectedPattern = providerPatterns[effectiveProvider]
+        if (expectedPattern && !expectedPattern.test(modelLower)) {
+          process.stderr.write(
+            `Warning: Model '${options.model}' may not be a ${effectiveProvider} model.\n\n`
+          )
+        }
+      }
+    }
+    const detected = await detectLlmKey(providersToCheck, resolved)
+    if (detected) {
+      llmKey = detected.key
+      llmProvider = detected.provider
+    }
+  }
+
+  let llmCredentials: { api_key: string; provider: string; model?: string } | undefined
+  if (llmKey && llmProvider) {
+    llmCredentials = {
+      api_key: llmKey,
+      provider: llmProvider,
+      ...(options.model && { model: options.model }),
+    }
+  } else if (agentMeta.type === 'prompt') {
+    const searchedProviders = effectiveProvider ? [effectiveProvider] : supportedProviders
+    const providerList = searchedProviders.join(', ')
+    process.stderr.write(
+      `Warning: No LLM key found for provider(s): ${providerList}\n` +
+      `Set an env var (e.g., OPENAI_API_KEY), run 'orchagent keys add <provider>', use --key, or configure in web dashboard\n\n`
+    )
+  }
+
+  if (options.skills) {
+    headers['X-OrchAgent-Skills'] = options.skills
+  }
+  if (options.skillsOnly) {
+    headers['X-OrchAgent-Skills-Only'] = options.skillsOnly
+  }
+  if (options.noSkills) {
+    headers['X-OrchAgent-No-Skills'] = 'true'
+  }
+
+  let body: BodyInit | undefined
+  let sourceLabel: string | undefined
+  const filePaths = [
+    ...(options.file ?? []),
+    ...(file ? [file] : []),
+  ]
+  if (options.data) {
+    if (filePaths.length > 0 || options.metadata) {
+      throw new CliError('Cannot use --data with file uploads or --metadata.')
+    }
+    const resolvedBody = await resolveJsonBody(options.data)
+    warnIfLocalPathReference(resolvedBody)
+    if (llmCredentials) {
+      const bodyObj = JSON.parse(resolvedBody)
+      bodyObj.llm_credentials = llmCredentials
+      body = JSON.stringify(bodyObj)
+    } else {
+      body = resolvedBody
+    }
+    headers['Content-Type'] = 'application/json'
+  } else if ((filePaths.length > 0 || options.metadata) && agentMeta.type === 'prompt') {
+    const fieldName = options.fileField || inferFileField(agentMeta.input_schema as object | undefined)
+    let bodyObj: Record<string, unknown> = {}
+
+    if (options.metadata) {
+      try {
+        bodyObj = JSON.parse(options.metadata)
+      } catch {
+        throw new CliError('--metadata must be valid JSON.')
+      }
+    }
+
+    if (filePaths.length === 1) {
+      const fileContent = await fs.readFile(filePaths[0], 'utf-8')
+      bodyObj[fieldName] = fileContent
+      sourceLabel = filePaths[0]
+    } else if (filePaths.length > 1) {
+      const allContents: Record<string, string> = {}
+      for (const fp of filePaths) {
+        allContents[path.basename(fp)] = await fs.readFile(fp, 'utf-8')
+      }
+      const firstContent = await fs.readFile(filePaths[0], 'utf-8')
+      bodyObj[fieldName] = firstContent
+      bodyObj.files = allContents
+      sourceLabel = `${filePaths.length} files`
+    }
+
+    if (llmCredentials) {
+      bodyObj.llm_credentials = llmCredentials
+    }
+    body = JSON.stringify(bodyObj)
+    headers['Content-Type'] = 'application/json'
+  } else if (filePaths.length > 0 || options.metadata) {
+    let metadata = options.metadata
+    if (llmCredentials) {
+      const metaObj = metadata ? JSON.parse(metadata) : {}
+      metaObj.llm_credentials = llmCredentials
+      metadata = JSON.stringify(metaObj)
+    }
+    const multipart = await buildMultipartBody(filePaths, metadata)
+    body = multipart.body
+    sourceLabel = multipart.sourceLabel
+  } else if (llmCredentials) {
+    body = JSON.stringify({ llm_credentials: llmCredentials })
+    headers['Content-Type'] = 'application/json'
+  } else {
+    const multipart = await buildMultipartBody(undefined, options.metadata)
+    body = multipart.body
+    sourceLabel = multipart.sourceLabel
+  }
+
+  const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${parsed.agent}/${parsed.version}/${endpoint}`
+
+  const spinner = options.json ? null : createSpinner(`Running ${org}/${parsed.agent}@${parsed.version}...`)
+  spinner?.start()
+
+  let response: Response
+  try {
+    response = await safeFetchWithRetryForCalls(url, {
+      method: 'POST',
+      headers,
+      body,
+    })
+  } catch (err) {
+    spinner?.fail(`Run failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    throw err
+  }
+
+  if (!response.ok) {
+    const text = await response.text()
+    let payload: unknown
+    try {
+      payload = JSON.parse(text)
+    } catch {
+      payload = text
+    }
+
+    const errorCode =
+      typeof payload === 'object' && payload
+        ? (payload as { error?: { code?: string } }).error?.code
+        : undefined
+
+    if (response.status === 402 || errorCode === 'INSUFFICIENT_CREDITS') {
+      spinner?.fail('Insufficient credits')
+      let errorMessage = 'Insufficient credits to run this agent.\n\n'
+
+      if (pricingInfo?.price_cents) {
+        errorMessage += `This agent costs $${(pricingInfo.price_cents / 100).toFixed(2)} per call.\n\n`
+      }
+
+      errorMessage +=
+        'Add credits:\n' +
+        '  orch billing add 5\n' +
+        '  orch billing balance  # check current balance\n'
+
+      throw new CliError(errorMessage, ExitCodes.PERMISSION_DENIED)
+    }
+
+    if (errorCode === 'LLM_KEY_REQUIRED') {
+      spinner?.fail('LLM key required')
+      throw new CliError(
+        'This public agent requires you to provide an LLM key.\n' +
+          'Use --key <key> --provider <provider> or set OPENAI_API_KEY/ANTHROPIC_API_KEY env var.'
+      )
+    }
+
+    if (errorCode === 'LLM_RATE_LIMITED') {
+      const rateLimitMsg =
+        typeof payload === 'object' && payload
+          ? (payload as { error?: { message?: string } }).error?.message || 'Rate limit exceeded'
+          : 'Rate limit exceeded'
+      spinner?.fail('Rate limited by LLM provider')
+      throw new CliError(
+        rateLimitMsg + '\n\n' +
+          'This is the LLM provider\'s rate limit on your API key, not an OrchAgent limit.\n' +
+          'To switch providers: orch run <agent> --provider <gemini|anthropic|openai>',
+        ExitCodes.RATE_LIMITED
+      )
+    }
+
+    const message =
+      typeof payload === 'object' && payload
+        ? (payload as { error?: { message?: string }; message?: string }).error
+            ?.message ||
+          (payload as { message?: string }).message ||
+          response.statusText
+        : response.statusText
+    spinner?.fail(`Run failed: ${message}`)
+    throw new CliError(message)
+  }
+
+  spinner?.succeed(`Ran ${org}/${parsed.agent}@${parsed.version}`)
+
+  if (!options.json && isPaidAgent(agentMeta) && pricingInfo?.price_cents && pricingInfo.price_cents > 0) {
+    process.stderr.write(`\nCost: $${(pricingInfo.price_cents / 100).toFixed(2)} USD\n`)
+  }
+
+  const inputType =
+    filePaths.length > 0
+      ? 'file'
+      : options.data
+        ? 'json'
+        : sourceLabel === 'stdin'
+          ? 'stdin'
+          : sourceLabel === 'metadata'
+            ? 'metadata'
+            : 'empty'
+  await track('cli_run', {
+    agent: `${org}/${parsed.agent}@${parsed.version}`,
+    input_type: inputType,
+    mode: 'cloud',
+  })
+
+  if (options.output) {
+    const buffer = Buffer.from(await response.arrayBuffer())
+    await fs.writeFile(options.output, buffer)
+    process.stdout.write(`Saved response to ${options.output}\n`)
+    return
+  }
+
+  const text = await response.text()
+  let payload: unknown
+  try {
+    payload = JSON.parse(text)
+  } catch {
+    payload = text
+  }
+
+  if (options.json) {
+    if (typeof payload === 'string') {
+      process.stdout.write(`${payload}\n`)
+      return
+    }
+    printJson(payload)
+    return
+  }
+
+  if (typeof payload === 'string') {
+    process.stdout.write(`${payload}\n`)
+    return
+  }
+
+  printJson(payload)
+}
+
+// ─── Local execution path ───────────────────────────────────────────────────
+
+async function executeLocal(
+  agentRef: string,
+  args: string[],
+  options: RunOptions
+): Promise<void> {
+  // Merge --data alias into --input
+  if (options.data && !options.input) {
+    options.input = options.data
+  }
+
+  // Handle --here and --path shortcuts
+  if (options.here) {
+    options.input = JSON.stringify({ path: process.cwd() })
+  } else if (options.path) {
+    options.input = JSON.stringify({ path: options.path })
+  }
+
+  if (options.model && options.provider) {
+    const modelLower = options.model.toLowerCase()
+    const providerPatterns: Record<string, RegExp> = {
+      openai: /^(gpt-|o1-|o3-|davinci|text-)/,
+      anthropic: /^claude-/,
+      gemini: /^gemini-/,
+      ollama: /^(llama|mistral|deepseek|phi|qwen)/,
+    }
+    const expectedPattern = providerPatterns[options.provider]
+    if (expectedPattern && !expectedPattern.test(modelLower)) {
+      process.stderr.write(
+        `Warning: Model '${options.model}' may not be a ${options.provider} model.\n\n`
+      )
+    }
+  }
+
+  const resolved = await getResolvedConfig()
+
+  const parsed = parseAgentRef(agentRef)
+  const configFile = await loadConfig()
+  const org = parsed.org ?? configFile.workspace ?? resolved.defaultOrg
+  if (!org) {
+    throw new CliError('Missing org. Use org/agent format.')
+  }
+
+  // Download agent definition with spinner
+  const agentData = await withSpinner(
+    `Downloading ${org}/${parsed.agent}@${parsed.version}...`,
+    async () => {
+      try {
+        return await downloadAgent(resolved, org, parsed.agent, parsed.version)
+      } catch (err) {
+        const agentMeta = await getPublicAgent(resolved, org, parsed.agent, parsed.version)
+        return {
+          type: agentMeta.type || 'tool',
+          name: agentMeta.name,
+          version: agentMeta.version,
+          description: agentMeta.description || undefined,
+          supported_providers: agentMeta.supported_providers || ['any'],
+        } as AgentDownload
+      }
+    },
+    { successText: `Downloaded ${org}/${parsed.agent}@${parsed.version}` }
+  )
+
+  // Skills cannot be run directly
+  if (agentData.type === 'skill') {
+    throw new CliError(
+      'Skills cannot be run directly.\n\n' +
+      'Skills are instructions meant to be injected into AI agent contexts.\n\n' +
+      'Options:\n' +
+      `  Install for AI tools:  orchagent skill install ${org}/${parsed.agent}\n` +
+      `  Use with an agent:     orchagent run <agent> --skills ${org}/${parsed.agent}`
+    )
+  }
+
+  // Agent type requires a sandbox — cannot run locally
+  if (agentData.type === 'agent') {
+    throw new CliError(
+      'Agent type cannot be run locally.\n\n' +
+      'Agent type requires a sandbox environment with tool use capabilities.\n\n' +
+      'Remove the --local flag to run in the cloud:\n' +
+      `  orch run ${org}/${parsed.agent}@${parsed.version} --data '{"task": "..."}'`
+    )
+  }
+
+  // Check for dependencies (orchestrator agents)
+  if (agentData.dependencies && agentData.dependencies.length > 0) {
+    const depStatuses = await withSpinner(
+      'Checking dependencies...',
+      async () => checkDependencies(resolved, agentData.dependencies!),
+      { successText: `Found ${agentData.dependencies.length} dependencies` }
+    )
+
+    let choice: 'server' | 'local' | 'cancel'
+
+    if (options.withDeps) {
+      choice = 'local'
+    } else {
+      choice = await promptUserForDeps(depStatuses)
+    }
+
+    if (choice === 'cancel') {
+      process.stderr.write('\nCancelled.\n')
+      process.exit(0)
+    }
+
+    if (choice === 'server') {
+      process.stderr.write(`\nRun without --local for server execution:\n`)
+      process.stderr.write(`  orch run ${org}/${parsed.agent}@${parsed.version} --data '{...}'\n\n`)
+      process.exit(0)
+    }
+
+    await downloadDependenciesRecursively(resolved, depStatuses)
+  }
+
+  // Check if user is overriding locked skills
+  const agentSkillsLocked = (agentData as AgentDownload & { skills_locked?: boolean }).skills_locked
+  if (agentSkillsLocked && (options.noSkills || options.skillsOnly)) {
+    const readline = await import('readline')
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+    const answer = await new Promise<string>(resolve => {
+      rl.question(
+        `\nWarning: Author locked skills for this agent.\n` +
+        `Default skills: ${(agentData as any).default_skills?.join(', ') || '(none)'}\n` +
+        `Override anyway? [y/N] `,
+        resolve
+      )
+    })
+    rl.close()
+    if (answer.toLowerCase() !== 'y') {
+      process.stderr.write('Aborted. Running with author\'s locked skills.\n')
+      options.noSkills = false
+      options.skillsOnly = undefined
+    }
+  }
+
+  // Save locally
+  const agentDir = await saveAgentLocally(org, parsed.agent, agentData)
+  process.stderr.write(`\nAgent saved to: ${agentDir}\n`)
+
+  if (agentData.type === 'tool') {
+    if (agentData.has_bundle) {
+      if (options.downloadOnly) {
+        process.stdout.write(`\nTool has bundle available for local execution.\n`)
+        process.stdout.write(`Run with: orch run ${org}/${parsed.agent} --local [args...]\n`)
+        return
+      }
+
+      await executeBundleAgent(resolved, org, parsed.agent, parsed.version, agentData, args, options.input)
+      return
+    }
+
+    if (agentData.run_command && (agentData.source_url || agentData.pip_package)) {
+      if (options.downloadOnly) {
+        process.stdout.write(`\nTool ready for local execution.\n`)
+        process.stdout.write(`Run with: orch run ${org}/${parsed.agent} --local [args...]\n`)
+        return
+      }
+
+      await executeTool(agentData, args)
+      return
+    }
+
+    // Fallback: agent doesn't support local execution
+    process.stdout.write(`\nThis is a tool-based agent that runs on the server.\n`)
+    process.stdout.write(`\nRun without --local: orch run ${org}/${parsed.agent}@${parsed.version} --data '{...}'\n`)
+    return
+  }
+
+  if (options.downloadOnly) {
+    process.stdout.write(`\nAgent downloaded. Run with:\n`)
+    process.stdout.write(`  orch run ${org}/${parsed.agent}@${parsed.version} --local --input '{...}'\n`)
+    return
+  }
+
+  // For prompt-based agents, execute locally
+  if (!options.input) {
+    process.stdout.write(`\nPrompt-based agent ready.\n`)
+    process.stdout.write(`Run with: orch run ${org}/${parsed.agent}@${parsed.version} --local --input '{...}'\n`)
+    return
+  }
+
+  let inputData: Record<string, unknown>
+  try {
+    inputData = JSON.parse(options.input) as Record<string, unknown>
+  } catch {
+    throw new CliError('Invalid JSON input')
+  }
+
+  // Handle skill composition
+  let skillPrompts: string[] = []
+  if (!options.noSkills) {
+    const skillRefs: string[] = []
+
+    if (options.skillsOnly) {
+      skillRefs.push(...options.skillsOnly.split(',').map((s) => s.trim()))
+    } else {
+      const defaultSkills = (agentData as AgentDownload & { default_skills?: string[] }).default_skills || []
+      skillRefs.push(...defaultSkills)
+
+      if (options.skills) {
+        skillRefs.push(...options.skills.split(',').map((s) => s.trim()))
+      }
+    }
+
+    if (skillRefs.length > 0) {
+      skillPrompts = await withSpinner(
+        `Loading ${skillRefs.length} skill(s)...`,
+        async () => loadSkillPrompts(resolved, skillRefs, org),
+        { successText: `Loaded ${skillRefs.length} skill(s)` }
+      )
+    }
+  }
+
+  const result = await executePromptLocally(agentData, inputData, skillPrompts, resolved, options.provider, options.model)
+  printJson(result)
+}
+
+// ─── Command registration ───────────────────────────────────────────────────
+
+type RunOptions = {
+  local?: boolean
+  input?: string
+  data?: string
+  downloadOnly?: boolean
+  withDeps?: boolean
+  json?: boolean
+  skills?: string
+  skillsOnly?: string
+  noSkills?: boolean
+  here?: boolean
+  path?: string
+  provider?: string
+  model?: string
+  endpoint?: string
+  tenant?: string
+  key?: string
+  output?: string
+  file?: string[]
+  fileField?: string
+  metadata?: string
+}
+
 export function registerRunCommand(program: Command): void {
   program
-    .command('run <agent> [args...]')
-    .description('Download and run an agent locally')
-    .option('--local', 'Run locally using local LLM keys (default for run command)')
-    .option('--input <json>', 'JSON input data')
-    .option('--data <json>', 'Alias for --input')
-    .option('--download-only', 'Just download the agent, do not execute')
-    .option('--with-deps', 'Automatically download all dependencies (skip prompt)')
+    .command('run <agent> [file]')
+    .description('Run an agent (cloud by default, --local for local execution)')
+    .option('--local', 'Run locally instead of on the server')
+    .option('--data <json>', 'JSON payload (string or @file, @- for stdin)')
+    .option('--input <json>', 'Alias for --data')
     .option('--json', 'Output raw JSON')
+    .option('--provider <provider>', 'LLM provider (openai, anthropic, gemini, ollama)')
+    .option('--model <model>', 'LLM model to use (overrides agent default)')
+    .option('--key <key>', 'LLM API key (overrides env vars)')
     .option('--skills <skills>', 'Add skills (comma-separated)')
     .option('--skills-only <skills>', 'Use only these skills')
     .option('--no-skills', 'Ignore default skills')
-    .option('--here', 'Scan current directory (passes absolute path to agent)')
-    .option('--path <dir>', 'Shorthand for --input \'{"path": "<dir>"}\'')
-    .option('--provider <name>', 'LLM provider to use (openai, anthropic, gemini, ollama)')
-    .option('--model <model>', 'LLM model to use (overrides agent default)')
+    // Cloud-only options
+    .option('--endpoint <endpoint>', 'Override agent endpoint (cloud only)')
+    .option('--tenant <tenant>', 'Tenant identifier for multi-tenant callers (cloud only)')
+    .option('--output <file>', 'Save response body to a file (cloud only)')
+    .option('--file <path...>', 'File(s) to upload (cloud only, can specify multiple)')
+    .option('--file-field <field>', 'Schema field name for file content (cloud only)')
+    .option('--metadata <json>', 'JSON metadata to send with files (cloud only)')
+    // Local-only options
+    .option('--download-only', 'Just download the agent, do not execute (local only)')
+    .option('--with-deps', 'Automatically download all dependencies (local only)')
+    .option('--here', 'Scan current directory (local only)')
+    .option('--path <dir>', 'Shorthand for --data \'{"path": "<dir>"}\' (local only)')
     .addHelpText('after', `
 Examples:
-  orch run orchagent/leak-finder --input '{"path": "."}'
-  orch run orchagent/leak-finder --input '{"repo_url": "https://github.com/org/repo"}'
-  orch run joe/summarizer --input '{"text": "Hello world"}'
-  orch run orchagent/leak-finder --download-only
+  Cloud execution (default):
+    orch run orchagent/leak-finder --data '{"repo_url": "https://github.com/org/repo"}'
+    orch run orchagent/invoice-scanner invoice.pdf
+    orch run orchagent/useeffect-checker --file src/App.tsx
+    cat input.json | orch run acme/agent --data @-
+    orch run acme/image-processor photo.jpg --output result.png
 
-Note: Use 'run' for local execution, 'call' for server-side execution.
+  Local execution (--local):
+    orch run orchagent/leak-finder --local --data '{"path": "."}'
+    orch run joe/summarizer --local --data '{"text": "Hello world"}'
+    orch run orchagent/leak-finder --local --download-only
 
 Paid Agents:
-  Paid agents run on server only for non-owners.
-  You CAN download and run your own paid agents for development/testing.
+  Paid agents charge per call and deduct from your prepaid credits.
+  Check your balance: orch billing balance
+  Add credits: orch billing add 5
 
-  For other users' paid agents, use 'orch call' instead.
+  Same-author calls are FREE - you won't be charged for calling your own agents.
+
+File handling (cloud):
+  For prompt agents, file content is read and sent as JSON mapped to the agent's
+  input schema. Use --file-field to specify the field name (auto-detected by default).
+  For tools, files are uploaded as multipart form data.
+
+Important: Remote agents cannot access your local filesystem. If your --data payload
+contains keys like 'path', 'directory', 'file', etc., those values will be interpreted
+by the server, not your local machine. To use local files, use --local or --file.
 `)
     .action(
       async (
         agentRef: string,
-        args: string[],
-        options: {
-          local?: boolean
-          input?: string
-          data?: string
-          downloadOnly?: boolean
-          withDeps?: boolean
-          json?: boolean
-          skills?: string
-          skillsOnly?: string
-          noSkills?: boolean
-          here?: boolean
-          path?: string
-          provider?: string
-          model?: string
-        }
+        file: string | undefined,
+        options: RunOptions
       ) => {
-        // Merge --data alias into --input
-        if (options.data && !options.input) {
-          options.input = options.data
-        }
-
-        // Handle --here and --path shortcuts
-        if (options.here) {
-          options.input = JSON.stringify({ path: process.cwd() })
-        } else if (options.path) {
-          options.input = JSON.stringify({ path: options.path })
-        }
-
-        if (options.model && options.provider) {
-          const modelLower = options.model.toLowerCase()
-          const providerPatterns: Record<string, RegExp> = {
-            openai: /^(gpt-|o1-|o3-|davinci|text-)/,
-            anthropic: /^claude-/,
-            gemini: /^gemini-/,
-            ollama: /^(llama|mistral|deepseek|phi|qwen)/,
-          }
-          const expectedPattern = providerPatterns[options.provider]
-          if (expectedPattern && !expectedPattern.test(modelLower)) {
-            process.stderr.write(
-              `Warning: Model '${options.model}' may not be a ${options.provider} model.\n\n`
-            )
-          }
-        }
-
-        const resolved = await getResolvedConfig()
-
-        const parsed = parseAgentRef(agentRef)
-        const configFile = await loadConfig()
-        const org = parsed.org ?? configFile.workspace ?? resolved.defaultOrg
-        if (!org) {
-          throw new CliError('Missing org. Use org/agent format.')
-        }
-
-        // Download agent definition with spinner
-        const agentData = await withSpinner(
-          `Downloading ${org}/${parsed.agent}@${parsed.version}...`,
-          async () => {
-            try {
-              return await downloadAgent(resolved, org, parsed.agent, parsed.version)
-            } catch (err) {
-              // Fall back to getting public agent info if download endpoint not available
-              const agentMeta = await getPublicAgent(resolved, org, parsed.agent, parsed.version)
-              return {
-                type: agentMeta.type || 'tool',
-                name: agentMeta.name,
-                version: agentMeta.version,
-                description: agentMeta.description || undefined,
-                supported_providers: agentMeta.supported_providers || ['any'],
-              } as AgentDownload
-            }
-          },
-          { successText: `Downloaded ${org}/${parsed.agent}@${parsed.version}` }
-        )
-
-        // Skills cannot be run directly - they're instructions to inject into agents
-        if (agentData.type === 'skill') {
-          throw new CliError(
-            'Skills cannot be run directly.\n\n' +
-            'Skills are instructions meant to be injected into AI agent contexts.\n\n' +
-            'Options:\n' +
-            `  Install for AI tools:  orchagent skill install ${org}/${parsed.agent}\n` +
-            `  Use with an agent:     orchagent run <agent> --skills ${org}/${parsed.agent}`
-          )
-        }
-
-        // Agent type requires a sandbox with tool use — cannot run locally
-        if (agentData.type === 'agent') {
-          throw new CliError(
-            'Agent type cannot be run locally.\n\n' +
-            'Agent type requires a sandbox environment with tool use capabilities.\n\n' +
-            'Use server execution instead:\n' +
-            `  orchagent call ${org}/${parsed.agent}@${parsed.version} --data '{"task": "..."}'`
-          )
-        }
-
-        // Check for dependencies (orchestrator agents)
-        if (agentData.dependencies && agentData.dependencies.length > 0) {
-          const depStatuses = await withSpinner(
-            'Checking dependencies...',
-            async () => checkDependencies(resolved, agentData.dependencies!),
-            { successText: `Found ${agentData.dependencies.length} dependencies` }
-          )
-
-          let choice: 'server' | 'local' | 'cancel'
-
-          if (options.withDeps) {
-            // Auto-download deps without prompting
-            choice = 'local'
-          } else {
-            choice = await promptUserForDeps(depStatuses)
-          }
-
-          if (choice === 'cancel') {
-            process.stderr.write('\nCancelled.\n')
-            process.exit(0)
-          }
-
-          if (choice === 'server') {
-            process.stderr.write(`\nUse server execution instead:\n`)
-            process.stderr.write(`  orch call ${org}/${parsed.agent}@${parsed.version} --input '{...}'\n\n`)
-            process.exit(0)
-          }
-
-          // choice === 'local' - download dependencies
-          await downloadDependenciesRecursively(resolved, depStatuses)
-        }
-
-        // Check if user is overriding locked skills
-        const agentSkillsLocked = (agentData as AgentDownload & { skills_locked?: boolean }).skills_locked
-        if (agentSkillsLocked && (options.noSkills || options.skillsOnly)) {
-          const readline = await import('readline')
-          const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
-          const answer = await new Promise<string>(resolve => {
-            rl.question(
-              `\nWarning: Author locked skills for this agent.\n` +
-              `Default skills: ${(agentData as any).default_skills?.join(', ') || '(none)'}\n` +
-              `Override anyway? [y/N] `,
-              resolve
-            )
-          })
-          rl.close()
-          if (answer.toLowerCase() !== 'y') {
-            process.stderr.write('Aborted. Running with author\'s locked skills.\n')
-            options.noSkills = false
-            options.skillsOnly = undefined
-          }
-        }
-
-        // Save locally
-        const agentDir = await saveAgentLocally(org, parsed.agent, agentData)
-        process.stderr.write(`\nAgent saved to: ${agentDir}\n`)
-
-        if (agentData.type === 'tool') {
-          // Check if this agent has a bundle available for local execution
-          if (agentData.has_bundle) {
-            if (options.downloadOnly) {
-              process.stdout.write(`\nTool has bundle available for local execution.\n`)
-              process.stdout.write(`Run with: orch run ${org}/${parsed.agent} [args...]\n`)
-              return
-            }
-
-            // Execute the bundle-based tool locally
-            await executeBundleAgent(resolved, org, parsed.agent, parsed.version, agentData, args, options.input)
-            return
-          }
-
-          // Check for pip/source-based local execution (legacy)
-          if (agentData.run_command && (agentData.source_url || agentData.pip_package)) {
-            if (options.downloadOnly) {
-              process.stdout.write(`\nTool ready for local execution.\n`)
-              process.stdout.write(`Run with: orch run ${org}/${parsed.agent} [args...]\n`)
-              return
-            }
-
-            // Execute the tool locally
-            await executeTool(agentData, args)
-            return
-          }
-
-          // Fallback: agent doesn't support local execution
-          process.stdout.write(`\nThis is a tool-based agent that runs on the server.\n`)
-          process.stdout.write(`\nUse: orch call ${org}/${parsed.agent}@${parsed.version} --input '{...}'\n`)
-          return
-        }
-
-        if (options.downloadOnly) {
-          process.stdout.write(`\nAgent downloaded. Run with:\n`)
-          process.stdout.write(`  orchagent run ${org}/${parsed.agent}@${parsed.version} --input '{...}'\n`)
-          return
-        }
-
-        // For prompt-based agents, execute locally
-        if (!options.input) {
-          process.stdout.write(`\nPrompt-based agent ready.\n`)
-          process.stdout.write(`Run with: orchagent run ${org}/${parsed.agent}@${parsed.version} --input '{...}'\n`)
-          return
-        }
-
-        // Parse input
-        let inputData: Record<string, unknown>
-        try {
-          inputData = JSON.parse(options.input) as Record<string, unknown>
-        } catch {
-          throw new CliError('Invalid JSON input')
-        }
-
-        // Handle skill composition
-        let skillPrompts: string[] = []
-        if (!options.noSkills) {
-          const skillRefs: string[] = []
-
-          if (options.skillsOnly) {
-            // Use only the specified skills (ignore defaults)
-            skillRefs.push(...options.skillsOnly.split(',').map((s) => s.trim()))
-          } else {
-            // Start with agent's default skills (if any)
-            const defaultSkills = (agentData as AgentDownload & { default_skills?: string[] }).default_skills || []
-            skillRefs.push(...defaultSkills)
-
-            // Add any additional skills specified via --skills
-            if (options.skills) {
-              skillRefs.push(...options.skills.split(',').map((s) => s.trim()))
-            }
-          }
-
-          if (skillRefs.length > 0) {
-            skillPrompts = await withSpinner(
-              `Loading ${skillRefs.length} skill(s)...`,
-              async () => loadSkillPrompts(resolved, skillRefs, org),
-              { successText: `Loaded ${skillRefs.length} skill(s)` }
-            )
-          }
-        }
-
-        // Execute locally (the spinner is inside executePromptLocally)
-        const result = await executePromptLocally(agentData, inputData, skillPrompts, resolved, options.provider, options.model)
-
-        if (options.json) {
-          printJson(result)
+        if (options.local) {
+          // Local execution: file arg becomes first positional arg
+          const args = file ? [file] : []
+          await executeLocal(agentRef, args, options)
         } else {
-          printJson(result)
+          await executeCloud(agentRef, file, options)
         }
       }
     )
