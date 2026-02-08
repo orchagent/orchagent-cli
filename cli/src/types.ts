@@ -62,8 +62,11 @@ export type AgentManifest = {
   version: string
   description?: string
   type: 'prompt' | 'tool' | 'skill' | 'agent'
+  /** @deprecated Ignored by CLI. Use prompt.md file instead. */
   prompt?: string
+  /** @deprecated Ignored by CLI. Use schema.json file instead. */
   input_schema?: object
+  /** @deprecated Ignored by CLI. Use schema.json file instead. */
   output_schema?: object
   tags?: string[]
   // Agent type fields

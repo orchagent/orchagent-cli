@@ -337,6 +337,17 @@ export function registerPublishCommand(program: Command): void {
         throw new CliError('orchagent.json must have name')
       }
 
+      // Warn about deprecated fields that are ignored
+      if (manifest.prompt) {
+        process.stderr.write(chalk.yellow('Warning: "prompt" field in orchagent.json is ignored. Use prompt.md file instead.\n'))
+      }
+      if (manifest.input_schema) {
+        process.stderr.write(chalk.yellow('Warning: "input_schema" field in orchagent.json is ignored. Use schema.json file instead.\n'))
+      }
+      if (manifest.output_schema) {
+        process.stderr.write(chalk.yellow('Warning: "output_schema" field in orchagent.json is ignored. Use schema.json file instead.\n'))
+      }
+
       // Check for misplaced manifest fields at top level (common user error)
       const manifestFields = ['manifest_version', 'dependencies', 'max_hops', 'timeout_ms', 'per_call_downstream_cap']
       const misplacedFields = manifestFields.filter(f => f in manifest && !manifest.manifest)

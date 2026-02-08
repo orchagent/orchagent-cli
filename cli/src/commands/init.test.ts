@@ -236,18 +236,14 @@ describe('init command', () => {
       expect(manifest.type).toBe('agent')
     })
 
-    it('includes custom_tools array in manifest', async () => {
+    it('does not include custom_tools in default manifest', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.custom_tools).toBeDefined()
-      expect(Array.isArray(manifest.custom_tools)).toBe(true)
-      expect(manifest.custom_tools.length).toBeGreaterThan(0)
-      expect(manifest.custom_tools[0]).toHaveProperty('name')
-      expect(manifest.custom_tools[0]).toHaveProperty('command')
+      expect(manifest.custom_tools).toBeUndefined()
     })
 
     it('includes max_turns in manifest', async () => {
@@ -278,7 +274,8 @@ describe('init command', () => {
       )
       expect(promptCall).toBeDefined()
       const content = promptCall![1] as string
-      expect(content).toContain('submit_result')
+      // Agent prompt should focus on domain expertise (platform context is auto-injected at runtime)
+      expect(content).toContain('agent')
       expect(content).not.toContain('{{input}}')
     })
 
@@ -303,10 +300,10 @@ describe('init command', () => {
       expect(mainCall).toBeUndefined()
     })
 
-    it('shows custom_tools in next steps', async () => {
+    it('shows schema.json in next steps', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
-      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('custom_tools'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('schema.json'))
     })
   })
 

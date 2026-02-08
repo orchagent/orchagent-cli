@@ -127,28 +127,14 @@ const AGENT_MANIFEST_TEMPLATE = `{
   "description": "An AI agent with tool use",
   "type": "agent",
   "supported_providers": ["anthropic"],
-  "max_turns": 25,
-  "custom_tools": [
-    {
-      "name": "run_tests",
-      "description": "Run the test suite",
-      "command": "pytest"
-    }
-  ]
+  "max_turns": 25
 }
 `
 
-const AGENT_PROMPT_TEMPLATE = `You are a helpful AI agent with access to a sandboxed environment.
+const AGENT_PROMPT_TEMPLATE = `You are a helpful AI agent.
 
-Given the input, complete the task using the available tools:
-- Use bash to run commands
-- Use read_file and write_file to work with files
-- Use custom tools defined by the agent author
-- Call submit_result when you're done
-
-Input: The caller's input will be provided as JSON.
-
-Work step by step, verify your results, and submit the final output.
+Given the input, complete the task step by step.
+Verify your results before submitting.
 `
 
 const AGENT_SCHEMA_TEMPLATE = `{
@@ -301,9 +287,8 @@ export function registerInitCommand(program: Command): void {
           process.stdout.write(`  1. cd ${name}\n`)
         }
         process.stdout.write(`  ${stepNum}. Edit prompt.md with your agent instructions\n`)
-        process.stdout.write(`  ${stepNum + 1}. Edit custom_tools in orchagent.json for your environment\n`)
-        process.stdout.write(`  ${stepNum + 2}. Edit schema.json with your input/output schemas\n`)
-        process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
+        process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
+        process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish\n`)
       } else if (options.type !== 'tool') {
         const stepNum = name ? 2 : 1
         if (name) {
