@@ -14,6 +14,11 @@ import packageJson from '../../package.json'
 
 const DEFAULT_VERSION = 'latest'
 
+function stripFrontmatter(content: string): string {
+  const match = content.match(/^---\s*\n[\s\S]*?\n---\s*\n([\s\S]*)$/)
+  return match ? match[1].trimStart() : content
+}
+
 type SkillRef = {
   org?: string
   skill: string
@@ -504,6 +509,9 @@ Instructions and guidance for AI agents...
         const scope = options.global ? 'user' : (options.scope || await getDefaultScope() || 'project')
         result.scope = scope
 
+        // Strip existing YAML frontmatter from the prompt to avoid duplication
+        const cleanPrompt = stripFrontmatter(skillData.prompt)
+
         // Build skill content with header
         const skillContent = `# ${skillData.name}
 
@@ -511,7 +519,7 @@ ${skillData.description || ''}
 
 ---
 
-${skillData.prompt}
+${cleanPrompt}
 `
 
         // Dry run - show what would be installed

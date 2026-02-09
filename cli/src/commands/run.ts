@@ -101,6 +101,22 @@ type AgentDownload = {
   dependencies?: AgentDependency[]
 }
 
+// ─── Validation helpers ─────────────────────────────────────────────────────
+
+async function validateFilePath(filePath: string): Promise<void> {
+  const stat = await fs.stat(filePath)
+  if (stat.isDirectory()) {
+    throw new CliError(
+      `Cannot upload a directory for cloud execution: ${filePath}\n\n` +
+      `Options:\n` +
+      `  Use --local to run locally with filesystem access:\n` +
+      `    orch run <agent> --local --path ${filePath}\n` +
+      `  Or specify individual files:\n` +
+      `    orch run <agent> --file ${filePath}/specific-file.ts`
+    )
+  }
+}
+
 // ─── Cloud execution helpers (from call.ts) ─────────────────────────────────
 
 function findLocalPathKey(obj: unknown): string | undefined {
@@ -157,6 +173,21 @@ function inferFileField(inputSchema?: object): string {
   return 'content'
 }
 
+function applySchemaDefaults(
+  body: Record<string, unknown>,
+  schema?: object
+): Record<string, unknown> {
+  if (!schema) return body
+  const props = (schema as Record<string, unknown>).properties
+  if (!props || typeof props !== 'object') return body
+  for (const [key, def] of Object.entries(props as Record<string, Record<string, unknown>>)) {
+    if (body[key] === undefined && def.default !== undefined) {
+      body[key] = def.default
+    }
+  }
+  return body
+}
+
 async function readStdin(): Promise<Buffer | null> {
   if (process.stdin.isTTY) return null
   const chunks: Buffer[] = []
@@ -191,6 +222,7 @@ async function buildMultipartBody(
 
   const form = new FormData()
   for (const filePath of filePaths) {
+    await validateFilePath(filePath)
     const buffer = await fs.readFile(filePath)
     const filename = path.basename(filePath)
     form.append('files[]', new Blob([new Uint8Array(buffer)]), filename)
@@ -220,6 +252,7 @@ async function resolveJsonBody(input: string): Promise<string> {
       }
       raw = stdinData.toString('utf8')
     } else {
+      await validateFilePath(source)
       raw = await fs.readFile(source, 'utf8')
     }
   }
@@ -1109,6 +1142,252 @@ async function saveBundleLocally(
   return bundleDir
 }
 
+// ─── Local directory execution ───────────────────────────────────────────────
+
+function isLocalPath(ref: string): boolean {
+  return ref.startsWith('.') || ref.startsWith('/') || ref.startsWith('~')
+}
+
+async function executeLocalFromDir(
+  dirPath: string,
+  args: string[],
+  options: RunOptions
+): Promise<void> {
+  // Merge --data alias into --input
+  if (options.data && !options.input) {
+    options.input = options.data
+  }
+  if (options.here) {
+    options.input = JSON.stringify({ path: process.cwd() })
+  } else if (options.path) {
+    options.input = JSON.stringify({ path: options.path })
+  }
+
+  const resolved = path.resolve(dirPath)
+
+  // Verify directory exists
+  let stat: Awaited<ReturnType<typeof fs.stat>>
+  try {
+    stat = await fs.stat(resolved)
+  } catch {
+    throw new CliError(`Directory not found: ${resolved}`)
+  }
+  if (!stat.isDirectory()) {
+    throw new CliError(`Not a directory: ${resolved}`)
+  }
+
+  // Read orchagent.json manifest
+  const manifestPath = path.join(resolved, 'orchagent.json')
+  let manifest: Record<string, unknown>
+  try {
+    const raw = await fs.readFile(manifestPath, 'utf-8')
+    manifest = JSON.parse(raw)
+  } catch {
+    throw new CliError(
+      `No orchagent.json found in ${resolved}\n\n` +
+      `To run a local agent, the directory must contain orchagent.json.\n` +
+      `Create one with: orch init`
+    )
+  }
+
+  const agentType = (manifest.type as string) || 'tool'
+
+  if (agentType === 'skill') {
+    throw new CliError(
+      'Skills cannot be run directly.\n\n' +
+      'Skills are instructions meant to be injected into AI agent contexts.\n' +
+      `Install with: orchagent skill install <org>/<skill>`
+    )
+  }
+
+  if (agentType === 'agent') {
+    throw new CliError(
+      'Agent type cannot be run locally.\n\n' +
+      'Agent type requires a sandbox environment with tool use capabilities.\n' +
+      'Publish first, then run in the cloud:\n' +
+      '  orch publish && orch run <org>/<agent> --data \'{"task": "..."}\''
+    )
+  }
+
+  if (agentType === 'prompt') {
+    // Read prompt.md
+    const promptPath = path.join(resolved, 'prompt.md')
+    let prompt: string
+    try {
+      prompt = await fs.readFile(promptPath, 'utf-8')
+    } catch {
+      throw new CliError(`No prompt.md found in ${resolved}`)
+    }
+
+    // Read schema.json for schemas
+    let inputSchema: object | undefined
+    let outputSchema: object | undefined
+    try {
+      const schemaRaw = await fs.readFile(path.join(resolved, 'schema.json'), 'utf-8')
+      const schemas = JSON.parse(schemaRaw)
+      inputSchema = schemas.input
+      outputSchema = schemas.output
+    } catch {
+      // Schema is optional
+    }
+
+    // Build AgentDownload from local files
+    const agentData: AgentDownload = {
+      type: 'prompt',
+      name: (manifest.name as string) || path.basename(resolved),
+      version: (manifest.version as string) || 'local',
+      description: manifest.description as string | undefined,
+      prompt,
+      input_schema: inputSchema,
+      output_schema: outputSchema,
+      supported_providers: (manifest.supported_providers as string[]) || ['any'],
+      default_models: manifest.default_models as Record<string, string> | undefined,
+    }
+
+    if (!options.input) {
+      process.stderr.write(`Loaded local agent: ${agentData.name}\n\n`)
+      process.stderr.write(`Run with input:\n`)
+      process.stderr.write(`  orch run ${dirPath} --local --data '{...}'\n`)
+      return
+    }
+
+    let inputData: Record<string, unknown>
+    try {
+      inputData = JSON.parse(options.input) as Record<string, unknown>
+    } catch {
+      throw new CliError('Invalid JSON input')
+    }
+
+    const config = await getResolvedConfig()
+    const result = await executePromptLocally(agentData, inputData, [], config, options.provider, options.model)
+    printJson(result)
+    return
+  }
+
+  // Tool agents with bundle
+  const entrypoint = (manifest.entrypoint as string) || 'sandbox_main.py'
+  const entrypointPath = path.join(resolved, entrypoint)
+
+  try {
+    await fs.access(entrypointPath)
+  } catch {
+    // No local entrypoint — try run_command
+    if (manifest.run_command) {
+      const agentData: AgentDownload = {
+        type: 'tool',
+        name: (manifest.name as string) || path.basename(resolved),
+        version: (manifest.version as string) || 'local',
+        supported_providers: (manifest.supported_providers as string[]) || ['any'],
+        run_command: manifest.run_command as string,
+        source_url: manifest.source_url as string | undefined,
+        pip_package: manifest.pip_package as string | undefined,
+      }
+      await executeTool(agentData, args)
+      return
+    }
+
+    throw new CliError(
+      `No entrypoint found in ${resolved}\n\n` +
+      `Expected: ${entrypoint}\n` +
+      `For tool agents, ensure the directory contains the entrypoint file\n` +
+      `or has run_command set in orchagent.json.`
+    )
+  }
+
+  // Execute bundle-style from local directory
+  const config = await getResolvedConfig()
+  const agentData: AgentDownload = {
+    type: 'tool',
+    name: (manifest.name as string) || path.basename(resolved),
+    version: (manifest.version as string) || 'local',
+    supported_providers: (manifest.supported_providers as string[]) || ['any'],
+    entrypoint,
+  }
+
+  // Install requirements if present
+  const requirementsPath = path.join(resolved, 'requirements.txt')
+  try {
+    await fs.access(requirementsPath)
+    const { code } = await runCommand('python3', ['-m', 'pip', 'install', '-q', '--disable-pip-version-check', '-r', requirementsPath])
+    if (code !== 0) {
+      process.stderr.write('Warning: Failed to install requirements.txt\n')
+    }
+  } catch {
+    // No requirements.txt
+  }
+
+  let inputJson = '{}'
+  if (options.input) {
+    try {
+      JSON.parse(options.input)
+      inputJson = options.input
+    } catch {
+      throw new CliError('Invalid JSON input')
+    }
+  } else if (args.length > 0) {
+    inputJson = JSON.stringify({ input: args[0] })
+  }
+
+  process.stderr.write(`\nRunning: python3 ${entrypoint}\n\n`)
+
+  const subprocessEnv: Record<string, string | undefined> = { ...process.env }
+  if (config.apiKey) {
+    subprocessEnv.ORCHAGENT_SERVICE_KEY = config.apiKey
+    subprocessEnv.ORCHAGENT_API_URL = config.apiUrl
+  }
+
+  const proc = spawn('python3', [entrypointPath], {
+    cwd: resolved,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: subprocessEnv,
+  })
+
+  proc.stdin.write(inputJson)
+  proc.stdin.end()
+
+  let stdout = ''
+  let stderr = ''
+
+  proc.stdout?.on('data', (data: Buffer) => {
+    stdout += data.toString()
+  })
+  proc.stderr?.on('data', (data: Buffer) => {
+    const text = data.toString()
+    stderr += text
+    process.stderr.write(text)
+  })
+
+  const exitCode = await new Promise<number>((resolve) => {
+    proc.on('close', (code) => resolve(code ?? 1))
+    proc.on('error', (err) => {
+      process.stderr.write(`Error running agent: ${err.message}\n`)
+      resolve(1)
+    })
+  })
+
+  if (stdout.trim()) {
+    try {
+      const result = JSON.parse(stdout.trim())
+      if (exitCode !== 0 && typeof result === 'object' && result !== null && 'error' in result) {
+        throw new CliError(`Agent error: ${(result as { error: string }).error}`)
+      }
+      if (exitCode !== 0) {
+        printJson(result)
+        throw new CliError(`Agent exited with code ${exitCode}`)
+      }
+      printJson(result)
+    } catch (err) {
+      if (err instanceof CliError) throw err
+      process.stdout.write(stdout)
+      if (exitCode !== 0) {
+        throw new CliError(`Agent exited with code ${exitCode}`)
+      }
+    }
+  } else if (exitCode !== 0) {
+    throw new CliError(`Agent exited with code ${exitCode}`)
+  }
+}
+
 // ─── Cloud execution path ───────────────────────────────────────────────────
 
 async function executeCloud(
@@ -1290,10 +1569,55 @@ async function executeCloud(
     ...(options.file ?? []),
     ...(file ? [file] : []),
   ]
-  if (options.data) {
-    if (filePaths.length > 0 || options.metadata) {
-      throw new CliError('Cannot use --data with file uploads or --metadata.')
+  if (options.data && options.metadata) {
+    throw new CliError('Cannot use --data with --metadata. Use one or the other.')
+  }
+  if (options.data && filePaths.length > 0) {
+    // Merge file content into --data
+    const resolvedBody = await resolveJsonBody(options.data)
+    const bodyObj = JSON.parse(resolvedBody) as Record<string, unknown>
+
+    if (agentMeta.type === 'prompt') {
+      const fieldName = options.fileField || inferFileField(agentMeta.input_schema as object | undefined)
+      if (filePaths.length === 1) {
+        await validateFilePath(filePaths[0])
+        bodyObj[fieldName] = await fs.readFile(filePaths[0], 'utf-8')
+        sourceLabel = filePaths[0]
+      } else {
+        const allContents: Record<string, string> = {}
+        for (const fp of filePaths) {
+          await validateFilePath(fp)
+          allContents[path.basename(fp)] = await fs.readFile(fp, 'utf-8')
+        }
+        bodyObj[fieldName] = await fs.readFile(filePaths[0], 'utf-8')
+        bodyObj.files = allContents
+        sourceLabel = `${filePaths.length} files`
+      }
+      // Auto-populate filename if schema has it and user didn't provide it
+      if (filePaths.length >= 1 && bodyObj.filename === undefined) {
+        const schema = agentMeta.input_schema as Record<string, unknown> | undefined
+        const schemaProps = schema?.properties as Record<string, unknown> | undefined
+        if (schemaProps?.filename) {
+          bodyObj.filename = path.basename(filePaths[0])
+        }
+      }
+      applySchemaDefaults(bodyObj, agentMeta.input_schema as object | undefined)
+      if (llmCredentials) bodyObj.llm_credentials = llmCredentials
+      body = JSON.stringify(bodyObj)
+      headers['Content-Type'] = 'application/json'
+    } else {
+      // Tool agents: send files as multipart, --data as metadata
+      let metadata = resolvedBody
+      if (llmCredentials) {
+        const metaObj = JSON.parse(metadata) as Record<string, unknown>
+        metaObj.llm_credentials = llmCredentials
+        metadata = JSON.stringify(metaObj)
+      }
+      const multipart = await buildMultipartBody(filePaths, metadata)
+      body = multipart.body
+      sourceLabel = multipart.sourceLabel
     }
+  } else if (options.data) {
     const resolvedBody = await resolveJsonBody(options.data)
     warnIfLocalPathReference(resolvedBody)
     if (llmCredentials) {
@@ -1317,12 +1641,14 @@ async function executeCloud(
     }
 
     if (filePaths.length === 1) {
+      await validateFilePath(filePaths[0])
       const fileContent = await fs.readFile(filePaths[0], 'utf-8')
       bodyObj[fieldName] = fileContent
       sourceLabel = filePaths[0]
     } else if (filePaths.length > 1) {
       const allContents: Record<string, string> = {}
       for (const fp of filePaths) {
+        await validateFilePath(fp)
         allContents[path.basename(fp)] = await fs.readFile(fp, 'utf-8')
       }
       const firstContent = await fs.readFile(filePaths[0], 'utf-8')
@@ -1330,6 +1656,16 @@ async function executeCloud(
       bodyObj.files = allContents
       sourceLabel = `${filePaths.length} files`
     }
+
+    // Auto-populate filename if schema has it and user didn't provide it
+    if (filePaths.length >= 1 && bodyObj.filename === undefined) {
+      const schema = agentMeta.input_schema as Record<string, unknown> | undefined
+      const schemaProps = schema?.properties as Record<string, unknown> | undefined
+      if (schemaProps?.filename) {
+        bodyObj.filename = path.basename(filePaths[0])
+      }
+    }
+    applySchemaDefaults(bodyObj, agentMeta.input_schema as object | undefined)
 
     if (llmCredentials) {
       bodyObj.llm_credentials = llmCredentials
@@ -1431,6 +1767,16 @@ async function executeCloud(
           (payload as { message?: string }).message ||
           response.statusText
         : response.statusText
+
+    if (response.status >= 500) {
+      spinner?.fail(`Server error (${response.status})`)
+      throw new CliError(
+        `${message}\n\n` +
+        `This is a server-side error. Try again in a moment.\n` +
+        `If it persists, check the dashboard for run logs or try a different provider.`
+      )
+    }
+
     spinner?.fail(`Run failed: ${message}`)
     throw new CliError(message)
   }
@@ -1794,7 +2140,11 @@ by the server, not your local machine. To use local files, use --local or --file
         file: string | undefined,
         options: RunOptions
       ) => {
-        if (options.local) {
+        if (options.local && isLocalPath(agentRef)) {
+          // Local directory execution (e.g., orch run . --local)
+          const args = file ? [file] : []
+          await executeLocalFromDir(agentRef, args, options)
+        } else if (options.local) {
           // Local execution: file arg becomes first positional arg
           const args = file ? [file] : []
           await executeLocal(agentRef, args, options)

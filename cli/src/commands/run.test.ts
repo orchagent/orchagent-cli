@@ -26,7 +26,7 @@ vi.mock('../lib/pricing', () => ({
 import fs from 'fs/promises'
 import { registerRunCommand } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
-import { publicRequest, getPublicAgent } from '../lib/api'
+import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls } from '../lib/api'
 import {
   detectLlmKeyFromEnv,
   getDefaultModel,
@@ -41,6 +41,8 @@ const mockLoadConfig = vi.mocked(loadConfig)
 const mockGetDefaultProvider = vi.mocked(getDefaultProvider)
 const mockPublicRequest = vi.mocked(publicRequest)
 const mockGetPublicAgent = vi.mocked(getPublicAgent)
+const mockGetAgentWithFallback = vi.mocked(getAgentWithFallback)
+const mockSafeFetchWithRetryForCalls = vi.mocked(safeFetchWithRetryForCalls)
 
 describe('run command --local - agent ref parsing', () => {
   let program: Command
@@ -522,5 +524,560 @@ describe('LLM utilities - constants', () => {
     expect(DEFAULT_MODELS.openai).toBe('gpt-5.2')
     expect(DEFAULT_MODELS.anthropic).toBe('claude-opus-4-5-20251101')
     expect(DEFAULT_MODELS.gemini).toBe('gemini-2.5-pro')
+  })
+})
+
+// ─── Bug fix tests ──────────────────────────────────────────────────────────
+
+describe('Bug 1: --file and --data combined', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('allows --file and --data together for prompt agents', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      input_schema: {
+        properties: { code: { type: 'string' }, filename: { type: 'string' } },
+        required: ['code'],
+      },
+    } as any)
+
+    // Mock fs.stat for validateFilePath
+    mockFs.stat.mockResolvedValue({ isDirectory: () => false } as any)
+    // Mock fs.readFile for file content
+    mockFs.readFile.mockResolvedValue('const x = 1;' as any)
+
+    // Mock the fetch response
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ result: 'ok' }),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--file', '/tmp/test.ts',
+      '--data', '{"filename": "test.ts"}',
+    ])
+
+    // Verify the fetch was called with merged body
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    expect(body.code).toBe('const x = 1;')
+    expect(body.filename).toBe('test.ts')
+  })
+
+  it('still rejects --data with --metadata', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"x": 1}',
+        '--metadata', '{"y": 2}',
+      ])
+    ).rejects.toThrow('Cannot use --data with --metadata')
+  })
+})
+
+describe('Bug 2: orch run . --local for local directories', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('detects "." as a local path and reads orchagent.json', async () => {
+    // Mock stat to say it's a directory
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    // Mock orchagent.json read
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().endsWith('orchagent.json')) {
+        return JSON.stringify({
+          name: 'my-local-agent',
+          version: 'v1',
+          type: 'prompt',
+          supported_providers: ['any'],
+        }) as any
+      }
+      if (filePath.toString().endsWith('prompt.md')) {
+        return 'You are a test assistant.' as any
+      }
+      throw new Error('ENOENT')
+    })
+
+    // No --data, so it will print "run with input" message
+    await program.parseAsync(['node', 'test', 'run', '.', '--local'])
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('Loaded local agent'))
+  })
+
+  it('throws error if directory has no orchagent.json', async () => {
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readFile.mockRejectedValue(new Error('ENOENT'))
+
+    await expect(
+      program.parseAsync(['node', 'test', 'run', '.', '--local'])
+    ).rejects.toThrow('No orchagent.json found')
+  })
+
+  it('detects paths starting with "/" as local', async () => {
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().endsWith('orchagent.json')) {
+        return JSON.stringify({ name: 'test', version: 'v1', type: 'prompt' }) as any
+      }
+      if (filePath.toString().endsWith('prompt.md')) {
+        return 'Test prompt' as any
+      }
+      throw new Error('ENOENT')
+    })
+
+    await program.parseAsync(['node', 'test', 'run', '/tmp/my-agent', '--local'])
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('Loaded local agent'))
+  })
+
+  it('detects paths starting with "./" as local', async () => {
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().endsWith('orchagent.json')) {
+        return JSON.stringify({ name: 'test', version: 'v1', type: 'prompt' }) as any
+      }
+      if (filePath.toString().endsWith('prompt.md')) {
+        return 'Test prompt' as any
+      }
+      throw new Error('ENOENT')
+    })
+
+    await program.parseAsync(['node', 'test', 'run', './my-agent', '--local'])
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('Loaded local agent'))
+  })
+
+  it('rejects skill type agents from local dirs', async () => {
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().endsWith('orchagent.json')) {
+        return JSON.stringify({ name: 'test', version: 'v1', type: 'skill' }) as any
+      }
+      throw new Error('ENOENT')
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'run', '.', '--local'])
+    ).rejects.toThrow('Skills cannot be run directly')
+  })
+
+  it('rejects agent type agents from local dirs', async () => {
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().endsWith('orchagent.json')) {
+        return JSON.stringify({ name: 'test', version: 'v1', type: 'agent' }) as any
+      }
+      throw new Error('ENOENT')
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'run', '.', '--local'])
+    ).rejects.toThrow('Agent type cannot be run locally')
+  })
+})
+
+describe('Bug 3: EISDIR validation on cloud runs', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('throws EISDIR error when --file is a directory (prompt agent)', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      input_schema: { properties: { code: { type: 'string' } } },
+    } as any)
+
+    // Mock stat to say it's a directory
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--file', '/tmp/src/',
+      ])
+    ).rejects.toThrow('Cannot upload a directory for cloud execution')
+  })
+
+  it('throws EISDIR error when --file is a directory (tool agent)', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-tool',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-tool',
+        '--file', '/tmp/src/',
+      ])
+    ).rejects.toThrow('Cannot upload a directory for cloud execution')
+  })
+
+  it('throws EISDIR error on --data @directory/', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '@/tmp/src/',
+      ])
+    ).rejects.toThrow('Cannot upload a directory for cloud execution')
+  })
+})
+
+describe('Bug 4: Schema defaults and filename auto-population', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('auto-populates filename from file path when schema has filename property', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      input_schema: {
+        properties: {
+          code: { type: 'string' },
+          filename: { type: 'string' },
+        },
+        required: ['code'],
+      },
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => false } as any)
+    mockFs.readFile.mockResolvedValue('const x = 1;' as any)
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--file', '/home/user/src/App.tsx',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    expect(body.filename).toBe('App.tsx')
+  })
+
+  it('applies schema default values to missing fields', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      input_schema: {
+        properties: {
+          code: { type: 'string' },
+          strictness: { type: 'string', default: 'standard' },
+          max_issues: { type: 'number', default: 10 },
+        },
+        required: ['code'],
+      },
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => false } as any)
+    mockFs.readFile.mockResolvedValue('const x = 1;' as any)
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--file', '/tmp/test.ts',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    expect(body.strictness).toBe('standard')
+    expect(body.max_issues).toBe(10)
+  })
+
+  it('does not override user-provided values with defaults', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      input_schema: {
+        properties: {
+          code: { type: 'string' },
+          strictness: { type: 'string', default: 'standard' },
+        },
+        required: ['code'],
+      },
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => false } as any)
+    mockFs.readFile.mockResolvedValue('const x = 1;' as any)
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--file', '/tmp/test.ts',
+      '--data', '{"strictness": "strict"}',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    expect(body.strictness).toBe('strict')
+  })
+
+  it('auto-populates filename with --file + --data combination', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      input_schema: {
+        properties: {
+          code: { type: 'string' },
+          filename: { type: 'string' },
+          strictness: { type: 'string', default: 'standard' },
+        },
+        required: ['code'],
+      },
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => false } as any)
+    mockFs.readFile.mockResolvedValue('const x = 1;' as any)
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--file', '/home/user/src/Component.tsx',
+      '--data', '{}',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    expect(body.filename).toBe('Component.tsx')
+    expect(body.strictness).toBe('standard')
+  })
+})
+
+describe('Bug 6: 500 error messages', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('shows actionable guidance on 500 errors', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({ error: { message: 'Internal error' } }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow('server-side error')
+  })
+
+  it('shows actionable guidance on 502 errors', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 502,
+      statusText: 'Bad Gateway',
+      text: async () => 'Bad Gateway',
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow('server-side error')
+  })
+
+  it('does not show server guidance for 4xx errors', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      text: async () => JSON.stringify({ error: { message: 'Invalid input' } }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow('Invalid input')
   })
 })

@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 
 import { getResolvedConfig } from '../lib/config'
-import { publicRequest, ApiError, getOrg, listMyAgents, getPublicAgent } from '../lib/api'
+import { ApiError, getOrg, listMyAgents, getPublicAgent } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { isPaidAgent, formatPrice } from '../lib/pricing'
 
@@ -83,57 +83,31 @@ async function fetchReadme(url: string): Promise<string | null> {
   }
 }
 
-async function downloadAgentWithFallback(
+async function getAgentInfo(
   config: { apiKey?: string; apiUrl: string; defaultOrg?: string },
   org: string,
   agent: string,
   version: string
 ): Promise<AgentDownload> {
-  // First fetch public metadata to get pricing fields
-  let publicMeta: any = null
+  // Use public metadata endpoint as primary source — never blocked by download restrictions
   try {
-    publicMeta = await getPublicAgent(config, org, agent, version)
+    const publicMeta = await getPublicAgent(config, org, agent, version)
+    const meta = publicMeta as Record<string, unknown>
+    return {
+      type: (publicMeta.type || 'tool') as AgentDownload['type'],
+      name: publicMeta.name,
+      version: publicMeta.version,
+      description: (publicMeta.description ?? undefined) as string | undefined,
+      supported_providers: publicMeta.supported_providers || ['any'],
+      input_schema: publicMeta.input_schema as AgentDownload['input_schema'],
+      output_schema: publicMeta.output_schema as AgentDownload['output_schema'],
+      source_url: meta.source_url as string | undefined,
+      run_command: meta.run_command as string | undefined,
+      url: meta.url as string | undefined,
+      pricing_mode: publicMeta.pricing_mode,
+      price_per_call_cents: publicMeta.price_per_call_cents,
+    }
   } catch (err) {
-    // If public metadata not found, continue to try download
-    if (!(err instanceof ApiError) || err.status !== 404) {
-      // Some other error, rethrow
-      throw err
-    }
-  }
-
-  // Try public download endpoint
-  try {
-    const downloadData = await publicRequest<AgentDownload>(
-      config,
-      `/public/agents/${org}/${agent}/${version}/download`
-    )
-    // Merge pricing fields from publicMeta if not present
-    if (publicMeta && !downloadData.pricing_mode) {
-      downloadData.pricing_mode = publicMeta.pricing_mode
-      downloadData.price_per_call_cents = publicMeta.price_per_call_cents
-    }
-    return downloadData
-  } catch (err) {
-    // Handle 403 PAID_AGENT_SERVER_ONLY error
-    if (err instanceof ApiError && err.status === 403) {
-      const payload = err.payload as any
-      if (payload?.error?.code === 'PAID_AGENT_SERVER_ONLY') {
-        // For non-owners, use public metadata
-        if (publicMeta) {
-          return {
-            type: publicMeta.type,
-            name: publicMeta.name,
-            version: publicMeta.version,
-            description: publicMeta.description,
-            supported_providers: publicMeta.supported_providers || ['any'],
-            source_url: publicMeta.source_url,
-            pricing_mode: publicMeta.pricing_mode,
-            price_per_call_cents: publicMeta.price_per_call_cents,
-          }
-        }
-      }
-    }
-
     if (!(err instanceof ApiError) || err.status !== 404) throw err
   }
 
@@ -147,7 +121,6 @@ async function downloadAgentWithFallback(
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
 
-  // Find agent in user's list and construct download data
   const agents = await listMyAgents(config as { apiKey: string; apiUrl: string })
   const matching = agents.filter(a => a.name === agent)
   if (matching.length === 0) {
@@ -162,13 +135,11 @@ async function downloadAgentWithFallback(
     }
     targetAgent = found
   } else {
-    // Get most recent
     targetAgent = matching.sort((a, b) =>
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     )[0]
   }
 
-  // Convert Agent to AgentDownload format
   return {
     type: targetAgent.type,
     name: targetAgent.name,
@@ -181,7 +152,6 @@ async function downloadAgentWithFallback(
     source_url: targetAgent.source_url,
     run_command: targetAgent.run_command,
     url: targetAgent.url,
-    sdk_compatible: false,
     pricing_mode: targetAgent.pricing_mode,
     price_per_call_cents: targetAgent.price_per_call_cents,
   }
@@ -197,7 +167,7 @@ export function registerInfoCommand(program: Command): void {
       const { org, agent, version } = parseAgentRef(agentArg)
 
       // Fetch agent metadata
-      const agentData = await downloadAgentWithFallback(config, org, agent, version)
+      const agentData = await getAgentInfo(config, org, agent, version)
 
       if (options.json) {
         // Don't expose internal routing URLs in JSON output
