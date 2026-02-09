@@ -75,7 +75,7 @@ export function registerListCommand(program: Command): void {
 
       // Warn about orphaned entries if any exist
       if (orphaned.length > 0) {
-        process.stdout.write(`\nWarning: ${orphaned.length} tracked installation(s) have missing files. Run 'orch list --verify' to clean up.\n`)
+        process.stdout.write(`\nWarning: ${orphaned.length} tracked installation(s) have missing files. Run 'orchagent list --verify' to clean up.\n`)
       }
     })
 }

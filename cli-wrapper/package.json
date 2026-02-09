@@ -1,6 +1,6 @@
 {
   "name": "orchagent",
-  "version": "0.3.46",
+  "version": "0.3.47",
   "description": "Convenience wrapper for @orchagent/cli - AI agent marketplace CLI",
   "license": "MIT",
   "author": "orchagent <hello@orchagent.io>",
@@ -25,13 +25,14 @@
     "node": ">=18"
   },
   "bin": {
-    "orchagent": "index.js"
+    "orchagent": "index.js",
+    "orch": "index.js"
   },
   "files": [
     "index.js",
     "README.md"
   ],
   "dependencies": {
-    "@orchagent/cli": "^0.3.46"
+    "@orchagent/cli": "^0.3.47"
   }
 }

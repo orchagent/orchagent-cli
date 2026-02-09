@@ -61,7 +61,7 @@ export function registerUpdateCommand(program: Command): void {
         const installed = await getInstalled()
 
         if (installed.length === 0) {
-          process.stdout.write('No agents installed. Use "orch install <agent>" to install agents.\n')
+          process.stdout.write('No agents installed. Use "orchagent install <agent>" to install agents.\n')
           return
         }
 
@@ -235,7 +235,7 @@ export function registerUpdateCommand(program: Command): void {
           if (skippedMissing > 0) {
             process.stdout.write(`${skippedMissing} agent(s) have missing files.\n`)
           }
-          process.stdout.write('Run "orch update" without --check to apply updates.\n')
+          process.stdout.write('Run "orchagent update" without --check to apply updates.\n')
         } else {
           process.stdout.write(`Applied ${updatesApplied} update(s).\n`)
           if (skippedModified > 0) {

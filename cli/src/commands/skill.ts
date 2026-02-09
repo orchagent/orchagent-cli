@@ -196,7 +196,7 @@ async function downloadSkillWithFallback(
     }
     throw new CliError(
       `This skill is server-only and cannot be downloaded.\n\n` +
-      `Skills are loaded automatically during server execution via 'orch run'.`
+      `Skills are loaded automatically during server execution via 'orchagent run'.`
     )
   }
 
@@ -215,13 +215,13 @@ async function downloadSkillWithFallback(
           const price = payload.error.price_per_call_cents || 0
           throw new CliError(
             `This skill costs $${(price/100).toFixed(2)}/call and runs on server only.\n\n` +
-            `Use: orch run ${org}/${skill}@${version} --data '{...}'`
+            `Use: orchagent run ${org}/${skill}@${version} --data '{...}'`
           )
         }
         if (payload?.error?.code === 'DOWNLOAD_DISABLED') {
           throw new CliError(
             `This skill is server-only and cannot be downloaded.\n\n` +
-            `Skills are loaded automatically during server execution via 'orch run'.`
+            `Skills are loaded automatically during server execution via 'orchagent run'.`
           )
         }
       }

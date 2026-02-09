@@ -76,7 +76,7 @@ async function listEnvs(
 
   if (result.environments.length === 0) {
     console.log(chalk.gray('No environments found.'))
-    console.log(chalk.gray('Use `orch env create` to create one, or include a Dockerfile in your agent bundle.'))
+    console.log(chalk.gray('Use `orchagent env create` to create one, or include a Dockerfile in your agent bundle.'))
     return
   }
 
@@ -182,7 +182,7 @@ async function createEnv(
     console.log(chalk.green('Environment created, build started.'))
     console.log(`Environment ID: ${result.environment.id}`)
     console.log()
-    console.log(chalk.gray(`Check build status: orch env status ${result.environment.id}`))
+    console.log(chalk.gray(`Check build status: orchagent env status ${result.environment.id}`))
   }
 
   await track('env_create', {

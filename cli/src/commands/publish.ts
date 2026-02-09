@@ -713,7 +713,7 @@ export function registerPublishCommand(program: Command): void {
             if (uploadResult.environment_source === 'dockerfile_new') {
               process.stdout.write(`  ${chalk.cyan('Custom environment detected (Dockerfile)')}\n`)
               process.stdout.write(`  ${chalk.yellow('Environment building...')} Agent will be ready when build completes.\n`)
-              process.stdout.write(`  ${chalk.gray(`Check status: orch env status ${uploadResult.environment_id}`)}\n`)
+              process.stdout.write(`  ${chalk.gray(`Check status: orchagent env status ${uploadResult.environment_id}`)}\n`)
             } else if (uploadResult.environment_source === 'dockerfile_reused') {
               process.stdout.write(`  ${chalk.green('Custom environment (reusing existing build)')}\n`)
             } else if (uploadResult.environment_source === 'workspace_default') {

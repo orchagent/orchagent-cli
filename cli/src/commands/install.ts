@@ -191,7 +191,7 @@ export function registerInstallCommand(program: Command): void {
     .option('--json', 'Output result as JSON (for automation/tooling)')
     .addHelpText('after', `
 Note: Paid agents cannot be installed locally - they run on server only.
-      Use 'orch run' to execute paid agents.
+      Use 'orchagent run' to execute paid agents.
 `)
     .action(
       async (

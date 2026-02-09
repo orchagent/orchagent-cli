@@ -39,7 +39,7 @@ Examples:
       const ref = parseAgentRef(agent)
       const config = await getResolvedConfig()
       if (!config.apiKey) {
-        throw new CliError('Not logged in. Run `orch login` first.')
+        throw new CliError('Not logged in. Run `orchagent login` first.')
       }
 
       process.stdout.write('Finding agent...\n')

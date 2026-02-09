@@ -141,7 +141,7 @@ function warnIfLocalPathReference(jsonBody: string): void {
         `Warning: Your payload contains a local path reference ('${pathKey}').\n` +
         `Remote agents cannot access your local filesystem. The path will be interpreted\n` +
         `by the server, not your local machine.\n\n` +
-        `Tip: Use 'orch run <agent> --local' to execute locally with filesystem access.\n\n`
+        `Tip: Use 'orchagent run <agent> --local' to execute locally with filesystem access.\n\n`
       )
     }
   } catch {

@@ -36,7 +36,7 @@ export async function checkApiKeyPresent(): Promise<CheckResult> {
     name: 'api_key_present',
     status: 'error',
     message: 'No API key configured',
-    fix: 'Run `orch login` or set ORCHAGENT_API_KEY environment variable',
+    fix: 'Run `orchagent login` or set ORCHAGENT_API_KEY environment variable',
     details: { configured: false },
   }
 }
@@ -79,7 +79,7 @@ export async function checkApiKeyValid(): Promise<CheckResult> {
           name: 'api_key_valid',
           status: 'error',
           message: 'API key is invalid or expired',
-          fix: 'Run `orch login` to get a new key',
+          fix: 'Run `orchagent login` to get a new key',
           details: { error: err.message, status: err.status },
         }
       }

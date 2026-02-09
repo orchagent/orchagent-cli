@@ -27,7 +27,7 @@ export async function checkConfigExists(): Promise<CheckResult> {
       name: 'config_exists',
       status: 'warning',
       message: 'Config file not found',
-      fix: 'Run `orch login` to create config',
+      fix: 'Run `orchagent login` to create config',
       details: { path: CONFIG_PATH, exists: false },
     }
   }
