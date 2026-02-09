@@ -1,5 +1,6 @@
 import type { Org, PublicAgent, ResolvedConfig, Agent, AgentManifest, User } from '../types'
 import { NetworkError } from './errors'
+import packageJson from '../../package.json'
 
 const DEFAULT_TIMEOUT_MS = 15000
 const CALL_TIMEOUT_MS = 120000  // 2 minutes for agent calls (can take time)
@@ -165,6 +166,7 @@ export async function request<T>(
     method,
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
+      'X-CLI-Version': packageJson.version,
       ...(options.headers ?? {}),
     },
     body: options.body,

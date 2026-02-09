@@ -21,14 +21,19 @@ vi.mock('../lib/bundle')
 import fs from 'fs/promises'
 import { registerPublishCommand, extractTemplateVariables, deriveInputSchema } from './publish'
 import { getResolvedConfig } from '../lib/config'
-import { createAgent, getOrg } from '../lib/api'
-import { detectEntrypoint } from '../lib/bundle'
+import { createAgent, getOrg, previewAgentVersion, uploadCodeBundle } from '../lib/api'
+import { detectEntrypoint, createCodeBundle, validateBundle, previewBundle } from '../lib/bundle'
 
 const mockFs = vi.mocked(fs)
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockCreateAgent = vi.mocked(createAgent)
 const mockGetOrg = vi.mocked(getOrg)
 const mockDetectEntrypoint = vi.mocked(detectEntrypoint)
+const mockPreviewAgentVersion = vi.mocked(previewAgentVersion)
+const mockUploadCodeBundle = vi.mocked(uploadCodeBundle)
+const mockCreateCodeBundle = vi.mocked(createCodeBundle)
+const mockValidateBundle = vi.mocked(validateBundle)
+const mockPreviewBundle = vi.mocked(previewBundle)
 
 describe('publish command', () => {
   let program: Command
@@ -711,5 +716,158 @@ Skill prompt.`
       expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('test-org/output-skill'))
       // Version comes from server response, not from metadata in SKILL.md
     })
+  })
+})
+
+describe('publish command - schema auto-migration', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+    })
+
+    mockGetOrg.mockResolvedValue({
+      id: 'org-123',
+      slug: 'test-org',
+      name: 'Test Org',
+    } as any)
+
+    mockCreateAgent.mockResolvedValue({
+      agent: { id: 'agent-1', version: 'v1' },
+    } as any)
+
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+
+    // Mock bundling infrastructure for tool-type agents
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true,
+      code_hash: 'abc123def456',
+      bundle_size_bytes: 100,
+    } as any)
+    mockPreviewBundle.mockResolvedValue({
+      fileCount: 1,
+      totalSizeBytes: 100,
+      entrypoint: 'main.py',
+    } as any)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+  })
+
+  it('creates schema.json when inline schemas exist and no schema.json', async () => {
+    const manifest = {
+      name: 'test-agent',
+      type: 'tool',
+      description: 'Test',
+      input_schema: { type: 'object', properties: { query: { type: 'string' } } },
+      output_schema: { type: 'object', properties: { result: { type: 'string' } } },
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (String(filePath).endsWith('orchagent.json')) return JSON.stringify(manifest)
+      if (String(filePath).endsWith('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(filePath).endsWith('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+
+    // schema.json doesn't exist
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    mockFs.writeFile.mockResolvedValue(undefined)
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    // Should have written schema.json
+    const writeFileCalls = mockFs.writeFile.mock.calls
+    const schemaWrite = writeFileCalls.find((c: any) => String(c[0]).endsWith('schema.json'))
+    expect(schemaWrite).toBeTruthy()
+    if (schemaWrite) {
+      const written = JSON.parse(schemaWrite[1] as string)
+      expect(written.input).toEqual(manifest.input_schema)
+      expect(written.output).toEqual(manifest.output_schema)
+    }
+
+    // Should have printed migration message
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('Created schema.json')
+  })
+
+  it('warns when both inline schemas and schema.json exist', async () => {
+    const manifest = {
+      name: 'test-agent',
+      type: 'tool',
+      description: 'Test',
+      input_schema: { type: 'object', properties: { query: { type: 'string' } } },
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (String(filePath).endsWith('orchagent.json')) return JSON.stringify(manifest)
+      if (String(filePath).endsWith('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(filePath).endsWith('schema.json')) return JSON.stringify({ input: { type: 'object', properties: {} } })
+      return ''
+    })
+
+    // schema.json exists
+    mockFs.access.mockResolvedValue(undefined)
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('inline schemas')
+    expect(stderrOutput).toContain('ignored')
+  })
+
+  it('does not write schema.json in dry-run mode', async () => {
+    const manifest = {
+      name: 'test-agent',
+      type: 'tool',
+      description: 'Test',
+      input_schema: { type: 'object', properties: { query: { type: 'string' } } },
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (String(filePath).endsWith('orchagent.json')) return JSON.stringify(manifest)
+      if (String(filePath).endsWith('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(filePath).endsWith('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+
+    // Mock previewAgentVersion for dry-run
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'test-agent',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+
+    // Should NOT have written schema.json
+    const schemaWrite = mockFs.writeFile.mock.calls.find((c: any) => String(c[0]).endsWith('schema.json'))
+    expect(schemaWrite).toBeUndefined()
+
+    // Should show "Would create" message
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('Would create schema.json')
   })
 })

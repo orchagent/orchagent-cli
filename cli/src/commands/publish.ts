@@ -294,15 +294,36 @@ export function registerPublishCommand(program: Command): void {
         throw new CliError('orchagent.json must have name')
       }
 
-      // Warn about deprecated fields that are ignored
+      // Warn about deprecated prompt field
       if (manifest.prompt) {
         process.stderr.write(chalk.yellow('Warning: "prompt" field in orchagent.json is ignored. Use prompt.md file instead.\n'))
       }
-      if (manifest.input_schema) {
-        process.stderr.write(chalk.yellow('Warning: "input_schema" field in orchagent.json is ignored. Use schema.json file instead.\n'))
+
+      // Auto-migrate inline schemas to schema.json
+      const schemaPath = path.join(cwd, 'schema.json')
+      let schemaFileExists = false
+      try {
+        await fs.access(schemaPath)
+        schemaFileExists = true
+      } catch {
+        // File doesn't exist
       }
-      if (manifest.output_schema) {
-        process.stderr.write(chalk.yellow('Warning: "output_schema" field in orchagent.json is ignored. Use schema.json file instead.\n'))
+
+      if ((manifest.input_schema || manifest.output_schema) && !schemaFileExists) {
+        // Auto-create schema.json from inline schemas
+        const schemaContent: Record<string, object> = {}
+        if (manifest.input_schema) schemaContent.input = manifest.input_schema
+        if (manifest.output_schema) schemaContent.output = manifest.output_schema
+
+        if (options.dryRun) {
+          process.stderr.write(chalk.cyan('Would create schema.json from inline schemas in orchagent.json\n'))
+        } else {
+          await fs.writeFile(schemaPath, JSON.stringify(schemaContent, null, 2) + '\n')
+          process.stderr.write(chalk.green('Created schema.json from inline schemas in orchagent.json\n'))
+          process.stderr.write(chalk.yellow('You can now remove input_schema/output_schema from orchagent.json\n'))
+        }
+      } else if ((manifest.input_schema || manifest.output_schema) && schemaFileExists) {
+        process.stderr.write(chalk.yellow('Warning: inline schemas in orchagent.json are ignored (schema.json takes priority).\n'))
       }
 
       // Check for misplaced manifest fields at top level (common user error)
@@ -401,7 +422,6 @@ export function registerPublishCommand(program: Command): void {
       let inputSchema: object | undefined
       let outputSchema: object | undefined
       let schemaFromFile = false
-      const schemaPath = path.join(cwd, 'schema.json')
       try {
         const raw = await fs.readFile(schemaPath, 'utf-8')
         const schemas = JSON.parse(raw)

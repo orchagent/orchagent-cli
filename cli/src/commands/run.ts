@@ -35,6 +35,7 @@ import {
 } from '../lib/llm'
 import { track } from '../lib/analytics'
 import { isPaidAgent, formatPrice } from '../lib/pricing'
+import packageJson from '../../package.json'
 import type { ResolvedConfig, PublicAgent, Agent } from '../types'
 
 const DEFAULT_VERSION = 'latest'
@@ -994,12 +995,20 @@ async function executeAgentLocally(
       stdout += data.toString()
     })
 
+    let lastUsage: { input_tokens?: number; output_tokens?: number } | null = null
+
     proc.stderr?.on('data', (data: Buffer) => {
       const text = data.toString()
       stderr += text
       // Filter out heartbeat dots and orchagent events, show human-readable lines
       for (const line of text.split('\n')) {
-        if (line.startsWith('@@ORCHAGENT_EVENT:')) continue
+        if (line.startsWith('@@ORCHAGENT_EVENT:')) {
+          try {
+            const evt = JSON.parse(line.slice('@@ORCHAGENT_EVENT:'.length))
+            if (evt.usage) lastUsage = evt.usage
+          } catch { /* ignore parse errors */ }
+          continue
+        }
         if (line.trim() === '.' || line.trim() === '') continue
         process.stderr.write(line + '\n')
       }
@@ -1012,6 +1021,15 @@ async function executeAgentLocally(
         resolve(1)
       })
     })
+
+    // Display token usage if available
+    const usage = lastUsage as { input_tokens?: number; output_tokens?: number } | null
+    if (usage && (usage.input_tokens || usage.output_tokens)) {
+      const total = (usage.input_tokens || 0) + (usage.output_tokens || 0)
+      process.stderr.write(
+        chalk.gray(`${total.toLocaleString()} tokens (${(usage.input_tokens || 0).toLocaleString()} in, ${(usage.output_tokens || 0).toLocaleString()} out)\n`)
+      )
+    }
 
     // 7. Parse and print result
     if (stdout.trim()) {
@@ -1967,6 +1985,7 @@ async function executeCloud(
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${resolved.apiKey}`,
+    'X-CLI-Version': packageJson.version,
   }
   if (options.tenant) {
     headers['X-OrchAgent-Tenant'] = options.tenant
@@ -2276,6 +2295,19 @@ async function executeCloud(
       throw new CliError(errorMessage, ExitCodes.PERMISSION_DENIED)
     }
 
+    if (errorCode === 'CLI_VERSION_TOO_OLD') {
+      spinner?.fail('CLI version too old')
+      const minVersion =
+        typeof payload === 'object' && payload
+          ? (payload as { error?: { min_version?: string } }).error?.min_version
+          : undefined
+      throw new CliError(
+        `Your CLI version (${packageJson.version}) is too old.\n\n` +
+        (minVersion ? `Minimum required: ${minVersion}\n` : '') +
+        'Update with: npm update -g @orchagent/cli'
+      )
+    }
+
     if (errorCode === 'LLM_KEY_REQUIRED') {
       spinner?.fail('LLM key required')
       throw new CliError(
@@ -2382,6 +2414,11 @@ async function executeCloud(
           if (typeof meta.execution_time_ms === 'number') {
             parts.push(`${(meta.execution_time_ms / 1000).toFixed(1)}s execution`)
           }
+          const usage = meta.usage as { input_tokens?: number; output_tokens?: number } | undefined
+          if (usage && (usage.input_tokens || usage.output_tokens)) {
+            const total = (usage.input_tokens || 0) + (usage.output_tokens || 0)
+            parts.push(`${total.toLocaleString()} tokens (${(usage.input_tokens || 0).toLocaleString()} in, ${(usage.output_tokens || 0).toLocaleString()} out)`)
+          }
           if (parts.length > 0) {
             process.stderr.write(chalk.gray(`${parts.join(' · ')}\n`))
           }
@@ -2457,6 +2494,11 @@ async function executeCloud(
       }
       if (typeof meta.execution_time_ms === 'number') {
         parts.push(`${(meta.execution_time_ms / 1000).toFixed(1)}s execution`)
+      }
+      const usage = meta.usage as { input_tokens?: number; output_tokens?: number } | undefined
+      if (usage && (usage.input_tokens || usage.output_tokens)) {
+        const total = (usage.input_tokens || 0) + (usage.output_tokens || 0)
+        parts.push(`${total.toLocaleString()} tokens (${(usage.input_tokens || 0).toLocaleString()} in, ${(usage.output_tokens || 0).toLocaleString()} out)`)
       }
       if (parts.length > 0) {
         process.stderr.write(chalk.gray(`\n${parts.join(' · ')}\n`))

@@ -414,6 +414,12 @@ class AnthropicProvider:
             if b.type == "tool_use":
                 yield b.id, b.name, b.input
 
+    def extract_usage(self, r):
+        u = getattr(r, "usage", None)
+        if u:
+            return {"input_tokens": u.input_tokens, "output_tokens": u.output_tokens}
+        return {"input_tokens": 0, "output_tokens": 0}
+
     def append_turn(self, messages, response, tool_results):
         messages.append({"role": "assistant", "content": response.content})
         results = []
@@ -465,6 +471,12 @@ class OpenAIProvider:
     def extract_tool_calls(self, r):
         for tc in r.choices[0].message.tool_calls:
             yield tc.id, tc.function.name, json.loads(tc.function.arguments)
+
+    def extract_usage(self, r):
+        u = getattr(r, "usage", None)
+        if u:
+            return {"input_tokens": getattr(u, "prompt_tokens", 0) or 0, "output_tokens": getattr(u, "completion_tokens", 0) or 0}
+        return {"input_tokens": 0, "output_tokens": 0}
 
     def append_turn(self, messages, response, tool_results):
         msg = response.choices[0].message
@@ -598,6 +610,12 @@ class GeminiProvider:
             if p.function_call:
                 yield str(i), p.function_call.name, dict(p.function_call.args)
 
+    def extract_usage(self, r):
+        u = getattr(r, "usage_metadata", None)
+        if u:
+            return {"input_tokens": getattr(u, "prompt_token_count", 0) or 0, "output_tokens": getattr(u, "candidates_token_count", 0) or 0}
+        return {"input_tokens": 0, "output_tokens": 0}
+
     def append_turn(self, messages, response, tool_results):
         types = self._genai_types
         # Append the model's response as a Content object
@@ -711,6 +729,7 @@ def main():
     tools = provider.convert_tools(canonical_tools)
 
     messages = [{"role": "user", "content": json.dumps(input_data, indent=2)}]
+    total_usage = {"input_tokens": 0, "output_tokens": 0}
 
     for turn in range(args.max_turns):
         emit_event("turn_start", turn=turn + 1, max_turns=args.max_turns)
@@ -721,11 +740,15 @@ def main():
             try:
                 response = provider.call(system_prompt, messages, tools)
             except Exception as e:
-                emit_event("error", message=str(e)[:200])
+                emit_event("error", message=str(e)[:200], usage=total_usage)
                 error_exit("LLM API error (%s): %s" % (provider_name, e))
 
+        turn_usage = provider.extract_usage(response)
+        total_usage["input_tokens"] += turn_usage["input_tokens"]
+        total_usage["output_tokens"] += turn_usage["output_tokens"]
+
         if not provider.has_tool_use(response):
-            emit_event("done")
+            emit_event("done", usage=total_usage)
             final_text = provider.extract_text(response)
             try:
                 result = json.loads(final_text)
@@ -742,7 +765,7 @@ def main():
             emit_event("tool_result", turn=turn + 1, tool=name, status="error" if result_text.startswith("[ERROR]") else "ok")
 
             if is_submit:
-                emit_event("done")
+                emit_event("done", usage=total_usage)
                 try:
                     result = json.loads(result_text)
                 except json.JSONDecodeError:
@@ -760,7 +783,7 @@ def main():
         else:
             print("[agent] Turn %d/%d completed (%d tool calls)" % (turn + 1, args.max_turns, num_calls), file=sys.stderr)
 
-    emit_event("error", message="max turns reached")
+    emit_event("error", message="max turns reached", usage=total_usage)
     error_exit("Agent reached maximum turns (%d) without submitting a result" % args.max_turns)
 
 
