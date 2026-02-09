@@ -8,6 +8,7 @@ import chalk from 'chalk'
 import { getResolvedConfig } from '../lib/config'
 import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
+import { ApiError } from '../lib/api'
 import { track } from '../lib/analytics'
 import { createCodeBundle, detectEntrypoint, validateBundle, previewBundle } from '../lib/bundle'
 import type { AgentManifest } from '../types'
@@ -605,6 +606,39 @@ export function registerPublishCommand(program: Command): void {
           allow_local_download: options.localDownload || false,
         })
       } catch (err) {
+        // Improve SECURITY_BLOCKED error display
+        if (err instanceof ApiError && err.status === 422) {
+          const payload = err.payload as Record<string, unknown> | undefined
+          const errorCode = (payload?.error as Record<string, unknown>)?.code
+          if (errorCode === 'SECURITY_BLOCKED') {
+            const analysis = payload?.security_analysis as Record<string, unknown> | undefined
+            const blockReason = (payload?.error as Record<string, unknown>)?.message || 'Security pattern detected'
+
+            process.stderr.write(chalk.red(`\nPublish blocked: ${blockReason}\n\n`))
+
+            // Show matched patterns with file:line
+            const matches = (analysis?.matches || []) as Array<Record<string, unknown>>
+            if (matches.length > 0) {
+              process.stderr.write(chalk.yellow('Patterns detected:\n'))
+              for (const match of matches.slice(0, 5)) {
+                const severity = String(match.severity || '').toUpperCase()
+                const file = match.file_path || 'unknown'
+                const line = match.line_number || '?'
+                const desc = match.description || match.pattern_id || ''
+                process.stderr.write(`  ${chalk.red(severity)} ${file}:${line} — ${desc}\n`)
+              }
+              process.stderr.write('\n')
+            }
+
+            process.stderr.write(
+              'Skills are scanned for patterns that could instruct AI agents to\n' +
+              'perform harmful actions (shell injection, data exfiltration, etc.).\n\n' +
+              'Code-execution references (eval, subprocess, importlib) are allowed\n' +
+              'since the E2B sandbox is the security boundary for code execution.\n'
+            )
+            throw new CliError('Publish blocked by security scan', ExitCodes.PERMISSION_DENIED)
+          }
+        }
         throw err
       }
 
@@ -687,6 +721,19 @@ export function registerPublishCommand(program: Command): void {
       process.stdout.write(`Type: ${manifest.type}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
       process.stdout.write(`Providers: ${supportedProviders.join(', ')}\n`)
       process.stdout.write(`Visibility: private\n`)
+
+      // Show security review result if available
+      const secReview = (result as Record<string, unknown>).security_review as
+        { verdict?: string; summary?: string } | undefined
+      if (secReview?.verdict) {
+        if (secReview.verdict === 'passed') {
+          process.stdout.write(`Security: ${chalk.green('passed')}\n`)
+        } else if (secReview.verdict === 'flagged') {
+          process.stdout.write(`Security: ${chalk.yellow('flagged')} — ${secReview.summary || 'review recommended'}\n`)
+        } else {
+          process.stdout.write(`Security: ${secReview.verdict}\n`)
+        }
+      }
 
       if (result.service_key) {
         process.stdout.write(`\nService key (save this - shown only once):\n`)

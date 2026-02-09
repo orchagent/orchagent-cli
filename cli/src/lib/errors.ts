@@ -5,6 +5,7 @@ import { ApiError } from './api'
 export class CliError extends Error {
   exitCode: number
   cause?: Error
+  responseBody?: unknown
 
   constructor(message: string, exitCode = 1) {
     super(message)

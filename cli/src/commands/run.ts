@@ -4,6 +4,7 @@ import path from 'path'
 import os from 'os'
 import { spawn } from 'child_process'
 
+import chalk from 'chalk'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import {
   getPublicAgent,
@@ -262,6 +263,186 @@ async function resolveJsonBody(input: string): Promise<string> {
   } catch {
     throw jsonInputError('data')
   }
+}
+
+// ─── Keyed file & mount helpers ──────────────────────────────────────────────
+
+const KEYED_FILE_KEY_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/
+
+export function isKeyedFileArg(arg: string): { key: string; filePath: string } | null {
+  const eqIndex = arg.indexOf('=')
+  if (eqIndex <= 0) return null
+  const key = arg.slice(0, eqIndex)
+  const filePath = arg.slice(eqIndex + 1)
+  if (!KEYED_FILE_KEY_RE.test(key)) return null
+  if (!filePath) return null
+  return { key, filePath }
+}
+
+export async function readKeyedFiles(args: string[]): Promise<Record<string, string>> {
+  const result: Record<string, string> = {}
+  for (const arg of args) {
+    const parsed = isKeyedFileArg(arg)
+    if (!parsed) continue
+    const resolved = path.resolve(parsed.filePath)
+    let stat: Awaited<ReturnType<typeof fs.stat>>
+    try {
+      stat = await fs.stat(resolved)
+    } catch {
+      throw new CliError(`File not found: ${parsed.filePath}`)
+    }
+    if (!stat.isFile()) {
+      throw new CliError(`Not a file: ${parsed.filePath}`)
+    }
+    result[parsed.key] = await fs.readFile(resolved, 'utf-8')
+  }
+  return result
+}
+
+const MOUNT_SKIP_DIRS = new Set([
+  'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build',
+  '.next', 'target', '.cache', '.tox', 'coverage', '__snapshots__',
+])
+const MOUNT_MAX_DEPTH = 15
+const MOUNT_MAX_FILES = 500
+
+export async function mountDirectory(dirPath: string): Promise<Record<string, string>> {
+  const resolved = path.resolve(dirPath)
+  let stat: Awaited<ReturnType<typeof fs.stat>>
+  try {
+    stat = await fs.stat(resolved)
+  } catch {
+    throw new CliError(`Directory not found: ${dirPath}`)
+  }
+  if (!stat.isDirectory()) {
+    throw new CliError(`Not a directory: ${dirPath}`)
+  }
+
+  const result: Record<string, string> = {}
+  let fileCount = 0
+
+  async function walk(currentPath: string, relativePath: string, depth: number): Promise<void> {
+    if (depth > MOUNT_MAX_DEPTH) return
+
+    let entries: Awaited<ReturnType<typeof fs.readdir>>
+    try {
+      entries = await fs.readdir(currentPath, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue
+      if (MOUNT_SKIP_DIRS.has(entry.name)) continue
+
+      const fullPath = path.join(currentPath, entry.name)
+      const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name
+
+      // Skip symlinks
+      try {
+        const entryStat = await fs.lstat(fullPath)
+        if (entryStat.isSymbolicLink()) continue
+      } catch {
+        continue
+      }
+
+      if (entry.isDirectory()) {
+        await walk(fullPath, relPath, depth + 1)
+      } else if (entry.isFile()) {
+        if (fileCount >= MOUNT_MAX_FILES) {
+          throw new CliError(
+            `Mount exceeds ${MOUNT_MAX_FILES} files. Use a more specific path or fewer files.`
+          )
+        }
+        try {
+          const content = await fs.readFile(fullPath, 'utf-8')
+          result[relPath] = content
+          fileCount++
+        } catch {
+          // Skip binary/unreadable files silently
+        }
+      }
+    }
+  }
+
+  await walk(resolved, '', 0)
+  return result
+}
+
+const INJECT_MAX_BYTES = 4 * 1024 * 1024 // 4MB
+
+type BuildInjectedPayloadOptions = {
+  dataOption?: string
+  fileArgs?: string[]
+  mountArgs?: string[]
+  llmCredentials?: { api_key: string; provider: string; model?: string }
+}
+
+export async function buildInjectedPayload(
+  options: BuildInjectedPayloadOptions
+): Promise<{ body: string; sourceLabel: string }> {
+  let merged: Record<string, unknown> = {}
+
+  // 1. Start with --data
+  if (options.dataOption) {
+    const resolved = await resolveJsonBody(options.dataOption)
+    merged = JSON.parse(resolved)
+  }
+
+  let totalBytes = 0
+
+  // 2. Overlay keyed --file entries
+  if (options.fileArgs && options.fileArgs.length > 0) {
+    const keyedFiles = await readKeyedFiles(options.fileArgs)
+    for (const [key, content] of Object.entries(keyedFiles)) {
+      totalBytes += Buffer.byteLength(content, 'utf-8')
+      merged[key] = content
+    }
+  }
+
+  // 3. Overlay --mount entries
+  if (options.mountArgs && options.mountArgs.length > 0) {
+    for (const mountArg of options.mountArgs) {
+      const eqIndex = mountArg.indexOf('=')
+      if (eqIndex <= 0) {
+        throw new CliError(`Invalid --mount format: ${mountArg}. Use --mount field=dir`)
+      }
+      const field = mountArg.slice(0, eqIndex)
+      const dirPath = mountArg.slice(eqIndex + 1)
+      if (!KEYED_FILE_KEY_RE.test(field)) {
+        throw new CliError(`Invalid mount field name: ${field}. Must be a valid identifier.`)
+      }
+      const fileMap = await mountDirectory(dirPath)
+      for (const content of Object.values(fileMap)) {
+        totalBytes += Buffer.byteLength(content, 'utf-8')
+      }
+      merged[field] = fileMap
+    }
+  }
+
+  // 4. Enforce size limit
+  if (totalBytes > INJECT_MAX_BYTES) {
+    throw new CliError(
+      `File content exceeds 4MB limit (${(totalBytes / 1024 / 1024).toFixed(1)}MB). ` +
+      `Use a more specific path or fewer files.`
+    )
+  }
+
+  // 5. Inject llm_credentials
+  if (options.llmCredentials) {
+    merged.llm_credentials = options.llmCredentials
+  }
+
+  const parts: string[] = []
+  if (options.fileArgs && options.fileArgs.length > 0) {
+    parts.push(`${options.fileArgs.length} file(s)`)
+  }
+  if (options.mountArgs && options.mountArgs.length > 0) {
+    parts.push(`${options.mountArgs.length} mount(s)`)
+  }
+  const sourceLabel = parts.join(' + ')
+
+  return { body: JSON.stringify(merged), sourceLabel }
 }
 
 // ─── Local execution helpers ────────────────────────────────────────────────
@@ -673,6 +854,202 @@ async function executePromptLocally(
     },
     { successText: `Completed with ${provider}` }
   )
+}
+
+// ─── Local agent-type execution ──────────────────────────────────────────────
+
+const AGENT_RUNNER_SDK_PACKAGES: Record<string, string> = {
+  anthropic: 'anthropic',
+  openai: 'openai',
+  gemini: 'google-genai',
+}
+
+async function executeAgentLocally(
+  agentDir: string,
+  prompt: string,
+  inputData: Record<string, unknown>,
+  outputSchema?: object,
+  customTools?: object[],
+  manifest?: Record<string, unknown>,
+  config?: ResolvedConfig,
+  providerOverride?: string,
+  modelOverride?: string
+): Promise<void> {
+  // 1. Check Python 3 available
+  try {
+    const { code } = await runCommand('python3', ['--version'])
+    if (code !== 0) throw new Error()
+  } catch {
+    throw new CliError(
+      'Python 3 is required for local agent execution.\n' +
+      'Install Python 3: https://python.org/downloads'
+    )
+  }
+
+  // 2. Detect LLM provider + key
+  const supportedProviders = (manifest?.supported_providers as string[]) || ['any']
+  const providersToCheck = providerOverride
+    ? [providerOverride as LlmProvider]
+    : supportedProviders as LlmProvider[]
+
+  const allProviders = await detectAllLlmKeys(providersToCheck, config)
+  if (allProviders.length === 0) {
+    const providers = providersToCheck.join(', ')
+    throw new CliError(
+      `No LLM key found for: ${providers}\n` +
+      `Set an environment variable (e.g., ANTHROPIC_API_KEY), run 'orchagent keys add <provider>', or configure in web dashboard`
+    )
+  }
+
+  const primary = allProviders[0]
+  const model = modelOverride || primary.model || getDefaultModel(primary.provider)
+  const providerName = primary.provider
+  const apiKeyEnvVar = PROVIDER_ENV_VARS[providerName]
+
+  // 3. Check LLM SDK installed
+  const sdkPackage = AGENT_RUNNER_SDK_PACKAGES[providerName] || 'anthropic'
+  const sdkImportName = providerName === 'gemini' ? 'google.genai' : sdkPackage
+  try {
+    const { code } = await runCommand('python3', ['-c', `import ${sdkImportName}`])
+    if (code !== 0) {
+      process.stderr.write(`Installing ${sdkPackage} Python SDK...\n`)
+      const install = await runCommand('python3', ['-m', 'pip', 'install', '-q', sdkPackage])
+      if (install.code !== 0) {
+        throw new CliError(
+          `Failed to install ${sdkPackage} SDK.\n` +
+          `Install manually: pip install ${sdkPackage}`
+        )
+      }
+    }
+  } catch (err) {
+    if (err instanceof CliError) throw err
+    throw new CliError(`Failed to check Python SDK: ${err}`)
+  }
+
+  // 4. Create temp directory with agent files
+  const tempDir = path.join(os.tmpdir(), `orchagent-agent-local-${Date.now()}`)
+  await fs.mkdir(tempDir, { recursive: true })
+
+  try {
+    // Copy agent_runner.py from resources
+    const runnerSource = path.join(__dirname, '..', 'resources', 'agent_runner.py')
+    // Also check alternate path for dev mode (running from src/)
+    let runnerContent: string
+    try {
+      runnerContent = await fs.readFile(runnerSource, 'utf-8')
+    } catch {
+      // Fallback for dev: try src/resources relative to the project
+      const altSource = path.join(__dirname, '..', '..', 'src', 'resources', 'agent_runner.py')
+      try {
+        runnerContent = await fs.readFile(altSource, 'utf-8')
+      } catch {
+        throw new CliError(
+          'Agent runner script not found. This is a packaging error.\n' +
+          'Please reinstall the CLI: npm install -g @orchagent/cli'
+        )
+      }
+    }
+
+    await fs.writeFile(path.join(tempDir, 'agent_runner.py'), runnerContent)
+    await fs.writeFile(path.join(tempDir, 'prompt.md'), prompt)
+    await fs.writeFile(path.join(tempDir, 'input.json'), JSON.stringify(inputData, null, 2))
+
+    if (outputSchema) {
+      await fs.writeFile(path.join(tempDir, 'output_schema.json'), JSON.stringify(outputSchema))
+    }
+
+    if (customTools && customTools.length > 0) {
+      await fs.writeFile(path.join(tempDir, 'custom_tools.json'), JSON.stringify(customTools))
+    }
+
+    // 5. Set env vars
+    const subprocessEnv: Record<string, string | undefined> = { ...process.env }
+    subprocessEnv.LOCAL_MODE = '1'
+    subprocessEnv.LLM_PROVIDER = providerName
+    subprocessEnv.LLM_MODEL = model
+    if (apiKeyEnvVar && primary.apiKey) {
+      subprocessEnv[apiKeyEnvVar] = primary.apiKey
+    }
+
+    // 6. Print warning and run
+    process.stderr.write(
+      chalk.yellow('\nWarning: Local mode. Bash commands execute on your machine (no sandbox).\n\n')
+    )
+    process.stderr.write(`Running with ${providerName} (${model})...\n`)
+
+    const maxTurns = 25
+    const proc = spawn('python3', ['agent_runner.py', '--max-turns', String(maxTurns), '--verbose'], {
+      cwd: tempDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: subprocessEnv,
+    })
+
+    proc.stdin.end()
+
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString()
+    })
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      const text = data.toString()
+      stderr += text
+      // Filter out heartbeat dots and orchagent events, show human-readable lines
+      for (const line of text.split('\n')) {
+        if (line.startsWith('@@ORCHAGENT_EVENT:')) continue
+        if (line.trim() === '.' || line.trim() === '') continue
+        process.stderr.write(line + '\n')
+      }
+    })
+
+    const exitCode = await new Promise<number>((resolve) => {
+      proc.on('close', (code) => resolve(code ?? 1))
+      proc.on('error', (err) => {
+        process.stderr.write(`Error running agent: ${err.message}\n`)
+        resolve(1)
+      })
+    })
+
+    // 7. Parse and print result
+    if (stdout.trim()) {
+      try {
+        const result = JSON.parse(stdout.trim())
+
+        if (exitCode !== 0 && typeof result === 'object' && result !== null && 'error' in result) {
+          throw new CliError(`Agent error: ${(result as { error: string }).error}`)
+        }
+
+        if (exitCode !== 0) {
+          printJson(result)
+          throw new CliError(`Agent exited with code ${exitCode}`)
+        }
+
+        printJson(result)
+      } catch (err) {
+        if (err instanceof CliError) throw err
+        process.stdout.write(stdout)
+        if (exitCode !== 0) {
+          throw new CliError(`Agent exited with code ${exitCode}`)
+        }
+      }
+    } else if (exitCode !== 0) {
+      throw new CliError(
+        `Agent exited with code ${exitCode} (no output)\n\n` +
+        `Common causes:\n` +
+        `  - Missing LLM API key (check ${apiKeyEnvVar || 'API key env var'})\n` +
+        `  - Python SDK not installed (pip install ${sdkPackage})\n` +
+        `  - Syntax error in prompt.md\n`
+      )
+    }
+  } finally {
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
 }
 
 type SkillRef = {
@@ -1201,12 +1578,69 @@ async function executeLocalFromDir(
   }
 
   if (agentType === 'agent') {
-    throw new CliError(
-      'Agent type cannot be run locally.\n\n' +
-      'Agent type requires a sandbox environment with tool use capabilities.\n' +
-      'Publish first, then run in the cloud:\n' +
-      '  orch publish && orch run <org>/<agent> --data \'{"task": "..."}\''
+    // Read prompt.md
+    const promptPath = path.join(resolved, 'prompt.md')
+    let agentPrompt: string
+    try {
+      agentPrompt = await fs.readFile(promptPath, 'utf-8')
+    } catch {
+      throw new CliError(`No prompt.md found in ${resolved}`)
+    }
+
+    // Read schema.json for output schema
+    let agentOutputSchema: object | undefined
+    try {
+      const schemaRaw = await fs.readFile(path.join(resolved, 'schema.json'), 'utf-8')
+      const schemas = JSON.parse(schemaRaw)
+      agentOutputSchema = schemas.output
+    } catch {
+      // Schema is optional
+    }
+
+    // Read custom_tools from manifest
+    const customTools = (manifest.custom_tools as object[] | undefined) || undefined
+
+    // Check for keyed file/mount injection
+    const agentFileArgs = options.file ?? []
+    const agentKeyedFiles = agentFileArgs.filter(a => isKeyedFileArg(a) !== null)
+    const agentHasInjection = agentKeyedFiles.length > 0 || (options.mount ?? []).length > 0
+
+    if (!options.input && !agentHasInjection) {
+      process.stderr.write(`Loaded local agent: ${manifest.name || path.basename(resolved)}\n\n`)
+      process.stderr.write(`Run with input:\n`)
+      process.stderr.write(`  orch run ${dirPath} --local --data '{\"task\": \"...\"}'\n`)
+      return
+    }
+
+    let agentInputData: Record<string, unknown>
+    if (agentHasInjection) {
+      const injected = await buildInjectedPayload({
+        dataOption: options.input,
+        fileArgs: agentKeyedFiles,
+        mountArgs: options.mount,
+      })
+      agentInputData = JSON.parse(injected.body) as Record<string, unknown>
+    } else {
+      try {
+        agentInputData = JSON.parse(options.input!) as Record<string, unknown>
+      } catch {
+        throw new CliError('Invalid JSON input')
+      }
+    }
+
+    const config = await getResolvedConfig()
+    await executeAgentLocally(
+      resolved,
+      agentPrompt,
+      agentInputData,
+      agentOutputSchema,
+      customTools,
+      manifest,
+      config,
+      options.provider,
+      options.model
     )
+    return
   }
 
   if (agentType === 'prompt') {
@@ -1244,7 +1678,12 @@ async function executeLocalFromDir(
       default_models: manifest.default_models as Record<string, string> | undefined,
     }
 
-    if (!options.input) {
+    // Check for keyed file/mount injection
+    const localFileArgs = options.file ?? []
+    const localKeyedFiles = localFileArgs.filter(a => isKeyedFileArg(a) !== null)
+    const localHasInjection = localKeyedFiles.length > 0 || (options.mount ?? []).length > 0
+
+    if (!options.input && !localHasInjection) {
       process.stderr.write(`Loaded local agent: ${agentData.name}\n\n`)
       process.stderr.write(`Run with input:\n`)
       process.stderr.write(`  orch run ${dirPath} --local --data '{...}'\n`)
@@ -1252,10 +1691,19 @@ async function executeLocalFromDir(
     }
 
     let inputData: Record<string, unknown>
-    try {
-      inputData = JSON.parse(options.input) as Record<string, unknown>
-    } catch {
-      throw new CliError('Invalid JSON input')
+    if (localHasInjection) {
+      const injected = await buildInjectedPayload({
+        dataOption: options.input,
+        fileArgs: localKeyedFiles,
+        mountArgs: options.mount,
+      })
+      inputData = JSON.parse(injected.body) as Record<string, unknown>
+    } else {
+      try {
+        inputData = JSON.parse(options.input!) as Record<string, unknown>
+      } catch {
+        throw new CliError('Invalid JSON input')
+      }
     }
 
     const config = await getResolvedConfig()
@@ -1316,8 +1764,20 @@ async function executeLocalFromDir(
     // No requirements.txt
   }
 
+  // Check for keyed file/mount injection (tool path)
+  const toolFileArgs = options.file ?? []
+  const toolKeyedFiles = toolFileArgs.filter(a => isKeyedFileArg(a) !== null)
+  const toolHasInjection = toolKeyedFiles.length > 0 || (options.mount ?? []).length > 0
+
   let inputJson = '{}'
-  if (options.input) {
+  if (toolHasInjection) {
+    const injected = await buildInjectedPayload({
+      dataOption: options.input,
+      fileArgs: toolKeyedFiles,
+      mountArgs: options.mount,
+    })
+    inputJson = injected.body
+  } else if (options.input) {
     try {
       JSON.parse(options.input)
       inputJson = options.input
@@ -1389,6 +1849,39 @@ async function executeLocalFromDir(
 }
 
 // ─── Cloud execution path ───────────────────────────────────────────────────
+
+function renderProgress(event: Record<string, unknown>): void {
+  switch (event.type) {
+    case 'turn_start':
+      process.stderr.write(chalk.gray(`  Turn ${event.turn}/${event.max_turns}\n`))
+      break
+    case 'tool_call': {
+      const icon =
+        event.tool === 'bash'
+          ? '$'
+          : event.tool === 'read_file'
+            ? '>'
+            : event.tool === 'write_file'
+              ? '<'
+              : '~'
+      process.stderr.write(
+        chalk.cyan(`    ${icon} ${event.tool}`) +
+          chalk.gray(` ${event.args_brief || ''}\n`)
+      )
+      break
+    }
+    case 'tool_result':
+      if (event.status === 'error')
+        process.stderr.write(chalk.yellow(`      (error)\n`))
+      break
+    case 'done':
+      process.stderr.write(chalk.green(`  Done\n`))
+      break
+    case 'error':
+      process.stderr.write(chalk.red(`  Error: ${event.message}\n`))
+      break
+  }
+}
 
 async function executeCloud(
   agentRef: string,
@@ -1565,10 +2058,42 @@ async function executeCloud(
 
   let body: BodyInit | undefined
   let sourceLabel: string | undefined
-  const filePaths = [
+  const allFileArgs = [
     ...(options.file ?? []),
     ...(file ? [file] : []),
   ]
+
+  // Partition --file args into keyed (key=path) vs unkeyed (plain path)
+  const keyedFileArgs = allFileArgs.filter(a => isKeyedFileArg(a) !== null)
+  const unkeyedFileArgs = allFileArgs.filter(a => isKeyedFileArg(a) === null)
+  const hasKeyed = keyedFileArgs.length > 0
+  const hasMounts = (options.mount ?? []).length > 0
+  const hasInjection = hasKeyed || hasMounts
+
+  // Cannot mix keyed and unkeyed --file args
+  if (hasInjection && unkeyedFileArgs.length > 0) {
+    throw new CliError(
+      'Cannot mix keyed --file (key=path) with unkeyed --file (path) in the same command.\n\n' +
+      'Use either:\n' +
+      '  Keyed:   --file code=./main.py --file config=./config.toml\n' +
+      '  Unkeyed: --file ./main.py --file ./config.toml'
+    )
+  }
+
+  if (hasInjection) {
+    // Route to JSON injection path
+    const injected = await buildInjectedPayload({
+      dataOption: options.data,
+      fileArgs: keyedFileArgs,
+      mountArgs: options.mount,
+      llmCredentials,
+    })
+    body = injected.body
+    sourceLabel = injected.sourceLabel
+    headers['Content-Type'] = 'application/json'
+  } else {
+  // Existing body construction logic (unkeyed files only)
+  const filePaths = unkeyedFileArgs
   if (options.data && options.metadata) {
     throw new CliError('Cannot use --data with --metadata. Use one or the other.')
   }
@@ -1690,11 +2215,22 @@ async function executeCloud(
     body = multipart.body
     sourceLabel = multipart.sourceLabel
   }
+  } // end of non-injection path
 
   const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${parsed.agent}/${parsed.version}/${endpoint}`
 
+  // Enable SSE streaming for agent-type agents (unless --json or --no-stream or --output)
+  const isAgentType = agentMeta.type === 'agent'
+  const wantStream = isAgentType && !options.json && !options.noStream && !options.output
+  if (wantStream) {
+    headers['Accept'] = 'text/event-stream'
+  }
+
   const spinner = options.json ? null : createSpinner(`Running ${org}/${parsed.agent}@${parsed.version}...`)
   spinner?.start()
+
+  // Agent-type runs can take much longer; use 10 min timeout for streaming
+  const timeoutMs = isAgentType ? 600000 : undefined
 
   let response: Response
   try {
@@ -1702,6 +2238,7 @@ async function executeCloud(
       method: 'POST',
       headers,
       body,
+      ...(timeoutMs ? { timeoutMs } : {}),
     })
   } catch (err) {
     spinner?.fail(`Run failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -1781,6 +2318,79 @@ async function executeCloud(
     throw new CliError(message)
   }
 
+  // Handle SSE streaming response
+  const contentType = response.headers?.get?.('content-type') || ''
+  if (contentType.includes('text/event-stream') && response.body) {
+    spinner?.stop()
+    const { parseSSE } = await import('../lib/sse.js')
+    let finalPayload: unknown = null
+    let hadError = false
+
+    process.stderr.write(chalk.gray(`\nStreaming ${org}/${parsed.agent}@${parsed.version}:\n`))
+
+    for await (const { event, data } of parseSSE(response.body)) {
+      if (event === 'progress') {
+        try {
+          renderProgress(JSON.parse(data))
+        } catch {
+          // ignore malformed progress events
+        }
+      } else if (event === 'result') {
+        try {
+          finalPayload = JSON.parse(data)
+        } catch {
+          finalPayload = data
+        }
+      } else if (event === 'error') {
+        hadError = true
+        try {
+          finalPayload = JSON.parse(data)
+        } catch {
+          finalPayload = data
+        }
+      }
+    }
+
+    process.stderr.write('\n')
+
+    await track('cli_run', {
+      agent: `${org}/${parsed.agent}@${parsed.version}`,
+      input_type: hasInjection ? 'file_injection' : unkeyedFileArgs.length > 0 ? 'file' : options.data ? 'json' : 'empty',
+      mode: 'cloud',
+      streamed: true,
+    })
+
+    if (hadError) {
+      const errMsg =
+        typeof finalPayload === 'object' && finalPayload
+          ? (finalPayload as { error?: { message?: string } }).error?.message || 'Agent execution failed'
+          : 'Agent execution failed'
+      throw new CliError(errMsg)
+    }
+
+    if (finalPayload !== null) {
+      printJson(finalPayload)
+
+      if (typeof finalPayload === 'object' && finalPayload !== null && 'metadata' in finalPayload) {
+        const meta = (finalPayload as Record<string, unknown>).metadata as Record<string, unknown> | undefined
+        if (meta) {
+          const parts: string[] = []
+          if (typeof meta.processing_time_ms === 'number') {
+            parts.push(`${(meta.processing_time_ms / 1000).toFixed(1)}s total`)
+          }
+          if (typeof meta.execution_time_ms === 'number') {
+            parts.push(`${(meta.execution_time_ms / 1000).toFixed(1)}s execution`)
+          }
+          if (parts.length > 0) {
+            process.stderr.write(chalk.gray(`${parts.join(' · ')}\n`))
+          }
+        }
+      }
+    }
+
+    return
+  }
+
   spinner?.succeed(`Ran ${org}/${parsed.agent}@${parsed.version}`)
 
   if (!options.json && isPaidAgent(agentMeta) && pricingInfo?.price_cents && pricingInfo.price_cents > 0) {
@@ -1788,15 +2398,17 @@ async function executeCloud(
   }
 
   const inputType =
-    filePaths.length > 0
-      ? 'file'
-      : options.data
-        ? 'json'
-        : sourceLabel === 'stdin'
-          ? 'stdin'
-          : sourceLabel === 'metadata'
-            ? 'metadata'
-            : 'empty'
+    hasInjection
+      ? 'file_injection'
+      : unkeyedFileArgs.length > 0
+        ? 'file'
+        : options.data
+          ? 'json'
+          : sourceLabel === 'stdin'
+            ? 'stdin'
+            : sourceLabel === 'metadata'
+              ? 'metadata'
+              : 'empty'
   await track('cli_run', {
     agent: `${org}/${parsed.agent}@${parsed.version}`,
     input_type: inputType,
@@ -1833,6 +2445,23 @@ async function executeCloud(
   }
 
   printJson(payload)
+
+  // Display timing metadata on stderr (non-json mode only)
+  if (typeof payload === 'object' && payload !== null && 'metadata' in payload) {
+    const meta = (payload as Record<string, unknown>).metadata as Record<string, unknown> | undefined
+    if (meta) {
+      const parts: string[] = []
+      if (typeof meta.processing_time_ms === 'number') {
+        parts.push(`${(meta.processing_time_ms / 1000).toFixed(1)}s total`)
+      }
+      if (typeof meta.execution_time_ms === 'number') {
+        parts.push(`${(meta.execution_time_ms / 1000).toFixed(1)}s execution`)
+      }
+      if (parts.length > 0) {
+        process.stderr.write(chalk.gray(`\n${parts.join(' · ')}\n`))
+      }
+    }
+  }
 }
 
 // ─── Local execution path ───────────────────────────────────────────────────
@@ -1910,14 +2539,50 @@ async function executeLocal(
     )
   }
 
-  // Agent type requires a sandbox — cannot run locally
+  // Agent type: execute locally with the agent runner
   if (agentData.type === 'agent') {
-    throw new CliError(
-      'Agent type cannot be run locally.\n\n' +
-      'Agent type requires a sandbox environment with tool use capabilities.\n\n' +
-      'Remove the --local flag to run in the cloud:\n' +
-      `  orch run ${org}/${parsed.agent}@${parsed.version} --data '{"task": "..."}'`
-    )
+    if (!agentData.prompt) {
+      throw new CliError(
+        'Agent prompt not available for local execution.\n\n' +
+        'This agent may have local download disabled.\n' +
+        'Remove the --local flag to run in the cloud:\n' +
+        `  orch run ${org}/${parsed.agent}@${parsed.version} --data '{"task": "..."}'`
+      )
+    }
+
+    if (!options.input) {
+      process.stderr.write(`\nAgent downloaded. Run with:\n`)
+      process.stderr.write(`  orch run ${org}/${parsed.agent}@${parsed.version} --local --data '{\"task\": \"...\"}'\n`)
+      return
+    }
+
+    let agentInputData: Record<string, unknown>
+    try {
+      agentInputData = JSON.parse(options.input) as Record<string, unknown>
+    } catch {
+      throw new CliError('Invalid JSON input')
+    }
+
+    // Write prompt to temp dir and run
+    const tempAgentDir = path.join(os.tmpdir(), `orchagent-agent-${parsed.agent}-${Date.now()}`)
+    await fs.mkdir(tempAgentDir, { recursive: true })
+    try {
+      await fs.writeFile(path.join(tempAgentDir, 'prompt.md'), agentData.prompt)
+      await executeAgentLocally(
+        tempAgentDir,
+        agentData.prompt,
+        agentInputData,
+        agentData.output_schema,
+        undefined,
+        {},
+        resolved,
+        options.provider,
+        options.model
+      )
+    } finally {
+      try { await fs.rm(tempAgentDir, { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+    return
   }
 
   // Check for dependencies (orchestrator agents)
@@ -1983,7 +2648,20 @@ async function executeLocal(
         return
       }
 
-      await executeBundleAgent(resolved, org, parsed.agent, parsed.version, agentData, args, options.input)
+      // Pre-build injected payload for bundle agent if keyed files/mounts present
+      const bundleFileArgs = options.file ?? []
+      const bundleKeyedFiles = bundleFileArgs.filter(a => isKeyedFileArg(a) !== null)
+      const bundleHasInjection = bundleKeyedFiles.length > 0 || (options.mount ?? []).length > 0
+      let bundleInput = options.input
+      if (bundleHasInjection) {
+        const injected = await buildInjectedPayload({
+          dataOption: options.input,
+          fileArgs: bundleKeyedFiles,
+          mountArgs: options.mount,
+        })
+        bundleInput = injected.body
+      }
+      await executeBundleAgent(resolved, org, parsed.agent, parsed.version, agentData, args, bundleInput)
       return
     }
 
@@ -2010,18 +2688,32 @@ async function executeLocal(
     return
   }
 
+  // Check for keyed file/mount injection
+  const execLocalFileArgs = options.file ?? []
+  const execLocalKeyedFiles = execLocalFileArgs.filter(a => isKeyedFileArg(a) !== null)
+  const execLocalHasInjection = execLocalKeyedFiles.length > 0 || (options.mount ?? []).length > 0
+
   // For prompt-based agents, execute locally
-  if (!options.input) {
+  if (!options.input && !execLocalHasInjection) {
     process.stdout.write(`\nPrompt-based agent ready.\n`)
     process.stdout.write(`Run with: orch run ${org}/${parsed.agent}@${parsed.version} --local --input '{...}'\n`)
     return
   }
 
   let inputData: Record<string, unknown>
-  try {
-    inputData = JSON.parse(options.input) as Record<string, unknown>
-  } catch {
-    throw new CliError('Invalid JSON input')
+  if (execLocalHasInjection) {
+    const injected = await buildInjectedPayload({
+      dataOption: options.input,
+      fileArgs: execLocalKeyedFiles,
+      mountArgs: options.mount,
+    })
+    inputData = JSON.parse(injected.body) as Record<string, unknown>
+  } else {
+    try {
+      inputData = JSON.parse(options.input!) as Record<string, unknown>
+    } catch {
+      throw new CliError('Invalid JSON input')
+    }
   }
 
   // Handle skill composition
@@ -2065,6 +2757,7 @@ type RunOptions = {
   skills?: string
   skillsOnly?: string
   noSkills?: boolean
+  noStream?: boolean
   here?: boolean
   path?: string
   provider?: string
@@ -2076,6 +2769,7 @@ type RunOptions = {
   file?: string[]
   fileField?: string
   metadata?: string
+  mount?: string[]
 }
 
 export function registerRunCommand(program: Command): void {
@@ -2092,12 +2786,14 @@ export function registerRunCommand(program: Command): void {
     .option('--skills <skills>', 'Add skills (comma-separated)')
     .option('--skills-only <skills>', 'Use only these skills')
     .option('--no-skills', 'Ignore default skills')
+    .option('--no-stream', 'Disable real-time streaming for agent-type agents')
     // Cloud-only options
     .option('--endpoint <endpoint>', 'Override agent endpoint (cloud only)')
     .option('--tenant <tenant>', 'Tenant identifier for multi-tenant callers (cloud only)')
     .option('--output <file>', 'Save response body to a file (cloud only)')
-    .option('--file <path...>', 'File(s) to upload (cloud only, can specify multiple)')
+    .option('--file <path...>', 'File(s) to upload or inject as keyed fields (key=path)')
     .option('--file-field <field>', 'Schema field name for file content (cloud only)')
+    .option('--mount <field=dir...>', 'Mount a directory as a JSON field map (field=dir, can specify multiple)')
     .option('--metadata <json>', 'JSON metadata to send with files (cloud only)')
     // Local-only options
     .option('--download-only', 'Just download the agent, do not execute (local only)')
@@ -2112,6 +2808,15 @@ Examples:
     orch run orchagent/useeffect-checker --file src/App.tsx
     cat input.json | orch run acme/agent --data @-
     orch run acme/image-processor photo.jpg --output result.png
+
+  Keyed file injection (--file key=path):
+    orch run agent --file code=./src/lib.cairo
+    orch run agent --data '{"filter": "test_add"}' --file code=./src/lib.cairo
+    orch run agent --file config=./Scarb.toml --file code=./src/lib.cairo
+
+  Directory mount (--mount field=dir):
+    orch run agent --mount source_files=./src/ --mount test_files=./tests/
+    orch run agent --data '{"filter": "test_add"}' --mount src=./src/ --file config=./Scarb.toml
 
   Local execution (--local):
     orch run orchagent/leak-finder --local --data '{"path": "."}'
@@ -2129,6 +2834,10 @@ File handling (cloud):
   For prompt agents, file content is read and sent as JSON mapped to the agent's
   input schema. Use --file-field to specify the field name (auto-detected by default).
   For tools, files are uploaded as multipart form data.
+
+  Use --file key=path to inject a file's content at a specific JSON field.
+  Use --mount field=dir to inject a directory tree as a {path: content} map.
+  These produce standard JSON payloads - no server changes needed.
 
 Important: Remote agents cannot access your local filesystem. If your --data payload
 contains keys like 'path', 'directory', 'file', etc., those values will be interpreted

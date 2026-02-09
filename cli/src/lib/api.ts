@@ -647,3 +647,36 @@ export async function createCreditCheckout(
   })
 }
 
+// ============================================
+// AGENT SERVICE KEY MANAGEMENT
+// ============================================
+
+export interface AgentKey {
+  id: string
+  prefix: string
+  created_at: string
+  last_used_at: string | null
+}
+
+export async function listAgentKeys(
+  config: ResolvedConfig,
+  agentId: string
+): Promise<{ keys: AgentKey[] }> {
+  return request<{ keys: AgentKey[] }>(config, 'GET', `/agents/${agentId}/keys`)
+}
+
+export async function createAgentKey(
+  config: ResolvedConfig,
+  agentId: string
+): Promise<{ key: string; prefix: string }> {
+  return request<{ key: string; prefix: string }>(config, 'POST', `/agents/${agentId}/keys`)
+}
+
+export async function deleteAgentKey(
+  config: ResolvedConfig,
+  agentId: string,
+  keyId: string
+): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(config, 'DELETE', `/agents/${agentId}/keys/${keyId}`)
+}
+

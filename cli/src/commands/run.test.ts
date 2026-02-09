@@ -24,7 +24,7 @@ vi.mock('../lib/pricing', () => ({
 }))
 
 import fs from 'fs/promises'
-import { registerRunCommand } from './run'
+import { registerRunCommand, isKeyedFileArg, mountDirectory, buildInjectedPayload } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls } from '../lib/api'
 import {
@@ -720,7 +720,7 @@ describe('Bug 2: orch run . --local for local directories', () => {
     ).rejects.toThrow('Skills cannot be run directly')
   })
 
-  it('rejects agent type agents from local dirs', async () => {
+  it('agent type local run requires prompt.md', async () => {
     mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
     mockFs.readFile.mockImplementation(async (filePath: any) => {
       if (filePath.toString().endsWith('orchagent.json')) {
@@ -731,7 +731,7 @@ describe('Bug 2: orch run . --local for local directories', () => {
 
     await expect(
       program.parseAsync(['node', 'test', 'run', '.', '--local'])
-    ).rejects.toThrow('Agent type cannot be run locally')
+    ).rejects.toThrow('No prompt.md found')
   })
 })
 
@@ -1079,5 +1079,431 @@ describe('Bug 6: 500 error messages', () => {
         '--data', '{"test": true}',
       ])
     ).rejects.toThrow('Invalid input')
+  })
+})
+
+// ─── File injection tests ────────────────────────────────────────────────────
+
+describe('isKeyedFileArg', () => {
+  it('parses key=path format', () => {
+    expect(isKeyedFileArg('code=./main.py')).toEqual({ key: 'code', filePath: './main.py' })
+  })
+
+  it('parses underscore key', () => {
+    expect(isKeyedFileArg('source_files=./src/lib.cairo')).toEqual({
+      key: 'source_files',
+      filePath: './src/lib.cairo',
+    })
+  })
+
+  it('returns null for plain file path', () => {
+    expect(isKeyedFileArg('./main.py')).toBeNull()
+  })
+
+  it('returns null when LHS is not a valid identifier (path with slash)', () => {
+    expect(isKeyedFileArg('/tmp/a=b.txt')).toBeNull()
+  })
+
+  it('returns null for empty key', () => {
+    expect(isKeyedFileArg('=./file.txt')).toBeNull()
+  })
+
+  it('returns null for no equals sign', () => {
+    expect(isKeyedFileArg('just-a-path.txt')).toBeNull()
+  })
+
+  it('handles key with numbers', () => {
+    expect(isKeyedFileArg('file2=./test.txt')).toEqual({ key: 'file2', filePath: './test.txt' })
+  })
+
+  it('handles path with equals in it', () => {
+    // key is "code", path is "./x=y.txt"
+    expect(isKeyedFileArg('code=./x=y.txt')).toEqual({ key: 'code', filePath: './x=y.txt' })
+  })
+
+  it('returns null for key with special characters', () => {
+    expect(isKeyedFileArg('bad-key=./file.txt')).toBeNull()
+    expect(isKeyedFileArg('bad.key=./file.txt')).toBeNull()
+  })
+})
+
+describe('mountDirectory', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('reads directory tree into a map', async () => {
+    // We need to unmock fs for this test since mountDirectory does real fs ops
+    // Instead, we'll test via the mock
+    const mockFs = vi.mocked(fs)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readdir.mockResolvedValue([
+      { name: 'lib.cairo', isDirectory: () => false, isFile: () => true },
+      { name: 'test.cairo', isDirectory: () => false, isFile: () => true },
+    ] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().includes('lib.cairo')) return 'fn add() {}' as any
+      if (filePath.toString().includes('test.cairo')) return 'fn test_add() {}' as any
+      throw new Error('ENOENT')
+    })
+
+    const result = await mountDirectory('/tmp/src')
+    expect(result).toEqual({
+      'lib.cairo': 'fn add() {}',
+      'test.cairo': 'fn test_add() {}',
+    })
+  })
+
+  it('skips dotfiles', async () => {
+    const mockFs = vi.mocked(fs)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readdir.mockResolvedValue([
+      { name: '.hidden', isDirectory: () => false, isFile: () => true },
+      { name: 'visible.txt', isDirectory: () => false, isFile: () => true },
+    ] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readFile.mockResolvedValue('content' as any)
+
+    const result = await mountDirectory('/tmp/src')
+    expect(Object.keys(result)).toEqual(['visible.txt'])
+  })
+
+  it('skips node_modules', async () => {
+    const mockFs = vi.mocked(fs)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readdir.mockResolvedValue([
+      { name: 'node_modules', isDirectory: () => true, isFile: () => false },
+      { name: 'index.ts', isDirectory: () => false, isFile: () => true },
+    ] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readFile.mockResolvedValue('code' as any)
+
+    const result = await mountDirectory('/tmp/project')
+    expect(Object.keys(result)).toEqual(['index.ts'])
+  })
+
+  it('skips symlinks', async () => {
+    const mockFs = vi.mocked(fs)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readdir.mockResolvedValue([
+      { name: 'real.txt', isDirectory: () => false, isFile: () => true },
+      { name: 'link.txt', isDirectory: () => false, isFile: () => true },
+    ] as any)
+    mockFs.lstat.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().includes('link.txt')) {
+        return { isSymbolicLink: () => true } as any
+      }
+      return { isSymbolicLink: () => false } as any
+    })
+    mockFs.readFile.mockResolvedValue('content' as any)
+
+    const result = await mountDirectory('/tmp/src')
+    expect(Object.keys(result)).toEqual(['real.txt'])
+  })
+
+  it('recurses into subdirectories', async () => {
+    const mockFs = vi.mocked(fs)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readdir.mockImplementation(async (dirPath: any) => {
+      const dir = dirPath.toString()
+      if (dir.endsWith('src') || dir.endsWith('/tmp/src')) {
+        return [
+          { name: 'main.py', isDirectory: () => false, isFile: () => true },
+          { name: 'lib', isDirectory: () => true, isFile: () => false },
+        ] as any
+      }
+      // lib subdirectory
+      return [
+        { name: 'utils.py', isDirectory: () => false, isFile: () => true },
+      ] as any
+    })
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().includes('main.py')) return 'main code' as any
+      if (filePath.toString().includes('utils.py')) return 'utils code' as any
+      throw new Error('ENOENT')
+    })
+
+    const result = await mountDirectory('/tmp/src')
+    expect(result).toEqual({
+      'main.py': 'main code',
+      'lib/utils.py': 'utils code',
+    })
+  })
+
+  it('throws on non-existent directory', async () => {
+    const mockFs = vi.mocked(fs)
+    mockFs.stat.mockRejectedValue(new Error('ENOENT'))
+
+    await expect(mountDirectory('/nonexistent')).rejects.toThrow('Directory not found')
+  })
+
+  it('returns empty map for empty directory', async () => {
+    const mockFs = vi.mocked(fs)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readdir.mockResolvedValue([] as any)
+
+    const result = await mountDirectory('/tmp/empty')
+    expect(result).toEqual({})
+  })
+})
+
+describe('buildInjectedPayload', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('merges --data with keyed files', async () => {
+    const mockFs = vi.mocked(fs)
+    mockFs.stat.mockResolvedValue({ isFile: () => true, isDirectory: () => false } as any)
+    mockFs.readFile.mockResolvedValue('file content' as any)
+
+    const result = await buildInjectedPayload({
+      dataOption: '{"x": 1}',
+      fileArgs: ['code=./test.py'],
+    })
+
+    const parsed = JSON.parse(result.body)
+    expect(parsed.x).toBe(1)
+    expect(parsed.code).toBe('file content')
+  })
+
+  it('merges --mount entries', async () => {
+    const mockFs = vi.mocked(fs)
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readdir.mockResolvedValue([
+      { name: 'a.txt', isDirectory: () => false, isFile: () => true },
+    ] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readFile.mockResolvedValue('hello' as any)
+
+    const result = await buildInjectedPayload({
+      mountArgs: ['files=/tmp/dir'],
+    })
+
+    const parsed = JSON.parse(result.body)
+    expect(parsed.files).toEqual({ 'a.txt': 'hello' })
+  })
+
+  it('injects llm_credentials', async () => {
+    const result = await buildInjectedPayload({
+      dataOption: '{"x": 1}',
+      llmCredentials: { api_key: 'sk-test', provider: 'openai' },
+    })
+
+    const parsed = JSON.parse(result.body)
+    expect(parsed.llm_credentials).toEqual({ api_key: 'sk-test', provider: 'openai' })
+  })
+
+  it('later flags override earlier for same key', async () => {
+    const mockFs = vi.mocked(fs)
+    mockFs.stat.mockImplementation(async (p: any) => {
+      return { isFile: () => true, isDirectory: () => false } as any
+    })
+    mockFs.readFile.mockResolvedValue('new value' as any)
+
+    const result = await buildInjectedPayload({
+      dataOption: '{"code": "old value"}',
+      fileArgs: ['code=./test.py'],
+    })
+
+    const parsed = JSON.parse(result.body)
+    expect(parsed.code).toBe('new value')
+  })
+
+  it('throws on invalid mount format', async () => {
+    await expect(buildInjectedPayload({
+      mountArgs: ['noequals'],
+    })).rejects.toThrow('Invalid --mount format')
+  })
+})
+
+describe('Keyed --file and --mount in cloud execution', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('sends keyed --file as JSON body', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isFile: () => true, isDirectory: () => false } as any)
+    mockFs.readFile.mockResolvedValue('config content' as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--file', 'config=/tmp/test-config.toml',
+    ])
+
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    expect(body.config).toBe('config content')
+    expect(fetchCall[1].headers['Content-Type']).toBe('application/json')
+  })
+
+  it('sends --mount as JSON body with file map', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
+    mockFs.readdir.mockResolvedValue([
+      { name: 'lib.cairo', isDirectory: () => false, isFile: () => true },
+    ] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readFile.mockResolvedValue('fn add() {}' as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--mount', 'source_files=/tmp/src',
+    ])
+
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    expect(body.source_files).toEqual({ 'lib.cairo': 'fn add() {}' })
+  })
+
+  it('merges --data + --file key=path + --mount', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockFs.stat.mockImplementation(async (p: any) => {
+      const pStr = p.toString()
+      if (pStr.includes('config')) {
+        return { isFile: () => true, isDirectory: () => false } as any
+      }
+      return { isDirectory: () => true, isFile: () => false } as any
+    })
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isDirectory: () => false, isFile: () => true },
+    ] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().includes('config')) return 'toml content' as any
+      return 'python code' as any
+    })
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{"filter": "test_add"}',
+      '--file', 'config=/tmp/config.toml',
+      '--mount', 'src=/tmp/src',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    expect(body.filter).toBe('test_add')
+    expect(body.config).toBe('toml content')
+    expect(body.src).toEqual({ 'main.py': 'python code' })
+  })
+
+  it('errors when mixing keyed and unkeyed --file', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--file', 'code=./main.py',
+        '--file', './other.py',
+      ])
+    ).rejects.toThrow('Cannot mix keyed --file')
+  })
+
+  it('unkeyed --file still works as before (backward compat)', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      input_schema: {
+        properties: { code: { type: 'string' } },
+        required: ['code'],
+      },
+    } as any)
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => false } as any)
+    mockFs.readFile.mockResolvedValue('const x = 1;' as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--file', '/tmp/test.ts',
+    ])
+
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    const body = JSON.parse(fetchCall[1].body as string)
+    // Unkeyed: should use schema inference (field: "code")
+    expect(body.code).toBe('const x = 1;')
   })
 })
