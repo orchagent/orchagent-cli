@@ -1133,16 +1133,11 @@ describe('mountDirectory', () => {
   })
 
   it('reads directory tree into a map', async () => {
-    // We need to unmock fs for this test since mountDirectory does real fs ops
-    // Instead, we'll test via the mock
     const mockFs = vi.mocked(fs)
 
     mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
-    mockFs.readdir.mockResolvedValue([
-      { name: 'lib.cairo', isDirectory: () => false, isFile: () => true },
-      { name: 'test.cairo', isDirectory: () => false, isFile: () => true },
-    ] as any)
-    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readdir.mockResolvedValue(['lib.cairo', 'test.cairo'] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true } as any)
     mockFs.readFile.mockImplementation(async (filePath: any) => {
       if (filePath.toString().includes('lib.cairo')) return 'fn add() {}' as any
       if (filePath.toString().includes('test.cairo')) return 'fn test_add() {}' as any
@@ -1160,11 +1155,8 @@ describe('mountDirectory', () => {
     const mockFs = vi.mocked(fs)
 
     mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
-    mockFs.readdir.mockResolvedValue([
-      { name: '.hidden', isDirectory: () => false, isFile: () => true },
-      { name: 'visible.txt', isDirectory: () => false, isFile: () => true },
-    ] as any)
-    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readdir.mockResolvedValue(['.hidden', 'visible.txt'] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true } as any)
     mockFs.readFile.mockResolvedValue('content' as any)
 
     const result = await mountDirectory('/tmp/src')
@@ -1175,11 +1167,13 @@ describe('mountDirectory', () => {
     const mockFs = vi.mocked(fs)
 
     mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
-    mockFs.readdir.mockResolvedValue([
-      { name: 'node_modules', isDirectory: () => true, isFile: () => false },
-      { name: 'index.ts', isDirectory: () => false, isFile: () => true },
-    ] as any)
-    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readdir.mockResolvedValue(['node_modules', 'index.ts'] as any)
+    mockFs.lstat.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().includes('node_modules')) {
+        return { isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false } as any
+      }
+      return { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true } as any
+    })
     mockFs.readFile.mockResolvedValue('code' as any)
 
     const result = await mountDirectory('/tmp/project')
@@ -1190,15 +1184,12 @@ describe('mountDirectory', () => {
     const mockFs = vi.mocked(fs)
 
     mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
-    mockFs.readdir.mockResolvedValue([
-      { name: 'real.txt', isDirectory: () => false, isFile: () => true },
-      { name: 'link.txt', isDirectory: () => false, isFile: () => true },
-    ] as any)
+    mockFs.readdir.mockResolvedValue(['real.txt', 'link.txt'] as any)
     mockFs.lstat.mockImplementation(async (filePath: any) => {
       if (filePath.toString().includes('link.txt')) {
-        return { isSymbolicLink: () => true } as any
+        return { isSymbolicLink: () => true, isDirectory: () => false, isFile: () => true } as any
       }
-      return { isSymbolicLink: () => false } as any
+      return { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true } as any
     })
     mockFs.readFile.mockResolvedValue('content' as any)
 
@@ -1213,17 +1204,17 @@ describe('mountDirectory', () => {
     mockFs.readdir.mockImplementation(async (dirPath: any) => {
       const dir = dirPath.toString()
       if (dir.endsWith('src') || dir.endsWith('/tmp/src')) {
-        return [
-          { name: 'main.py', isDirectory: () => false, isFile: () => true },
-          { name: 'lib', isDirectory: () => true, isFile: () => false },
-        ] as any
+        return ['main.py', 'lib'] as any
       }
       // lib subdirectory
-      return [
-        { name: 'utils.py', isDirectory: () => false, isFile: () => true },
-      ] as any
+      return ['utils.py'] as any
     })
-    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.lstat.mockImplementation(async (filePath: any) => {
+      if (filePath.toString().endsWith('/lib')) {
+        return { isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false } as any
+      }
+      return { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true } as any
+    })
     mockFs.readFile.mockImplementation(async (filePath: any) => {
       if (filePath.toString().includes('main.py')) return 'main code' as any
       if (filePath.toString().includes('utils.py')) return 'utils code' as any
@@ -1278,10 +1269,8 @@ describe('buildInjectedPayload', () => {
   it('merges --mount entries', async () => {
     const mockFs = vi.mocked(fs)
     mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
-    mockFs.readdir.mockResolvedValue([
-      { name: 'a.txt', isDirectory: () => false, isFile: () => true },
-    ] as any)
-    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readdir.mockResolvedValue(['a.txt'] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true } as any)
     mockFs.readFile.mockResolvedValue('hello' as any)
 
     const result = await buildInjectedPayload({
@@ -1390,10 +1379,8 @@ describe('Keyed --file and --mount in cloud execution', () => {
     } as any)
 
     mockFs.stat.mockResolvedValue({ isDirectory: () => true } as any)
-    mockFs.readdir.mockResolvedValue([
-      { name: 'lib.cairo', isDirectory: () => false, isFile: () => true },
-    ] as any)
-    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readdir.mockResolvedValue(['lib.cairo'] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true } as any)
     mockFs.readFile.mockResolvedValue('fn add() {}' as any)
 
     mockSafeFetchWithRetryForCalls.mockResolvedValue({
@@ -1428,10 +1415,8 @@ describe('Keyed --file and --mount in cloud execution', () => {
       }
       return { isDirectory: () => true, isFile: () => false } as any
     })
-    mockFs.readdir.mockResolvedValue([
-      { name: 'main.py', isDirectory: () => false, isFile: () => true },
-    ] as any)
-    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false } as any)
+    mockFs.readdir.mockResolvedValue(['main.py'] as any)
+    mockFs.lstat.mockResolvedValue({ isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true } as any)
     mockFs.readFile.mockImplementation(async (filePath: any) => {
       if (filePath.toString().includes('config')) return 'toml content' as any
       return 'python code' as any

@@ -324,31 +324,32 @@ export async function mountDirectory(dirPath: string): Promise<Record<string, st
   async function walk(currentPath: string, relativePath: string, depth: number): Promise<void> {
     if (depth > MOUNT_MAX_DEPTH) return
 
-    let entries: Awaited<ReturnType<typeof fs.readdir>>
+    let names: string[]
     try {
-      entries = await fs.readdir(currentPath, { withFileTypes: true })
+      names = await fs.readdir(currentPath)
     } catch {
       return
     }
 
-    for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue
-      if (MOUNT_SKIP_DIRS.has(entry.name)) continue
+    for (const name of names) {
+      if (name.startsWith('.')) continue
+      if (MOUNT_SKIP_DIRS.has(name)) continue
 
-      const fullPath = path.join(currentPath, entry.name)
-      const relPath = relativePath ? `${relativePath}/${entry.name}` : entry.name
+      const fullPath = path.join(currentPath, name)
+      const relPath = relativePath ? `${relativePath}/${name}` : name
 
-      // Skip symlinks
+      // Stat the entry (also skips symlinks)
+      let entryStat: Awaited<ReturnType<typeof fs.lstat>>
       try {
-        const entryStat = await fs.lstat(fullPath)
+        entryStat = await fs.lstat(fullPath)
         if (entryStat.isSymbolicLink()) continue
       } catch {
         continue
       }
 
-      if (entry.isDirectory()) {
+      if (entryStat.isDirectory()) {
         await walk(fullPath, relPath, depth + 1)
-      } else if (entry.isFile()) {
+      } else if (entryStat.isFile()) {
         if (fileCount >= MOUNT_MAX_FILES) {
           throw new CliError(
             `Mount exceeds ${MOUNT_MAX_FILES} files. Use a more specific path or fewer files.`
