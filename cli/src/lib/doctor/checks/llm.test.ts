@@ -96,7 +96,7 @@ describe('runLlmChecks', () => {
       const summary = results.find((r) => r.name === 'llm_provider_summary')!
       expect(summary.status).toBe('warning')
       expect(summary.message).toBe('No LLM providers configured')
-      expect(summary.fix).toMatch(/^Run: orch keys add /)
+      expect(summary.fix).toMatch(/^Run: orchagent keys add /)
     })
   })
 
@@ -283,7 +283,7 @@ describe('runLlmChecks', () => {
       const results = await runLlmChecks()
       const summary = results.find((r) => r.name === 'llm_provider_summary')!
       // anthropic is first unconfigured in PROVIDERS order
-      expect(summary.fix).toBe('Run: orch keys add anthropic')
+      expect(summary.fix).toBe('Run: orchagent keys add anthropic')
     })
   })
 

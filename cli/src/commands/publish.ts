@@ -6,7 +6,7 @@ import yaml from 'yaml'
 import chalk from 'chalk'
 
 import { getResolvedConfig } from '../lib/config'
-import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion, setAgentPricing } from '../lib/api'
+import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { createCodeBundle, detectEntrypoint, validateBundle, previewBundle } from '../lib/bundle'
@@ -188,10 +188,8 @@ export function registerPublishCommand(program: Command): void {
     .option('--skills <skills>', 'Default skills (comma-separated, e.g., org/skill@v1,org/other@v1)')
     .option('--skills-locked', 'Lock default skills (callers cannot override via headers)')
     .option('--docker', 'Include Dockerfile for custom environment (builds E2B template)')
-    .option('--price <amount>', 'Set price per call in USD (e.g., 0.50 for $0.50/call)')
-    .option('--pricing-mode <mode>', 'Pricing mode: free or per_call (default: free)')
     .option('--local-download', 'Allow users to download and run locally (default: server-only)')
-    .action(async (options: { url?: string; public?: boolean; private?: boolean; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; price?: string; pricingMode?: string; localDownload?: boolean }) => {
+    .action(async (options: { url?: string; public?: boolean; private?: boolean; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean }) => {
       if (options.private) {
         process.stderr.write('Warning: --private is deprecated (private is now the default). You can safely remove it.\n')
       }
@@ -268,49 +266,12 @@ export function registerPublishCommand(program: Command): void {
           const skillVersion = skillResult.agent?.version || 'v1'
           const skillAgentId = skillResult.agent?.id
 
-          // Handle pricing for skills
-          if (skillAgentId && (options.price || options.pricingMode)) {
-            let pricingMode: 'free' | 'per_call' = 'free'
-            let pricePerCallCents: number | undefined
-
-            if (options.price) {
-              const priceFloat = parseFloat(options.price)
-              if (isNaN(priceFloat) || priceFloat < 0) {
-                throw new CliError('Price must be a positive number', ExitCodes.INVALID_INPUT)
-              }
-
-              if (priceFloat === 0) {
-                pricingMode = 'free'
-              } else if (priceFloat < 0.01) {
-                throw new CliError('Price must be at least $0.01 USD', ExitCodes.INVALID_INPUT)
-              } else {
-                pricingMode = 'per_call'
-                pricePerCallCents = Math.round(priceFloat * 100)
-              }
-            } else if (options.pricingMode) {
-              pricingMode = options.pricingMode === 'per_call' ? 'per_call' : 'free'
-            }
-
-            // Set pricing
-            if (pricingMode === 'per_call' && !pricePerCallCents) {
-              throw new CliError('--price required when using per_call mode', ExitCodes.INVALID_INPUT)
-            }
-
-            await setAgentPricing(config, skillAgentId, pricingMode, pricePerCallCents)
-          }
-
           await track('cli_publish', { agent_type: 'skill', multi_file: hasMultipleFiles })
           process.stdout.write(`\nPublished skill: ${org.slug}/${skillData.frontmatter.name}@${skillVersion}\n`)
           if (hasMultipleFiles) {
             process.stdout.write(`Files: ${skillFiles.length} files included\n`)
           }
           process.stdout.write(`Public: ${options.public ? 'yes' : 'no'}\n`)
-
-          // Show pricing info
-          if (options.price && parseFloat(options.price) > 0) {
-            const price = parseFloat(options.price)
-            process.stdout.write(`Pricing: $${price.toFixed(2)} USD per call\n`)
-          }
 
           process.stdout.write(`\nView analytics and usage: https://orchagent.io/dashboard\n`)
         } catch (err) {
@@ -726,48 +687,11 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      // Handle pricing for agents
-      if (agentId && (options.price || options.pricingMode)) {
-        let pricingMode: 'free' | 'per_call' = 'free'
-        let pricePerCallCents: number | undefined
-
-        if (options.price) {
-          const priceFloat = parseFloat(options.price)
-          if (isNaN(priceFloat) || priceFloat < 0) {
-            throw new CliError('Price must be a positive number', ExitCodes.INVALID_INPUT)
-          }
-
-          if (priceFloat === 0) {
-            pricingMode = 'free'
-          } else if (priceFloat < 0.01) {
-            throw new CliError('Price must be at least $0.01 USD', ExitCodes.INVALID_INPUT)
-          } else {
-            pricingMode = 'per_call'
-            pricePerCallCents = Math.round(priceFloat * 100)
-          }
-        } else if (options.pricingMode) {
-          pricingMode = options.pricingMode === 'per_call' ? 'per_call' : 'free'
-        }
-
-        // Set pricing
-        if (pricingMode === 'per_call' && !pricePerCallCents) {
-          throw new CliError('--price required when using per_call mode', ExitCodes.INVALID_INPUT)
-        }
-
-        await setAgentPricing(config, agentId, pricingMode, pricePerCallCents)
-      }
-
       await track('cli_publish', { agent_type: manifest.type, hosted: shouldUploadBundle })
       process.stdout.write(`\nPublished agent: ${org.slug}/${manifest.name}@${assignedVersion}\n`)
       process.stdout.write(`Type: ${manifest.type}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
       process.stdout.write(`Providers: ${supportedProviders.join(', ')}\n`)
       process.stdout.write(`Public: ${options.public ? 'yes' : 'no'}\n`)
-
-      // Show pricing info
-      if (options.price && parseFloat(options.price) > 0) {
-        const price = parseFloat(options.price)
-        process.stdout.write(`Pricing: $${price.toFixed(2)} USD per call\n`)
-      }
 
       if (result.service_key) {
         process.stdout.write(`\nService key (save this - shown only once):\n`)

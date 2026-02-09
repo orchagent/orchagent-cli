@@ -6,9 +6,6 @@ import { registerAgentsCommand } from './agents'
 import { registerInitCommand } from './init'
 import { registerPublishCommand } from './publish'
 import { registerWhoamiCommand } from './whoami'
-import { registerStarCommand } from './star'
-import { registerForkCommand } from './fork'
-import { registerSearchCommand } from './search'
 import { registerKeysCommand } from './keys'
 import { registerRunCommand } from './run'
 import { registerInfoCommand } from './info'
@@ -29,8 +26,6 @@ import { registerListCommand } from './list'
 import { registerTestCommand } from './test'
 import { registerSecurityCommand } from './security'
 import { registerBillingCommand } from './billing'
-import { registerSellerCommand } from './seller'
-import { registerPricingCommand } from './pricing'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -41,9 +36,6 @@ export function registerCommands(program: Command): void {
   registerRunCommand(program)
   registerInfoCommand(program)
   registerAgentsCommand(program)
-  registerSearchCommand(program)
-  registerStarCommand(program)
-  registerForkCommand(program)
   registerKeysCommand(program)
   registerSkillCommand(program)
   registerDeleteCommand(program)
@@ -62,6 +54,4 @@ export function registerCommands(program: Command): void {
   registerTestCommand(program)
   registerSecurityCommand(program)
   registerBillingCommand(program)
-  registerSellerCommand(program)
-  registerPricingCommand(program)
 }

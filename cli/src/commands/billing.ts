@@ -11,7 +11,7 @@ import { printJson } from '../lib/output'
 export function registerBillingCommand(program: Command): void {
   const billing = program
     .command('billing')
-    .description('Manage prepaid credits for calling paid agents')
+    .description('Manage platform credits and usage')
 
   // orch billing balance
   billing

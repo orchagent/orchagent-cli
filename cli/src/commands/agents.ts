@@ -4,7 +4,6 @@ import chalk from 'chalk'
 import { getResolvedConfig } from '../lib/config'
 import { listMyAgents } from '../lib/api'
 import { printJson } from '../lib/output'
-import { formatPrice, isPaidAgent } from '../lib/pricing'
 
 export function registerAgentsCommand(program: Command): void {
   program
@@ -34,15 +33,12 @@ export function registerAgentsCommand(program: Command): void {
         return
       }
 
-      // Print table with pricing
       const Table = (await import('cli-table3')).default
       const table = new Table({
         head: [
           chalk.bold('Agent'),
           chalk.bold('Version'),
           chalk.bold('Type'),
-          chalk.bold('Stars'),
-          chalk.bold('Price'),
           chalk.bold('Description'),
         ],
       })
@@ -51,16 +47,13 @@ export function registerAgentsCommand(program: Command): void {
         const name = agent.name
         const version = agent.version
         const type = agent.type || 'tool'
-        const stars = agent.stars_count ?? 0
-        const price = formatPrice(agent)
-        const coloredPrice = isPaidAgent(agent) ? chalk.yellow(price) : chalk.green(price)
         const desc = agent.description
           ? agent.description.length > 60
             ? agent.description.slice(0, 57) + '...'
             : agent.description
           : '-'
 
-        table.push([name, version, type, stars.toString(), coloredPrice, desc])
+        table.push([name, version, type, desc])
       })
 
       process.stdout.write(`${table.toString()}\n`)

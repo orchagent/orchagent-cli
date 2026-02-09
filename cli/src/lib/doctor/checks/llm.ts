@@ -145,14 +145,14 @@ export async function runLlmChecks(options?: { skipServer?: boolean }): Promise<
   if (configuredCount === 0) {
     summaryStatus = 'warning'
     summaryMessage = 'No LLM providers configured'
-    summaryFix = firstUnconfigured ? `Run: orch keys add ${firstUnconfigured.providerId}` : undefined
+    summaryFix = firstUnconfigured ? `Run: orchagent keys add ${firstUnconfigured.providerId}` : undefined
   } else {
     summaryStatus = 'success'
     summaryMessage =
       configuredCount < 2
         ? 'Tip: Multiple providers enable automatic rate limit fallback.'
         : `${configuredCount} providers configured`
-    summaryFix = firstUnconfigured ? `Run: orch keys add ${firstUnconfigured.providerId}` : undefined
+    summaryFix = firstUnconfigured ? `Run: orchagent keys add ${firstUnconfigured.providerId}` : undefined
   }
 
   results.push({

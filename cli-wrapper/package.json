@@ -1,7 +1,7 @@
 {
   "name": "orchagent",
-  "version": "0.3.47",
-  "description": "Convenience wrapper for @orchagent/cli - AI agent marketplace CLI",
+  "version": "0.3.48",
+  "description": "Convenience wrapper for @orchagent/cli — deploy and run AI agents for your team",
   "license": "MIT",
   "author": "orchagent <hello@orchagent.io>",
   "homepage": "https://orchagent.io",
@@ -18,7 +18,7 @@
     "ai",
     "agents",
     "cli",
-    "marketplace",
+    "deployment",
     "llm"
   ],
   "engines": {
@@ -33,6 +33,6 @@
     "README.md"
   ],
   "dependencies": {
-    "@orchagent/cli": "^0.3.47"
+    "@orchagent/cli": "^0.3.48"
   }
 }

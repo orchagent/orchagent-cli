@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { request, publicRequest, ApiError, getOrg, searchAgents } from './api'
+import { request, publicRequest, ApiError, getOrg } from './api'
 import type { ResolvedConfig } from '../types'
 
 // Mock fetch globally
@@ -256,60 +256,3 @@ describe('getOrg', () => {
   })
 })
 
-describe('searchAgents', () => {
-  const config: ResolvedConfig = {
-    apiUrl: 'https://api.test.com',
-  }
-
-  beforeEach(() => {
-    mockFetch.mockReset()
-  })
-
-  it('builds search query params', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve([]),
-    })
-
-    await searchAgents(config, 'pdf analyzer', { sort: 'stars' })
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://api.test.com/public/agents?search=pdf+analyzer&sort=stars',
-      expect.objectContaining({
-        signal: expect.any(AbortSignal),
-      })
-    )
-  })
-
-  it('handles empty query', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve([]),
-    })
-
-    await searchAgents(config, '')
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://api.test.com/public/agents',
-      expect.objectContaining({
-        signal: expect.any(AbortSignal),
-      })
-    )
-  })
-
-  it('includes tags in query', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve([]),
-    })
-
-    await searchAgents(config, 'test', { tags: ['ai', 'document'] })
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('tags=ai%2Cdocument'),
-      expect.objectContaining({
-        signal: expect.any(AbortSignal),
-      })
-    )
-  })
-})
