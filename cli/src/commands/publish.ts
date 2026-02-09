@@ -181,18 +181,13 @@ export function registerPublishCommand(program: Command): void {
     .command('publish')
     .description('Publish agent or skill from local files')
     .option('--url <url>', 'Agent URL (for code-based agents)')
-    .option('--public', 'Make agent public')
-    .option('--private', 'Make agent private (deprecated: now the default)')
     .option('--profile <name>', 'Use API key from named profile')
     .option('--dry-run', 'Show what would be published without making changes')
     .option('--skills <skills>', 'Default skills (comma-separated, e.g., org/skill@v1,org/other@v1)')
     .option('--skills-locked', 'Lock default skills (callers cannot override via headers)')
     .option('--docker', 'Include Dockerfile for custom environment (builds E2B template)')
     .option('--local-download', 'Allow users to download and run locally (default: server-only)')
-    .action(async (options: { url?: string; public?: boolean; private?: boolean; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean }) => {
-      if (options.private) {
-        process.stderr.write('Warning: --private is deprecated (private is now the default). You can safely remove it.\n')
-      }
+    .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean }) => {
       const skillsFromFlag = options.skills
         ? options.skills.split(',').map(s => s.trim()).filter(Boolean)
         : undefined
@@ -232,7 +227,7 @@ export function registerPublishCommand(program: Command): void {
           process.stderr.write(`  Name:        ${skillData.frontmatter.name}\n`)
           process.stderr.write(`  Type:        skill\n`)
           process.stderr.write(`  Version:     ${versionInfo}\n`)
-          process.stderr.write(`  Visibility:  ${options.public ? 'public' : 'private'}\n`)
+          process.stderr.write(`  Visibility:  private\n`)
           process.stderr.write(`  Providers:   any\n`)
           if (hasMultipleFiles) {
             process.stderr.write(`  Files:       ${skillFiles.length} files\n`)
@@ -255,7 +250,7 @@ export function registerPublishCommand(program: Command): void {
             type: 'skill',
             description: skillData.frontmatter.description,
             prompt: skillData.body,
-            is_public: options.public ? true : false,
+            is_public: false,
             supported_providers: ['any'],
             default_skills: skillsFromFlag,
             skills_locked: options.skillsLocked || undefined,
@@ -271,7 +266,7 @@ export function registerPublishCommand(program: Command): void {
           if (hasMultipleFiles) {
             process.stdout.write(`Files: ${skillFiles.length} files included\n`)
           }
-          process.stdout.write(`Public: ${options.public ? 'yes' : 'no'}\n`)
+          process.stdout.write(`Visibility: private\n`)
 
           process.stdout.write(`\nView analytics and usage: https://orchagent.io/dashboard\n`)
         } catch (err) {
@@ -558,7 +553,7 @@ export function registerPublishCommand(program: Command): void {
         process.stderr.write(`  Name:        ${manifest.name}\n`)
         process.stderr.write(`  Type:        ${manifest.type}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
         process.stderr.write(`  Version:     ${versionInfo}\n`)
-        process.stderr.write(`  Visibility:  ${options.public ? 'public' : 'private'}\n`)
+        process.stderr.write(`  Visibility:  private\n`)
         process.stderr.write(`  Providers:   ${supportedProviders.join(', ')}\n`)
         const effectiveSkills = skillsFromFlag || manifest.default_skills
         const effectiveLocked = manifest.skills_locked || options.skillsLocked
@@ -594,7 +589,7 @@ export function registerPublishCommand(program: Command): void {
           input_schema: inputSchema,
           output_schema: outputSchema,
           tags: manifest.tags,
-          is_public: options.public ? true : false,
+          is_public: false,
           supported_providers: supportedProviders,
           default_models: manifest.default_models,
           // Local run fields for tool agents
@@ -691,7 +686,7 @@ export function registerPublishCommand(program: Command): void {
       process.stdout.write(`\nPublished agent: ${org.slug}/${manifest.name}@${assignedVersion}\n`)
       process.stdout.write(`Type: ${manifest.type}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
       process.stdout.write(`Providers: ${supportedProviders.join(', ')}\n`)
-      process.stdout.write(`Public: ${options.public ? 'yes' : 'no'}\n`)
+      process.stdout.write(`Visibility: private\n`)
 
       if (result.service_key) {
         process.stdout.write(`\nService key (save this - shown only once):\n`)

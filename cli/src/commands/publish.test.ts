@@ -301,105 +301,6 @@ describe('publish command', () => {
       )
     })
 
-    it('respects --private flag', async () => {
-      const manifest = {
-        name: 'private-agent',
-        version: 'v1',
-        type: 'prompt',
-      }
-
-      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
-        const path = String(filePath)
-        if (path.includes('SKILL.md')) {
-          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-        }
-        if (path.includes('orchagent.json')) {
-          return JSON.stringify(manifest)
-        }
-        if (path.includes('prompt.md')) {
-          return 'Private prompt'
-        }
-        if (path.includes('schema.json')) {
-          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-        }
-        throw new Error(`Unexpected file: ${path}`)
-      })
-
-      await program.parseAsync(['node', 'test', 'publish', '--private'])
-
-      expect(mockCreateAgent).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.objectContaining({
-          is_public: false,
-        })
-      )
-    })
-
-    it('respects --public flag', async () => {
-      const manifest = {
-        name: 'public-agent',
-        version: 'v1',
-        type: 'prompt',
-      }
-
-      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
-        const path = String(filePath)
-        if (path.includes('SKILL.md')) {
-          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-        }
-        if (path.includes('orchagent.json')) {
-          return JSON.stringify(manifest)
-        }
-        if (path.includes('prompt.md')) {
-          return 'Public prompt'
-        }
-        if (path.includes('schema.json')) {
-          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-        }
-        throw new Error(`Unexpected file: ${path}`)
-      })
-
-      await program.parseAsync(['node', 'test', 'publish', '--public'])
-
-      expect(mockCreateAgent).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.objectContaining({
-          is_public: true,
-        })
-      )
-    })
-
-    it('shows deprecation warning for --private flag', async () => {
-      const manifest = {
-        name: 'deprecated-flag-agent',
-        version: 'v1',
-        type: 'prompt',
-      }
-
-      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
-        const path = String(filePath)
-        if (path.includes('SKILL.md')) {
-          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-        }
-        if (path.includes('orchagent.json')) {
-          return JSON.stringify(manifest)
-        }
-        if (path.includes('prompt.md')) {
-          return 'Private prompt'
-        }
-        if (path.includes('schema.json')) {
-          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-        }
-        throw new Error(`Unexpected file: ${path}`)
-      })
-
-      await program.parseAsync(['node', 'test', 'publish', '--private'])
-
-      expect(stderrSpy).toHaveBeenCalledWith(
-        expect.stringContaining('--private is deprecated')
-      )
-    })
-
     it('uses manifest supported_providers', async () => {
       const manifest = {
         name: 'openai-agent',
@@ -701,31 +602,6 @@ Skill content here.`
       expect(callArgs.name).toBe('simple-skill')
       expect(callArgs.type).toBe('skill')
       expect(callArgs).not.toHaveProperty('version')
-    })
-
-    it('respects --private flag for skills', async () => {
-      const skillMd = `---
-name: private-skill
-description: Private skill
----
-Private skill content.`
-
-      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
-        const path = String(filePath)
-        if (path.includes('SKILL.md')) {
-          return skillMd
-        }
-        throw new Error(`Unexpected file: ${path}`)
-      })
-
-      await program.parseAsync(['node', 'test', 'publish', '--private'])
-
-      expect(mockCreateAgent).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.objectContaining({
-          is_public: false,
-        })
-      )
     })
 
     it('falls back to manifest if SKILL.md has no frontmatter', async () => {

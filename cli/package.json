@@ -1,6 +1,6 @@
 {
   "name": "@orchagent/cli",
-  "version": "0.3.48",
+  "version": "0.3.49",
   "description": "Command-line interface for orchagent — deploy and run AI agents for your team",
   "license": "MIT",
   "author": "orchagent <hello@orchagent.io>",
