@@ -130,7 +130,7 @@ export function registerScheduleCommand(program: Command): void {
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const params = new URLSearchParams()
-      if (options.agent) params.set('agent_id', options.agent)
+      if (options.agent) params.set('agent_name', options.agent)
       if (options.type) params.set('schedule_type', options.type)
       params.set('limit', '100')
 
