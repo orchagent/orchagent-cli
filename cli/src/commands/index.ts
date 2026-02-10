@@ -27,6 +27,7 @@ import { registerTestCommand } from './test'
 import { registerSecurityCommand } from './security'
 import { registerBillingCommand } from './billing'
 import { registerAgentKeysCommand } from './agent-keys'
+import { registerScheduleCommand } from './schedule'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -56,4 +57,5 @@ export function registerCommands(program: Command): void {
   registerSecurityCommand(program)
   registerBillingCommand(program)
   registerAgentKeysCommand(program)
+  registerScheduleCommand(program)
 }
