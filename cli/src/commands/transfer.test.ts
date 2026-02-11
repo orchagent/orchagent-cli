@@ -21,13 +21,14 @@ vi.mock('../lib/output')
 vi.mock('readline/promises')
 
 import { registerTransferCommand } from './transfer'
-import { getResolvedConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request, listMyAgents, checkAgentTransfer, transferAgent } from '../lib/api'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
 import readline from 'readline/promises'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
+const mockLoadConfig = vi.mocked(loadConfig)
 const mockRequest = vi.mocked(request)
 const mockListMyAgents = vi.mocked(listMyAgents)
 const mockCheckAgentTransfer = vi.mocked(checkAgentTransfer)
@@ -104,6 +105,7 @@ describe('transfer command', () => {
       apiKey: 'sk_test_123',
       apiUrl: 'https://api.test.com',
     })
+    mockLoadConfig.mockResolvedValue({})
 
     mockRequest.mockResolvedValue(mockWorkspaces)
     mockListMyAgents.mockResolvedValue(mockAgents as any)
@@ -310,8 +312,8 @@ describe('transfer command', () => {
     })
   })
 
-  describe('fetches in parallel', () => {
-    it('calls workspaces and agents simultaneously', async () => {
+  describe('workspace resolution', () => {
+    it('lists workspaces and agents for transfer', async () => {
       const mockRl = { question: vi.fn().mockResolvedValue('my-agent'), close: vi.fn() }
       mockReadline.createInterface.mockReturnValue(mockRl as any)
 
@@ -324,6 +326,34 @@ describe('transfer command', () => {
         '/workspaces'
       )
       expect(mockListMyAgents).toHaveBeenCalledWith(expect.any(Object))
+    })
+
+    it('uses --workspace to list agents from a specific source workspace', async () => {
+      const mockRl = { question: vi.fn().mockResolvedValue('my-agent'), close: vi.fn() }
+      mockReadline.createInterface.mockReturnValue(mockRl as any)
+
+      mockRequest
+        .mockResolvedValueOnce(mockWorkspaces as any)
+        .mockResolvedValueOnce(mockAgents as any)
+
+      await program.parseAsync([
+        'node',
+        'test',
+        'transfer',
+        'my-agent',
+        '--to',
+        'team-ws',
+        '--workspace',
+        'my-ws',
+      ])
+
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        2,
+        expect.any(Object),
+        'GET',
+        '/agents?workspace_id=ws-1'
+      )
+      expect(mockListMyAgents).not.toHaveBeenCalled()
     })
   })
 })
