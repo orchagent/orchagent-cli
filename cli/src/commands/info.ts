@@ -5,6 +5,7 @@ import { getResolvedConfig } from '../lib/config'
 import { ApiError, getOrg, listMyAgents, getPublicAgent } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { isPaidAgent, formatPrice } from '../lib/pricing'
+import type { AgentTypeValue } from '../types'
 
 type SchemaProperty = {
   type?: string
@@ -19,7 +20,7 @@ type Schema = {
 }
 
 type AgentDownload = {
-  type: 'prompt' | 'tool' | 'skill' | 'agent'
+  type: AgentTypeValue
   name: string
   version: string
   description?: string

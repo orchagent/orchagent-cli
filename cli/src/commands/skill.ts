@@ -9,7 +9,7 @@ import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { trackInstall, computeHash, untrackInstall, type InstalledAgent } from '../lib/installed'
 import { isPaidAgent, formatPrice } from '../lib/pricing'
-import type { Agent, PublicAgent, ResolvedConfig } from '../types'
+import type { Agent, AgentTypeValue, PublicAgent, ResolvedConfig } from '../types'
 import packageJson from '../../package.json'
 
 const DEFAULT_VERSION = 'latest'
@@ -26,7 +26,7 @@ type SkillRef = {
 }
 
 type SkillDownload = {
-  type: 'prompt' | 'tool' | 'skill' | 'agent'
+  type: AgentTypeValue
   name: string
   version: string
   description?: string

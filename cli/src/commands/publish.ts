@@ -177,6 +177,57 @@ async function collectSkillFiles(
   return files
 }
 
+type CanonicalType = 'agent' | 'skill'
+type ExecutionEngine = 'direct_llm' | 'managed_loop' | 'code_runtime'
+
+function canonicalizeManifestType(typeValue: string | undefined): { canonicalType: CanonicalType; rawType: string } {
+  const rawType = (typeValue || 'agent').trim().toLowerCase()
+  if (rawType === 'skill') {
+    return { canonicalType: 'skill', rawType }
+  }
+  if (['agent', 'prompt', 'tool', 'agentic', 'code'].includes(rawType)) {
+    return { canonicalType: 'agent', rawType }
+  }
+  throw new CliError(
+    `Invalid type '${typeValue}'. Use 'agent' or 'skill' (legacy values accepted: prompt, tool, agentic, code).`
+  )
+}
+
+function normalizeRunMode(runMode: string | undefined): 'on_demand' | 'always_on' {
+  const normalized = (runMode || 'on_demand').trim().toLowerCase()
+  if (normalized === 'on_demand' || normalized === 'always_on') {
+    return normalized
+  }
+  throw new CliError("run_mode must be 'on_demand' or 'always_on'")
+}
+
+function inferExecutionEngineFromManifest(
+  manifest: AgentManifest,
+  rawType: string
+): ExecutionEngine {
+  const runtimeCommand = manifest.runtime?.command?.trim()
+  const hasLoop = Boolean(manifest.loop && Object.keys(manifest.loop).length > 0)
+
+  if (runtimeCommand && hasLoop) {
+    throw new CliError('runtime.command and loop cannot both be set')
+  }
+  if (runtimeCommand) return 'code_runtime'
+  if (hasLoop) return 'managed_loop'
+  if (rawType === 'tool' || rawType === 'code') return 'code_runtime'
+  if (rawType === 'agentic') return 'managed_loop'
+  if (rawType === 'agent' && (manifest.custom_tools?.length || manifest.max_turns)) {
+    return 'managed_loop'
+  }
+  return 'direct_llm'
+}
+
+function commandForEntrypoint(entrypoint: string): string {
+  if (entrypoint.endsWith('.js') || entrypoint.endsWith('.mjs') || entrypoint.endsWith('.cjs') || entrypoint.endsWith('.ts')) {
+    return `node ${entrypoint}`
+  }
+  return `python ${entrypoint}`
+}
+
 export function registerPublishCommand(program: Command): void {
   program
     .command('publish')
@@ -293,6 +344,19 @@ export function registerPublishCommand(program: Command): void {
       if (!manifest.name) {
         throw new CliError('orchagent.json must have name')
       }
+      const { canonicalType, rawType } = canonicalizeManifestType(manifest.type)
+      const runMode = normalizeRunMode(manifest.run_mode)
+      const executionEngine = inferExecutionEngineFromManifest(manifest, rawType)
+      const callable = Boolean(manifest.callable)
+
+      if (canonicalType === 'skill') {
+        throw new CliError(
+          "Use SKILL.md for publishing skills. Remove orchagent.json and run 'orchagent publish' from a skill directory."
+        )
+      }
+      if (runMode === 'always_on' && executionEngine === 'direct_llm') {
+        throw new CliError('run_mode=always_on requires runtime.command or loop configuration')
+      }
 
       // Warn about deprecated prompt field
       if (manifest.prompt) {
@@ -335,7 +399,7 @@ export function registerPublishCommand(program: Command): void {
           `These must be nested under a "manifest" key. Example:\n\n` +
           `  {\n` +
           `    "name": "${manifest.name}",\n` +
-          `    "type": "${manifest.type || 'tool'}",\n` +
+          `    "type": "${manifest.type || 'agent'}",\n` +
           `    "manifest": {\n` +
           `      "manifest_version": 1,\n` +
           `      "dependencies": [...],\n` +
@@ -348,17 +412,16 @@ export function registerPublishCommand(program: Command): void {
         )
       }
 
-      // Read prompt (for prompt-based, agent, and skill agents)
+      // Read prompt for LLM-driven engines (direct_llm + managed_loop).
       let prompt: string | undefined
-      if (manifest.type === 'prompt' || manifest.type === 'skill' || manifest.type === 'agent') {
+      if (executionEngine === 'direct_llm' || executionEngine === 'managed_loop') {
         const promptPath = path.join(cwd, 'prompt.md')
         try {
           prompt = await fs.readFile(promptPath, 'utf-8')
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-            const agentTypeName = manifest.type === 'skill' ? 'skill' : manifest.type === 'agent' ? 'agent' : 'prompt-based agent'
             throw new CliError(
-              `No prompt.md found for ${agentTypeName}.\n\n` +
+              'No prompt.md found for this agent.\n\n' +
               'Create a prompt.md file in the current directory with your prompt template.\n' +
               'See: https://orchagent.io/docs/publishing'
             )
@@ -367,9 +430,9 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      // For agent type, validate custom_tools and build manifest
-      if (manifest.type === 'agent') {
-        // Validate custom_tools format
+      // Validate managed-loop specific fields + normalize loop payload
+      let loopConfig: Record<string, unknown> | undefined
+      if (executionEngine === 'managed_loop') {
         if (manifest.custom_tools) {
           const reservedNames = new Set(['bash', 'read_file', 'write_file', 'list_files', 'submit_result'])
           const seenNames = new Set<string>()
@@ -393,26 +456,27 @@ export function registerPublishCommand(program: Command): void {
           }
         }
 
-        // Validate max_turns
         if (manifest.max_turns !== undefined) {
           if (typeof manifest.max_turns !== 'number' || manifest.max_turns < 1 || manifest.max_turns > 50) {
             throw new CliError('max_turns must be a number between 1 and 50')
           }
         }
 
-        // Store agent config in manifest field
-        const agentManifest: Record<string, unknown> = {
-          ...(manifest.manifest || {}),
+        const providedLoop =
+          manifest.loop && typeof manifest.loop === 'object'
+            ? { ...manifest.loop }
+            : {}
+        if (!('max_turns' in providedLoop) && manifest.max_turns !== undefined) {
+          providedLoop.max_turns = manifest.max_turns
         }
-        if (manifest.custom_tools) {
-          agentManifest.custom_tools = manifest.custom_tools
+        if (!('custom_tools' in providedLoop) && manifest.custom_tools?.length) {
+          providedLoop.custom_tools = manifest.custom_tools
         }
-        if (manifest.max_turns) {
-          agentManifest.max_turns = manifest.max_turns
+        if (Object.keys(providedLoop).length === 0) {
+          providedLoop.max_turns = 25
         }
-        manifest.manifest = agentManifest as any
+        loopConfig = providedLoop
 
-        // Agent type defaults to anthropic provider
         if (!manifest.supported_providers) {
           manifest.supported_providers = ['anthropic']
         }
@@ -435,9 +499,8 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      // For prompt/skill agents, derive input schema from template variables if needed
-      // (Agent type uses schema.json directly — no template variable derivation)
-      if (prompt && (manifest.type === 'prompt' || manifest.type === 'skill')) {
+      // For direct LLM and managed loop agents, derive input schema from template variables if needed.
+      if (prompt && (executionEngine === 'direct_llm' || executionEngine === 'managed_loop')) {
         const templateVars = extractTemplateVariables(prompt)
         if (templateVars.length > 0) {
           if (!schemaFromFile) {
@@ -463,39 +526,40 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      // For tool-based agents, either --url is required OR we bundle the code
-      // For agent type, use internal placeholder (no user code, platform handles execution)
       let agentUrl = options.url
       let shouldUploadBundle = false
+      let runtimeConfig: Record<string, unknown> | undefined
+      let bundleEntrypoint = manifest.entrypoint
 
-      if (manifest.type === 'agent') {
-        // Agent type doesn't need a URL or code bundle
-        agentUrl = agentUrl || 'https://agent.internal'
-        // But they can include a Dockerfile for custom environments
-        if (options.docker) {
-          const dockerfilePath = path.join(cwd, 'Dockerfile')
-          try {
-            await fs.access(dockerfilePath)
-            shouldUploadBundle = true
-            process.stdout.write(`Including Dockerfile for custom environment\n`)
-          } catch {
-            throw new CliError('--docker flag specified but no Dockerfile found in project directory')
+      if (executionEngine === 'code_runtime') {
+        if (!bundleEntrypoint) {
+          bundleEntrypoint = await detectEntrypoint(cwd) || undefined
+        }
+        if (!options.url) {
+          if (!bundleEntrypoint) {
+            throw new CliError(
+              'Tool requires either --url <url> or an entry point file (main.py, app.py, index.js, etc.)'
+            )
           }
-        }
-      } else if (manifest.type === 'tool' && !options.url) {
-        // Check if this looks like a Python or JS project that can be bundled
-        const entrypoint = manifest.entrypoint || await detectEntrypoint(cwd)
-        if (entrypoint) {
-          // This is a hosted tool - we'll bundle and upload
           shouldUploadBundle = true
-          // Set a placeholder URL that tells the gateway to use sandbox execution
           agentUrl = 'https://tool.internal'
-          process.stdout.write(`Detected tool project with entrypoint: ${entrypoint}\n`)
-        } else {
-          throw new CliError(
-            'Tool requires either --url <url> or an entry point file (main.py, app.py, index.js, etc.)'
-          )
+          process.stdout.write(`Detected code runtime entrypoint: ${bundleEntrypoint}\n`)
         }
+
+        let runtimeCommand = manifest.runtime?.command?.trim() || ''
+        if (!runtimeCommand && manifest.run_command?.trim()) {
+          runtimeCommand = manifest.run_command.trim()
+        }
+        if (!runtimeCommand) {
+          runtimeCommand = commandForEntrypoint(bundleEntrypoint || 'main.py')
+        }
+        runtimeConfig = { ...(manifest.runtime || {}), command: runtimeCommand }
+      } else {
+        agentUrl = agentUrl || 'https://prompt-agent.internal'
+      }
+
+      if (options.docker && executionEngine !== 'code_runtime') {
+        throw new CliError('--docker is only supported for code runtime agents')
       }
 
       // Get org info
@@ -504,9 +568,9 @@ export function registerPublishCommand(program: Command): void {
       // Default to 'any' provider if not specified
       const supportedProviders = manifest.supported_providers || ['any']
 
-      // Detect SDK compatibility for tool agents
+      // Detect SDK compatibility for code runtime agents
       let sdkCompatible = false
-      if (manifest.type === 'tool') {
+      if (executionEngine === 'code_runtime') {
         sdkCompatible = await detectSdkCompatible(cwd)
         if (sdkCompatible && !options.dryRun) {
           process.stdout.write(`SDK detected - agent will be marked as Local Ready\n`)
@@ -524,8 +588,7 @@ export function registerPublishCommand(program: Command): void {
         process.stderr.write('Validating...\n')
         process.stderr.write(`  ✓ orchagent.json found and valid\n`)
 
-        if (manifest.type === 'prompt') {
-          // Prompt agent validations
+        if (executionEngine === 'direct_llm') {
           const promptBytes = prompt ? Buffer.byteLength(prompt, 'utf-8') : 0
           process.stderr.write(`  ✓ prompt.md found (${promptBytes.toLocaleString()} bytes)\n`)
           if (schemaFromFile) {
@@ -535,21 +598,19 @@ export function registerPublishCommand(program: Command): void {
             const vars = prompt ? extractTemplateVariables(prompt) : []
             process.stderr.write(`  ✓ Input schema derived from template variables: ${vars.join(', ')}\n`)
           }
-        } else if (manifest.type === 'agent') {
-          // Agent type validations
+        } else if (executionEngine === 'managed_loop') {
           const promptBytes = prompt ? Buffer.byteLength(prompt, 'utf-8') : 0
           process.stderr.write(`  ✓ prompt.md found (${promptBytes.toLocaleString()} bytes)\n`)
           if (schemaFromFile) {
             const schemaTypes = [inputSchema ? 'input' : null, outputSchema ? 'output' : null].filter(Boolean).join(' + ')
             process.stderr.write(`  ✓ schema.json found (${schemaTypes} schemas)\n`)
           }
-          const customToolCount = manifest.custom_tools?.length || 0
+          const customToolCount = manifest.custom_tools?.length || Number(Array.isArray((loopConfig as any)?.custom_tools) ? (loopConfig as any).custom_tools.length : 0)
           process.stderr.write(`  ✓ Custom tools: ${customToolCount}\n`)
-          process.stderr.write(`  ✓ Max turns: ${manifest.max_turns || 25}\n`)
-        } else if (manifest.type === 'tool') {
-          // Tool agent validations
-          const entrypoint = manifest.entrypoint || await detectEntrypoint(cwd)
-          process.stderr.write(`  ✓ Entrypoint: ${entrypoint}\n`)
+          process.stderr.write(`  ✓ Max turns: ${(loopConfig as any)?.max_turns || manifest.max_turns || 25}\n`)
+        } else if (executionEngine === 'code_runtime') {
+          process.stderr.write(`  ✓ runtime.command: ${String(runtimeConfig?.command || '')}\n`)
+          process.stderr.write(`  ✓ Entrypoint: ${bundleEntrypoint || '(remote url only)'}\n`)
           if (sdkCompatible) {
             process.stderr.write(`  ✓ SDK detected (orchagent-sdk in requirements.txt)\n`)
           }
@@ -557,10 +618,10 @@ export function registerPublishCommand(program: Command): void {
 
         process.stderr.write(`  ✓ Authentication valid (org: ${org.slug})\n`)
 
-        // For tools with bundles, show bundle preview
+        // For hosted code-runtime agents, show bundle preview
         if (shouldUploadBundle) {
           const bundlePreview = await previewBundle(cwd, {
-            entrypoint: manifest.entrypoint,
+            entrypoint: bundleEntrypoint,
             exclude: manifest.bundle?.exclude,
             include: manifest.bundle?.include,
           })
@@ -572,7 +633,10 @@ export function registerPublishCommand(program: Command): void {
 
         process.stderr.write('\nAgent Preview:\n')
         process.stderr.write(`  Name:        ${manifest.name}\n`)
-        process.stderr.write(`  Type:        ${manifest.type}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
+        process.stderr.write(`  Type:        ${canonicalType}\n`)
+        process.stderr.write(`  Run mode:    ${runMode}\n`)
+        process.stderr.write(`  Engine:      ${executionEngine}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
+        process.stderr.write(`  Callable:    ${callable ? 'enabled' : 'disabled'}\n`)
         process.stderr.write(`  Version:     ${versionInfo}\n`)
         process.stderr.write(`  Visibility:  private\n`)
         process.stderr.write(`  Providers:   ${supportedProviders.join(', ')}\n`)
@@ -587,7 +651,7 @@ export function registerPublishCommand(program: Command): void {
         process.stderr.write(`\nWould publish: ${preview.org_slug}/${manifest.name}@${preview.next_version}\n`)
         if (shouldUploadBundle) {
           const bundlePreview = await previewBundle(cwd, {
-            entrypoint: manifest.entrypoint,
+            entrypoint: bundleEntrypoint,
             exclude: manifest.bundle?.exclude,
             include: manifest.bundle?.include,
           })
@@ -603,7 +667,11 @@ export function registerPublishCommand(program: Command): void {
       try {
         result = await createAgent(config, {
           name: manifest.name,
-          type: manifest.type,
+          type: canonicalType,
+          run_mode: runMode,
+          runtime: runtimeConfig,
+          loop: loopConfig,
+          callable,
           description: manifest.description,
           prompt,
           url: agentUrl,
@@ -613,7 +681,7 @@ export function registerPublishCommand(program: Command): void {
           is_public: false,
           supported_providers: supportedProviders,
           default_models: manifest.default_models,
-          // Local run fields for tool agents
+          // Local run fields for code runtime agents
           source_url: manifest.source_url,
           pip_package: manifest.pip_package,
           run_command: manifest.run_command,
@@ -665,7 +733,7 @@ export function registerPublishCommand(program: Command): void {
       const assignedVersion = result.agent?.version || 'v1'
       const agentId = result.agent?.id
 
-      // Upload code bundle if this is a hosted tool agent or agent type with --docker
+      // Upload code bundle for hosted code runtime agents
       if (shouldUploadBundle && agentId) {
         process.stdout.write(`\nBundling code...\n`)
 
@@ -686,8 +754,7 @@ export function registerPublishCommand(program: Command): void {
             }
           }
 
-          // For agent type, also include requirements.txt if present
-          if (manifest.type === 'agent') {
+          if (executionEngine === 'code_runtime') {
             const reqPath = path.join(cwd, 'requirements.txt')
             try {
               await fs.access(reqPath)
@@ -699,10 +766,10 @@ export function registerPublishCommand(program: Command): void {
           }
 
           const bundleResult = await createCodeBundle(cwd, bundlePath, {
-            entrypoint: manifest.type === 'agent' ? undefined : manifest.entrypoint,
+            entrypoint: bundleEntrypoint,
             exclude: manifest.bundle?.exclude,
             include: includePatterns.length > 0 ? includePatterns : undefined,
-            skipEntrypointCheck: manifest.type === 'agent',
+            skipEntrypointCheck: false,
           })
 
           process.stdout.write(`  Created bundle: ${bundleResult.fileCount} files, ${(bundleResult.sizeBytes / 1024).toFixed(1)}KB\n`)
@@ -715,7 +782,7 @@ export function registerPublishCommand(program: Command): void {
 
           // Upload the bundle with entrypoint
           process.stdout.write(`  Uploading bundle...\n`)
-          const uploadResult = await uploadCodeBundle(config, agentId, bundlePath, manifest.entrypoint)
+          const uploadResult = await uploadCodeBundle(config, agentId, bundlePath, bundleEntrypoint)
           process.stdout.write(`  Uploaded: ${uploadResult.code_hash.substring(0, 12)}...\n`)
 
           // Show environment info if applicable
@@ -736,9 +803,18 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      await track('cli_publish', { agent_type: manifest.type, hosted: shouldUploadBundle })
+      await track('cli_publish', {
+        agent_type: canonicalType,
+        execution_engine: executionEngine,
+        run_mode: runMode,
+        callable,
+        hosted: shouldUploadBundle,
+      })
       process.stdout.write(`\nPublished agent: ${org.slug}/${manifest.name}@${assignedVersion}\n`)
-      process.stdout.write(`Type: ${manifest.type}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
+      process.stdout.write(`Type: ${canonicalType}\n`)
+      process.stdout.write(`Run mode: ${runMode}\n`)
+      process.stdout.write(`Execution engine: ${executionEngine}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
+      process.stdout.write(`Callable: ${callable ? 'enabled' : 'disabled'}\n`)
       process.stdout.write(`Providers: ${supportedProviders.join(', ')}\n`)
       process.stdout.write(`Visibility: private\n`)
 

@@ -81,7 +81,10 @@ type AgentDependency = {
 
 type AgentDownload = {
   id?: string              // Agent ID (for private agents)
-  type: 'prompt' | 'tool' | 'skill' | 'agent'
+  type: 'agent' | 'skill' | 'prompt' | 'tool' | 'agentic' | 'code'
+  run_mode?: 'on_demand' | 'always_on' | null
+  execution_engine?: 'direct_llm' | 'managed_loop' | 'code_runtime' | null
+  callable?: boolean
   name: string
   version: string
   description?: string
@@ -101,6 +104,31 @@ type AgentDownload = {
   entrypoint?: string      // Entry point file (e.g., "sandbox_main.py")
   // Dependencies (for orchestrator agents)
   dependencies?: AgentDependency[]
+}
+
+function canonicalAgentType(typeValue: AgentDownload['type'] | string | undefined): 'agent' | 'skill' {
+  const normalized = (typeValue || 'agent').toLowerCase()
+  return normalized === 'skill' ? 'skill' : 'agent'
+}
+
+function resolveExecutionEngine(agentData: {
+  type?: string
+  execution_engine?: string | null
+  runtime?: { command?: string } | null
+  loop?: Record<string, unknown> | null
+}): 'direct_llm' | 'managed_loop' | 'code_runtime' {
+  if (agentData.execution_engine === 'direct_llm' || agentData.execution_engine === 'managed_loop' || agentData.execution_engine === 'code_runtime') {
+    return agentData.execution_engine
+  }
+  const runtimeCommand = agentData.runtime?.command
+  if (runtimeCommand && runtimeCommand.trim()) return 'code_runtime'
+  if (agentData.loop && Object.keys(agentData.loop).length > 0) return 'managed_loop'
+
+  const normalized = (agentData.type || '').toLowerCase()
+  if (normalized === 'tool' || normalized === 'code') return 'code_runtime'
+  if (normalized === 'agentic') return 'managed_loop'
+  if (normalized === 'skill') return 'direct_llm'
+  return 'direct_llm'
 }
 
 // ─── Validation helpers ─────────────────────────────────────────────────────
@@ -553,6 +581,9 @@ async function downloadAgent(
   return {
     id: targetAgent.id,
     type: targetAgent.type,
+    run_mode: targetAgent.run_mode ?? null,
+    execution_engine: targetAgent.execution_engine ?? null,
+    callable: targetAgent.callable,
     name: targetAgent.name,
     version: targetAgent.version,
     description: targetAgent.description,
@@ -606,7 +637,15 @@ async function checkDependencies(
     const [org, agent] = dep.id.split('/')
     try {
       const agentData = await downloadAgent(config, org, agent, dep.version)
-      const downloadable = !!(agentData.source_url || agentData.pip_package || agentData.has_bundle || agentData.type === 'prompt')
+      const canonicalType = canonicalAgentType(agentData.type)
+      const engine = resolveExecutionEngine(agentData)
+      const downloadable = Boolean(
+        canonicalType === 'skill' ||
+        engine !== 'code_runtime' ||
+        agentData.source_url ||
+        agentData.pip_package ||
+        agentData.has_bundle
+      )
       results.push({ dep, downloadable, agentData })
     } catch {
       results.push({ dep, downloadable: false })
@@ -699,7 +738,7 @@ async function downloadDependenciesRecursively(
           await saveBundleLocally(config, org, agent, status.dep.version, status.agentData!.id)
         }
 
-        if (status.agentData!.type === 'tool' && (status.agentData!.source_url || status.agentData!.pip_package)) {
+        if (resolveExecutionEngine(status.agentData!) === 'code_runtime' && (status.agentData!.source_url || status.agentData!.pip_package)) {
           await installTool(status.agentData!)
         }
       },
@@ -1471,7 +1510,7 @@ async function saveAgentLocally(org: string, agent: string, agentData: AgentDown
     JSON.stringify(agentData, null, 2)
   )
 
-  if (agentData.type === 'prompt' && agentData.prompt) {
+  if (resolveExecutionEngine(agentData) !== 'code_runtime' && agentData.prompt) {
     await fs.writeFile(path.join(agentDir, 'prompt.md'), agentData.prompt)
   }
 
@@ -1586,9 +1625,16 @@ async function executeLocalFromDir(
     )
   }
 
-  const agentType = (manifest.type as string) || 'tool'
+  const manifestType = (manifest.type as string) || 'agent'
+  const localType = canonicalAgentType(manifestType)
+  const localEngine = resolveExecutionEngine({
+    type: manifestType,
+    execution_engine: (manifest.execution_engine as string | undefined) || null,
+    runtime: (manifest.runtime as { command?: string } | undefined) || null,
+    loop: (manifest.loop as Record<string, unknown> | undefined) || null,
+  })
 
-  if (agentType === 'skill') {
+  if (localType === 'skill') {
     throw new CliError(
       'Skills cannot be run directly.\n\n' +
       'Skills are instructions meant to be injected into AI agent contexts.\n' +
@@ -1596,7 +1642,7 @@ async function executeLocalFromDir(
     )
   }
 
-  if (agentType === 'agent') {
+  if (localEngine === 'managed_loop') {
     // Read prompt.md
     const promptPath = path.join(resolved, 'prompt.md')
     let agentPrompt: string
@@ -1662,7 +1708,7 @@ async function executeLocalFromDir(
     return
   }
 
-  if (agentType === 'prompt') {
+  if (localEngine === 'direct_llm') {
     // Read prompt.md
     const promptPath = path.join(resolved, 'prompt.md')
     let prompt: string
@@ -1686,7 +1732,9 @@ async function executeLocalFromDir(
 
     // Build AgentDownload from local files
     const agentData: AgentDownload = {
-      type: 'prompt',
+      type: 'agent',
+      execution_engine: 'direct_llm',
+      run_mode: (manifest.run_mode as 'on_demand' | 'always_on' | undefined) || 'on_demand',
       name: (manifest.name as string) || path.basename(resolved),
       version: (manifest.version as string) || 'local',
       description: manifest.description as string | undefined,
@@ -1731,7 +1779,7 @@ async function executeLocalFromDir(
     return
   }
 
-  // Tool agents with bundle
+  // Code runtime agents with bundle
   const entrypoint = (manifest.entrypoint as string) || 'sandbox_main.py'
   const entrypointPath = path.join(resolved, entrypoint)
 
@@ -1741,7 +1789,9 @@ async function executeLocalFromDir(
     // No local entrypoint — try run_command
     if (manifest.run_command) {
       const agentData: AgentDownload = {
-        type: 'tool',
+        type: 'agent',
+        execution_engine: 'code_runtime',
+        run_mode: (manifest.run_mode as 'on_demand' | 'always_on' | undefined) || 'on_demand',
         name: (manifest.name as string) || path.basename(resolved),
         version: (manifest.version as string) || 'local',
         supported_providers: (manifest.supported_providers as string[]) || ['any'],
@@ -1756,7 +1806,7 @@ async function executeLocalFromDir(
     throw new CliError(
       `No entrypoint found in ${resolved}\n\n` +
       `Expected: ${entrypoint}\n` +
-      `For tool agents, ensure the directory contains the entrypoint file\n` +
+      `For code runtime agents, ensure the directory contains the entrypoint file\n` +
       `or has run_command set in orchagent.json.`
     )
   }
@@ -1764,7 +1814,9 @@ async function executeLocalFromDir(
   // Execute bundle-style from local directory
   const config = await getResolvedConfig()
   const agentData: AgentDownload = {
-    type: 'tool',
+    type: 'agent',
+    execution_engine: 'code_runtime',
+    run_mode: (manifest.run_mode as 'on_demand' | 'always_on' | undefined) || 'on_demand',
     name: (manifest.name as string) || path.basename(resolved),
     version: (manifest.version as string) || 'local',
     supported_providers: (manifest.supported_providers as string[]) || ['any'],
@@ -1929,6 +1981,13 @@ async function executeCloud(
     parsed.agent,
     parsed.version
   )
+  const cloudType = canonicalAgentType(agentMeta.type as string | undefined)
+  const cloudEngine = resolveExecutionEngine({
+    type: agentMeta.type as string | undefined,
+    execution_engine: (agentMeta as Agent & { execution_engine?: string | null }).execution_engine ?? null,
+    runtime: (agentMeta as Agent & { runtime?: { command?: string } | null }).runtime ?? null,
+    loop: (agentMeta as Agent & { loop?: Record<string, unknown> | null }).loop ?? null,
+  })
 
   // Pre-call balance check for paid agents
   let pricingInfo: { price_cents: number | null } | undefined
@@ -2057,7 +2116,7 @@ async function executeCloud(
       provider: llmProvider,
       ...(options.model && { model: options.model }),
     }
-  } else if (agentMeta.type === 'prompt') {
+  } else if (cloudEngine !== 'code_runtime') {
     const searchedProviders = effectiveProvider ? [effectiveProvider] : supportedProviders
     const providerList = searchedProviders.join(', ')
     process.stderr.write(
@@ -2122,7 +2181,7 @@ async function executeCloud(
     const resolvedBody = await resolveJsonBody(options.data)
     const bodyObj = JSON.parse(resolvedBody) as Record<string, unknown>
 
-    if (agentMeta.type === 'prompt') {
+    if (cloudEngine !== 'code_runtime') {
       const fieldName = options.fileField || inferFileField(agentMeta.input_schema as object | undefined)
       if (filePaths.length === 1) {
         await validateFilePath(filePaths[0])
@@ -2151,7 +2210,7 @@ async function executeCloud(
       body = JSON.stringify(bodyObj)
       headers['Content-Type'] = 'application/json'
     } else {
-      // Tool agents: send files as multipart, --data as metadata
+      // Code-runtime agents: send files as multipart, --data as metadata
       let metadata = resolvedBody
       if (llmCredentials) {
         const metaObj = JSON.parse(metadata) as Record<string, unknown>
@@ -2173,7 +2232,7 @@ async function executeCloud(
       body = resolvedBody
     }
     headers['Content-Type'] = 'application/json'
-  } else if ((filePaths.length > 0 || options.metadata) && agentMeta.type === 'prompt') {
+  } else if ((filePaths.length > 0 || options.metadata) && cloudEngine !== 'code_runtime') {
     const fieldName = options.fileField || inferFileField(agentMeta.input_schema as object | undefined)
     let bodyObj: Record<string, unknown> = {}
 
@@ -2239,9 +2298,9 @@ async function executeCloud(
 
   const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${parsed.agent}/${parsed.version}/${endpoint}`
 
-  // Enable SSE streaming for agent-type agents (unless --json or --no-stream or --output)
-  const isAgentType = agentMeta.type === 'agent'
-  const wantStream = isAgentType && !options.json && !options.noStream && !options.output
+  // Enable SSE streaming for managed-loop agents (unless --json or --no-stream or --output)
+  const isManagedLoopAgent = cloudType === 'agent' && cloudEngine === 'managed_loop'
+  const wantStream = isManagedLoopAgent && !options.json && !options.noStream && !options.output
   if (wantStream) {
     headers['Accept'] = 'text/event-stream'
   }
@@ -2249,8 +2308,8 @@ async function executeCloud(
   const spinner = options.json ? null : createSpinner(`Running ${org}/${parsed.agent}@${parsed.version}...`)
   spinner?.start()
 
-  // Agent-type runs can take much longer; use 10 min timeout for streaming
-  const timeoutMs = isAgentType ? 600000 : undefined
+  // Managed-loop runs can take longer; use 10 min timeout for streaming.
+  const timeoutMs = isManagedLoopAgent ? 600000 : undefined
 
   let response: Response
   try {
@@ -2560,7 +2619,10 @@ async function executeLocal(
       } catch (err) {
         const agentMeta = await getPublicAgent(resolved, org, parsed.agent, parsed.version)
         return {
-          type: agentMeta.type || 'tool',
+          type: (agentMeta.type as AgentDownload['type']) || 'agent',
+          run_mode: (agentMeta as PublicAgent & { run_mode?: 'on_demand' | 'always_on' | null }).run_mode ?? null,
+          execution_engine: (agentMeta as PublicAgent & { execution_engine?: 'direct_llm' | 'managed_loop' | 'code_runtime' | null }).execution_engine ?? null,
+          callable: (agentMeta as PublicAgent & { callable?: boolean }).callable,
           name: agentMeta.name,
           version: agentMeta.version,
           description: agentMeta.description || undefined,
@@ -2570,9 +2632,11 @@ async function executeLocal(
     },
     { successText: `Downloaded ${org}/${parsed.agent}@${parsed.version}` }
   )
+  const localType = canonicalAgentType(agentData.type)
+  const localEngine = resolveExecutionEngine(agentData)
 
   // Skills cannot be run directly
-  if (agentData.type === 'skill') {
+  if (localType === 'skill') {
     throw new CliError(
       'Skills cannot be run directly.\n\n' +
       'Skills are instructions meant to be injected into AI agent contexts.\n\n' +
@@ -2582,8 +2646,8 @@ async function executeLocal(
     )
   }
 
-  // Agent type: execute locally with the agent runner
-  if (agentData.type === 'agent') {
+  // Managed-loop agents execute locally with the agent runner.
+  if (localEngine === 'managed_loop') {
     if (!agentData.prompt) {
       throw new CliError(
         'Agent prompt not available for local execution.\n\n' +
@@ -2683,10 +2747,10 @@ async function executeLocal(
   const agentDir = await saveAgentLocally(org, parsed.agent, agentData)
   process.stderr.write(`\nAgent saved to: ${agentDir}\n`)
 
-  if (agentData.type === 'tool') {
+  if (localEngine === 'code_runtime') {
     if (agentData.has_bundle) {
       if (options.downloadOnly) {
-        process.stdout.write(`\nTool has bundle available for local execution.\n`)
+        process.stdout.write(`\nCode runtime bundle is available for local execution.\n`)
         process.stdout.write(`Run with: orch run ${org}/${parsed.agent} --local [args...]\n`)
         return
       }
@@ -2719,8 +2783,8 @@ async function executeLocal(
       return
     }
 
-    // Fallback: agent doesn't support local execution
-    process.stdout.write(`\nThis is a tool-based agent that runs on the server.\n`)
+    // Fallback: code runtime agent doesn't support local execution.
+    process.stdout.write(`\nThis code runtime agent is configured for server execution.\n`)
     process.stdout.write(`\nRun without --local: orch run ${org}/${parsed.agent}@${parsed.version} --data '{...}'\n`)
     return
   }
@@ -2736,9 +2800,9 @@ async function executeLocal(
   const execLocalKeyedFiles = execLocalFileArgs.filter(a => isKeyedFileArg(a) !== null)
   const execLocalHasInjection = execLocalKeyedFiles.length > 0 || (options.mount ?? []).length > 0
 
-  // For prompt-based agents, execute locally
+  // Direct LLM agents execute locally via prompt composition.
   if (!options.input && !execLocalHasInjection) {
-    process.stdout.write(`\nPrompt-based agent ready.\n`)
+    process.stdout.write(`\nAgent ready.\n`)
     process.stdout.write(`Run with: orch run ${org}/${parsed.agent}@${parsed.version} --local --input '{...}'\n`)
     return
   }

@@ -113,9 +113,12 @@ describe('publish command', () => {
         expect.any(Object),
         expect.objectContaining({
           name: 'my-agent',
-          type: 'prompt',
+          type: 'agent',
+          run_mode: 'on_demand',
+          callable: false,
           description: 'Test agent',
           prompt: 'You are a helpful assistant.\n\nAnalyze: {{input}}',
+          url: 'https://prompt-agent.internal',
           tags: ['test'],
           is_public: false,
           supported_providers: ['any'],
@@ -300,7 +303,9 @@ describe('publish command', () => {
         expect.any(Object),
         expect.objectContaining({
           name: 'my-tool',
-          type: 'tool',
+          type: 'agent',
+          run_mode: 'on_demand',
+          runtime: { command: 'python main.py' },
           url: 'https://my-agent.run.app',
         })
       )
@@ -641,7 +646,8 @@ Skill content here.`
         expect.any(Object),
         expect.objectContaining({
           name: 'fallback-agent',
-          type: 'prompt',
+          type: 'agent',
+          run_mode: 'on_demand',
         })
       )
     })
@@ -682,7 +688,8 @@ Missing description field.`
         expect.any(Object),
         expect.objectContaining({
           name: 'manifest-agent',
-          type: 'prompt',
+          type: 'agent',
+          run_mode: 'on_demand',
         })
       )
     })

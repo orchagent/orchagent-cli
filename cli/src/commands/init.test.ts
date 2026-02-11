@@ -6,8 +6,8 @@
  * - Creating agent project in current directory (no name)
  * - Skill type initialization
  * - Already initialized detection
- * - Tool type (no prompt.md)
- * - Agent type (custom_tools, max_turns, agent-specific templates)
+ * - Tool type (code-runtime scaffolding)
+ * - Agent/agentic scaffolding behavior
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -169,14 +169,16 @@ describe('init command', () => {
       expect(schemaCall).toBeDefined()
     })
 
-    it('sets type to tool in manifest', async () => {
+    it('sets canonical type and runtime in manifest', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-tool', '--type', 'tool'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.type).toBe('tool')
+      expect(manifest.type).toBe('agent')
+      expect(manifest.run_mode).toBe('on_demand')
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
     })
   })
 
@@ -246,18 +248,18 @@ describe('init command', () => {
       expect(manifest.custom_tools).toBeUndefined()
     })
 
-    it('includes max_turns in manifest', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+    it('includes max_turns in loop for legacy agentic type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.max_turns).toBe(25)
+      expect(manifest.loop?.max_turns).toBe(25)
     })
 
-    it('includes supported_providers in manifest', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+    it('includes supported_providers for legacy agentic type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
@@ -266,8 +268,8 @@ describe('init command', () => {
       expect(manifest.supported_providers).toEqual(['anthropic'])
     })
 
-    it('creates prompt.md with agent-specific content', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+    it('creates prompt.md with managed-loop content for legacy agentic type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
 
       const promptCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('prompt.md')
@@ -279,8 +281,8 @@ describe('init command', () => {
       expect(content).not.toContain('{{input}}')
     })
 
-    it('creates schema.json with task input field', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+    it('creates schema.json with task input field for legacy agentic type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
 
       const schemaCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('schema.json')

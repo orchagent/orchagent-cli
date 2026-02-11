@@ -232,7 +232,11 @@ export async function createAgent(
   data: {
     name: string
     version?: string  // Server auto-assigns if not provided
-    type: 'prompt' | 'tool' | 'skill' | 'agent'
+    type: 'agent' | 'skill' | 'prompt' | 'tool' | 'agentic' | 'code'
+    run_mode?: 'on_demand' | 'always_on'
+    runtime?: { command?: string; [key: string]: unknown }
+    loop?: { [key: string]: unknown }
+    callable?: boolean
     description?: string
     prompt?: string
     url?: string
@@ -280,7 +284,7 @@ export async function fetchLlmKeys(config: ResolvedConfig): Promise<LlmKey[]> {
 }
 
 /**
- * Download a tool bundle for local execution.
+ * Download a code-runtime bundle for local execution.
  */
 export async function downloadCodeBundle(
   config: ResolvedConfig,
@@ -466,6 +470,43 @@ export async function deleteAgent(
 ): Promise<{ deleted: boolean; agent_id: string; agent_name: string }> {
   const params = confirmationName ? `?confirmation_name=${encodeURIComponent(confirmationName)}` : ''
   return request(config, 'DELETE', `/agents/${agentId}${params}`)
+}
+
+/**
+ * Check if an agent can be transferred to another workspace.
+ */
+export async function checkAgentTransfer(
+  config: ResolvedConfig,
+  agentId: string,
+  targetWorkspaceId: string
+): Promise<{
+  can_transfer: boolean
+  blockers: string[]
+  warnings: string[]
+  details: { version_count: number; grants_count: number; keys_count: number; schedules_count: number }
+}> {
+  return request(config, 'GET', `/agents/${agentId}/transfer-check?target_workspace_id=${encodeURIComponent(targetWorkspaceId)}`)
+}
+
+/**
+ * Transfer an agent to another workspace.
+ */
+export async function transferAgent(
+  config: ResolvedConfig,
+  agentId: string,
+  data: { target_workspace_id: string; confirmation_name: string }
+): Promise<{
+  transfer_id: string
+  agent_name: string
+  versions_transferred: number
+  source_workspace: { id: string; slug: string; name: string }
+  target_workspace: { id: string; slug: string; name: string }
+  cleanup: { grants_revoked: number; keys_deleted: number; schedules_disabled: number }
+}> {
+  return request(config, 'POST', `/agents/${agentId}/transfer`, {
+    body: JSON.stringify(data),
+    headers: { 'Content-Type': 'application/json' },
+  })
 }
 
 /**
@@ -681,4 +722,3 @@ export async function deleteAgentKey(
 ): Promise<{ deleted: boolean }> {
   return request<{ deleted: boolean }>(config, 'DELETE', `/agents/${agentId}/keys/${keyId}`)
 }
-

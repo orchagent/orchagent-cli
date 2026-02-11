@@ -33,7 +33,37 @@ interface Schedule {
   last_run_status: string | null
   next_run_at: string | null
   run_count: number
+  consecutive_failures: number
+  max_consecutive_failures: number
+  auto_disabled_at: string | null
+  alert_webhook_url: string | null
+  alert_on_failure_count: number | null
   created_at: string
+}
+
+interface ScheduleRun {
+  id: string
+  status: string
+  error_message: string | null
+  duration_ms: number | null
+  trigger_source: string | null
+  started_at: string
+}
+
+interface ScheduleRunsResponse {
+  runs: ScheduleRun[]
+  total: number
+}
+
+interface ScheduleEvent {
+  id: string
+  event_type: string
+  message: string | null
+  created_at: string
+}
+
+interface ScheduleEventsResponse {
+  events: ScheduleEvent[]
 }
 
 interface SchedulesListResponse {
@@ -159,6 +189,7 @@ export function registerScheduleCommand(program: Command): void {
           chalk.bold('Type'),
           chalk.bold('Schedule'),
           chalk.bold('Enabled'),
+          chalk.bold('Fails'),
           chalk.bold('Last Run'),
           chalk.bold('Status'),
           chalk.bold('Runs'),
@@ -166,12 +197,21 @@ export function registerScheduleCommand(program: Command): void {
       })
 
       result.schedules.forEach((s) => {
+        const enabledLabel = s.auto_disabled_at
+          ? chalk.bgRed.white(' AUTO-DISABLED ')
+          : s.enabled ? chalk.green('yes') : chalk.red('no')
+
+        const failsLabel = s.consecutive_failures > 0
+          ? chalk.red(String(s.consecutive_failures))
+          : chalk.gray('0')
+
         table.push([
           s.id.slice(0, 8),
           `${s.agent_name}@${s.agent_version}`,
           s.schedule_type,
           s.schedule_type === 'cron' ? (s.cron_expression ?? '-') : 'webhook',
-          s.enabled ? chalk.green('yes') : chalk.red('no'),
+          enabledLabel,
+          failsLabel,
           formatDate(s.last_run_at),
           statusColor(s.last_run_status),
           s.run_count.toString(),
@@ -422,5 +462,150 @@ export function registerScheduleCommand(program: Command): void {
       }
 
       process.stdout.write('\n')
+    })
+
+  // orch schedule info <schedule-id>
+  schedule
+    .command('info <schedule-id>')
+    .description('Show detailed schedule information with recent runs and events')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
+    .action(async (scheduleId: string, options: { workspace?: string; json?: boolean }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      const [scheduleRes, runsRes, eventsRes] = await Promise.all([
+        request<ScheduleResponse>(config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}`),
+        request<ScheduleRunsResponse>(config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}/runs?limit=5`),
+        request<ScheduleEventsResponse>(config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}/events?limit=5`),
+      ])
+
+      if (options.json) {
+        printJson({ schedule: scheduleRes.schedule, runs: runsRes.runs, events: eventsRes.events })
+        return
+      }
+
+      const s = scheduleRes.schedule
+      process.stdout.write(`\n${chalk.bold('Schedule Details')}\n\n`)
+      process.stdout.write(`  ID:         ${s.id}\n`)
+      process.stdout.write(`  Agent:      ${s.agent_name}@${s.agent_version}\n`)
+      process.stdout.write(`  Type:       ${s.schedule_type}\n`)
+      if (s.cron_expression) {
+        process.stdout.write(`  Cron:       ${s.cron_expression}\n`)
+        process.stdout.write(`  Timezone:   ${s.timezone}\n`)
+      }
+      process.stdout.write(`  Enabled:    ${s.enabled ? chalk.green('yes') : chalk.red('no')}\n`)
+
+      if (s.auto_disabled_at) {
+        process.stdout.write(`  ${chalk.bgRed.white(' AUTO-DISABLED ')} at ${formatDate(s.auto_disabled_at)}\n`)
+      }
+
+      process.stdout.write(`  Runs:       ${s.run_count}\n`)
+      process.stdout.write(`  Failures:   ${s.consecutive_failures > 0 ? chalk.red(String(s.consecutive_failures)) : '0'} / ${s.max_consecutive_failures}\n`)
+
+      if (s.next_run_at) {
+        process.stdout.write(`  Next Run:   ${formatDate(s.next_run_at)}\n`)
+      }
+      if (s.alert_webhook_url) {
+        process.stdout.write(`  Alert URL:  ${s.alert_webhook_url.slice(0, 50)}...\n`)
+      }
+
+      // Recent runs
+      if (runsRes.runs.length > 0) {
+        process.stdout.write(`\n${chalk.bold('Recent Runs')}\n`)
+        const runsTable = new Table({
+          head: [chalk.bold('Status'), chalk.bold('Duration'), chalk.bold('Error'), chalk.bold('Started')],
+        })
+        for (const r of runsRes.runs) {
+          runsTable.push([
+            statusColor(r.status),
+            r.duration_ms != null ? `${(r.duration_ms / 1000).toFixed(1)}s` : '-',
+            r.error_message ? chalk.red(r.error_message.slice(0, 60)) : '-',
+            formatDate(r.started_at),
+          ])
+        }
+        process.stdout.write(`${runsTable.toString()}\n`)
+      }
+
+      // Recent events
+      if (eventsRes.events.length > 0) {
+        process.stdout.write(`\n${chalk.bold('Recent Events')}\n`)
+        for (const e of eventsRes.events) {
+          const color = e.event_type.includes('fail') || e.event_type.includes('disabled') ? chalk.red : chalk.gray
+          process.stdout.write(`  ${chalk.gray(formatDate(e.created_at))} ${color(e.event_type)} ${e.message || ''}\n`)
+        }
+      }
+
+      process.stdout.write('\n')
+    })
+
+  // orch schedule runs <schedule-id>
+  schedule
+    .command('runs <schedule-id>')
+    .description('List run history for a schedule')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--status <status>', 'Filter by status (completed, failed, running, timeout)')
+    .option('--limit <n>', 'Number of runs to show (default: 20)', '20')
+    .option('--json', 'Output as JSON')
+    .action(async (scheduleId: string, options: {
+      workspace?: string
+      status?: string
+      limit: string
+      json?: boolean
+    }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      const params = new URLSearchParams()
+      params.set('limit', options.limit)
+      if (options.status) params.set('status', options.status)
+      const qs = `?${params.toString()}`
+
+      const result = await request<ScheduleRunsResponse>(
+        config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}/runs${qs}`
+      )
+
+      if (options.json) {
+        printJson(result)
+        return
+      }
+
+      if (!result.runs.length) {
+        process.stdout.write('No runs found.\n')
+        return
+      }
+
+      const table = new Table({
+        head: [
+          chalk.bold('Run ID'),
+          chalk.bold('Status'),
+          chalk.bold('Source'),
+          chalk.bold('Duration'),
+          chalk.bold('Error'),
+          chalk.bold('Started'),
+        ],
+      })
+
+      for (const r of result.runs) {
+        table.push([
+          r.id.slice(0, 8),
+          statusColor(r.status),
+          r.trigger_source || '-',
+          r.duration_ms != null ? `${(r.duration_ms / 1000).toFixed(1)}s` : '-',
+          r.error_message ? chalk.red(r.error_message.slice(0, 50)) : '-',
+          formatDate(r.started_at),
+        ])
+      }
+
+      process.stdout.write(`${table.toString()}\n`)
+      process.stdout.write(chalk.gray(`\n${result.total} run${result.total !== 1 ? 's' : ''} total\n`))
     })
 }

@@ -39,7 +39,10 @@ export type PublicAgent = {
   default_endpoint?: string
   created_at?: string | null
   // GitHub-like fields
-  type?: 'prompt' | 'tool' | 'skill' | 'agent'
+  type?: AgentTypeValue
+  run_mode?: AgentRunMode | null
+  execution_engine?: AgentExecutionEngine | null
+  callable?: boolean
   description?: string | null
   stars_count?: number
   tags?: string[]
@@ -57,11 +60,29 @@ export type PublicAgent = {
 export type LlmProvider = 'openai' | 'anthropic' | 'gemini' | 'any'
 // Note: 'any' is only used in supported_providers, not as an actual provider for keys
 
+export type AgentObjectType = 'agent' | 'skill'
+export type LegacyAgentObjectType = 'prompt' | 'tool' | 'agentic' | 'code'
+export type AgentTypeValue = AgentObjectType | LegacyAgentObjectType
+export type AgentRunMode = 'on_demand' | 'always_on'
+export type AgentExecutionEngine = 'direct_llm' | 'managed_loop' | 'code_runtime'
+
 export type AgentManifest = {
   name: string
   version: string
   description?: string
-  type: 'prompt' | 'tool' | 'skill' | 'agent'
+  // Canonical values are "agent" | "skill". Legacy values are accepted for migration.
+  type: AgentTypeValue
+  run_mode?: AgentRunMode
+  runtime?: {
+    command?: string
+    [key: string]: unknown
+  }
+  loop?: {
+    max_turns?: number
+    tools?: string[]
+    [key: string]: unknown
+  }
+  callable?: boolean
   /** @deprecated Ignored by CLI. Use prompt.md file instead. */
   prompt?: string
   /** @deprecated Ignored by CLI. Use schema.json file instead. */
@@ -69,7 +90,7 @@ export type AgentManifest = {
   /** @deprecated Ignored by CLI. Use schema.json file instead. */
   output_schema?: object
   tags?: string[]
-  // Agent type fields
+  // Managed loop fields (legacy aliases retained for compatibility)
   custom_tools?: Array<{
     name: string
     description: string
@@ -119,7 +140,10 @@ export type Agent = {
   id: string
   name: string
   version: string
-  type: 'prompt' | 'tool' | 'skill' | 'agent'
+  type: AgentTypeValue
+  run_mode?: AgentRunMode | null
+  execution_engine?: AgentExecutionEngine | null
+  callable?: boolean
   description?: string
   stars_count?: number
   tags?: string[]
