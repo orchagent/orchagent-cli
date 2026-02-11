@@ -472,6 +472,26 @@ export async function deleteAgent(
   return request(config, 'DELETE', `/agents/${agentId}${params}`)
 }
 
+export interface ForkAgentResponse {
+  agent: Agent
+  service_key?: string
+  service_key_prefix?: string
+}
+
+/**
+ * Fork a public agent into the caller's workspace (or an explicit workspace_id).
+ */
+export async function forkAgent(
+  config: ResolvedConfig,
+  sourceAgentId: string,
+  data: { workspace_id?: string; new_name?: string } = {}
+): Promise<ForkAgentResponse> {
+  return request<ForkAgentResponse>(config, 'POST', `/agents/${sourceAgentId}/fork`, {
+    body: JSON.stringify(data),
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
 /**
  * Check if an agent can be transferred to another workspace.
  */

@@ -29,6 +29,7 @@ program
 Quick Reference:
   run   Run an agent (cloud by default, --local for local execution)
   info  Show agent details and input/output schemas
+  fork  Fork a public template into your workspace
 
 Installation:
   npm install -g @orchagent/cli   Install globally (then use: orch)

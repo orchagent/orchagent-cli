@@ -11,6 +11,7 @@ import { registerRunCommand } from './run'
 import { registerInfoCommand } from './info'
 import { registerSkillCommand } from './skill'
 import { registerDeleteCommand } from './delete'
+import { registerForkCommand } from './fork'
 import { registerGitHubCommand } from './github'
 import { registerDoctorCommand } from './doctor'
 import { registerStatusCommand } from './status'
@@ -43,6 +44,7 @@ export function registerCommands(program: Command): void {
   registerKeysCommand(program)
   registerSkillCommand(program)
   registerDeleteCommand(program)
+  registerForkCommand(program)
   registerGitHubCommand(program)
   registerDoctorCommand(program)
   registerStatusCommand(program)
