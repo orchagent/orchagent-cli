@@ -31,6 +31,7 @@ import { registerAgentKeysCommand } from './agent-keys'
 import { registerScheduleCommand } from './schedule'
 import { registerServiceCommand } from './service'
 import { registerTransferCommand } from './transfer'
+import { registerPullCommand } from './pull'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -64,4 +65,5 @@ export function registerCommands(program: Command): void {
   registerScheduleCommand(program)
   registerServiceCommand(program)
   registerTransferCommand(program)
+  registerPullCommand(program)
 }
