@@ -1,5 +1,4 @@
 import { Command } from 'commander'
-import http from 'http'
 import open from 'open'
 import Table from 'cli-table3'
 import chalk from 'chalk'
@@ -12,259 +11,63 @@ import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
 import type { ResolvedConfig } from '../types'
 
-const DEFAULT_AUTH_PORT = 8375
-const AUTH_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
+const POLL_INTERVAL_MS = 1500
+const POLL_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
+const SETTINGS_REDIRECT_BASE = 'https://orchagent.io/settings'
 
-// Types for GitHub integration
+// Types for GitHub App integration
 
-interface GitHubInitResponse {
+interface InstallInitResponse {
+  install_url: string
   state: string
-  auth_url: string
 }
 
-interface GitHubCallbackResponse {
+interface InstallStatusResponse {
+  status: string // pending, completed, failed
+  github_account_login?: string
+  github_account_type?: string
+  error_message?: string
+}
+
+interface ConnectionStatusResponse {
   connected: boolean
-  username: string
+  github_account_login?: string
+  github_account_type?: string
+  installed_at?: string
+  suspended_at?: string
 }
 
-interface GitHubConnection {
-  connected: boolean
-  username?: string
-  connected_at?: string
-  scopes?: string[]
-}
-
-interface GitHubRepo {
-  full_name: string
-  name: string
-  owner: string
-  private: boolean
-  description?: string
-  default_branch: string
-  pushed_at?: string
-  html_url: string
-}
-
-interface ScanResult {
-  type: 'agent' | 'skill'
+interface ScanItem {
+  type: 'agent' | 'skill' | 'prompt' | 'tool'
   path: string
   name: string
   description?: string
 }
 
-interface ImportResult {
-  agent_id: string
-  name: string
-  org_slug: string
-  version: string
-  type: 'prompt' | 'tool' | 'skill' | 'agent'
+interface ScanResponse {
+  items: ScanItem[]
+}
+
+interface ImportResponse {
+  agent: {
+    id: string
+    name: string
+    org_id: string
+    version: string
+    type: string
+  }
+  service_key: string
+  service_key_prefix: string
+}
+
+interface SyncConfigResponse {
+  auto_publish: boolean
+  sync_status?: string
 }
 
 // Helper functions
 
-function successHtml(): string {
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>orchagent CLI - GitHub Connected</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-      background: #0a0a0a;
-      color: #fafafa;
-    }
-    .container {
-      text-align: center;
-      padding: 2rem;
-    }
-    .icon {
-      width: 64px;
-      height: 64px;
-      background: rgba(34, 197, 94, 0.1);
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin: 0 auto 1.5rem;
-    }
-    .icon svg {
-      width: 32px;
-      height: 32px;
-      color: #22c55e;
-    }
-    h1 {
-      font-size: 1.5rem;
-      margin: 0 0 0.5rem;
-    }
-    p {
-      color: #a1a1aa;
-      margin: 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="icon">
-      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-      </svg>
-    </div>
-    <h1>GitHub Connected</h1>
-    <p>You can close this tab and return to your terminal.</p>
-  </div>
-</body>
-</html>`
-}
-
-function errorHtml(message: string): string {
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>orchagent CLI - GitHub Connection Error</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-      background: #0a0a0a;
-      color: #fafafa;
-    }
-    .container {
-      text-align: center;
-      padding: 2rem;
-    }
-    .icon {
-      width: 64px;
-      height: 64px;
-      background: rgba(239, 68, 68, 0.1);
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin: 0 auto 1.5rem;
-    }
-    .icon svg {
-      width: 32px;
-      height: 32px;
-      color: #ef4444;
-    }
-    h1 {
-      font-size: 1.5rem;
-      margin: 0 0 0.5rem;
-    }
-    p {
-      color: #a1a1aa;
-      margin: 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="icon">
-      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-      </svg>
-    </div>
-    <h1>Connection Error</h1>
-    <p>${message}</p>
-  </div>
-</body>
-</html>`
-}
-
-async function waitForGitHubCallback(
-  port: number,
-  timeoutMs: number
-): Promise<{ code: string; state: string }> {
-  return new Promise((resolve, reject) => {
-    let resolved = false
-    let server: http.Server | null = null
-
-    const cleanup = () => {
-      if (server) {
-        server.close()
-        server = null
-      }
-    }
-
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true
-        cleanup()
-        reject(new CliError('GitHub authentication timed out. Please try again.'))
-      }
-    }, timeoutMs)
-
-    server = http.createServer((req, res) => {
-      const url = new URL(req.url || '/', `http://127.0.0.1:${port}`)
-
-      if (url.pathname !== '/callback') {
-        res.writeHead(404)
-        res.end('Not Found')
-        return
-      }
-
-      const code = url.searchParams.get('code')
-      const state = url.searchParams.get('state')
-      const error = url.searchParams.get('error')
-
-      if (error) {
-        res.writeHead(400, { 'Content-Type': 'text/html' })
-        res.end(errorHtml(url.searchParams.get('error_description') || error))
-        if (!resolved) {
-          resolved = true
-          clearTimeout(timeout)
-          cleanup()
-          reject(new CliError(`GitHub authorization failed: ${error}`))
-        }
-        return
-      }
-
-      if (!code || !state) {
-        res.writeHead(400, { 'Content-Type': 'text/html' })
-        res.end(errorHtml('Missing code or state parameter'))
-        return
-      }
-
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(successHtml())
-
-      if (!resolved) {
-        resolved = true
-        clearTimeout(timeout)
-        cleanup()
-        resolve({ code, state })
-      }
-    })
-
-    server.on('error', (err: NodeJS.ErrnoException) => {
-      if (!resolved) {
-        resolved = true
-        clearTimeout(timeout)
-        cleanup()
-        if (err.code === 'EADDRINUSE') {
-          reject(new CliError(`Port ${port} is already in use. Try a different port with --port.`))
-        } else {
-          reject(new CliError(`Failed to start auth server: ${err.message}`))
-        }
-      }
-    })
-
-    server.listen(port, '127.0.0.1')
-  })
-}
-
-async function promptForSelection(items: ScanResult[]): Promise<ScanResult | null> {
+async function promptForSelection(items: ScanItem[]): Promise<ScanItem | null> {
   if (!process.stdin.isTTY) {
     return null
   }
@@ -303,59 +106,79 @@ async function promptForSelection(items: ScanResult[]): Promise<ScanResult | nul
   })
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 // Command implementations
 
-async function connectGitHub(config: ResolvedConfig, port: number): Promise<void> {
-  const redirectUri = `http://127.0.0.1:${port}/callback`
-
-  // Step 1: Initialize the GitHub OAuth flow
-  const initResponse = await request<GitHubInitResponse>(
+async function connectGitHub(config: ResolvedConfig): Promise<void> {
+  // Step 1: Initialize the GitHub App install flow
+  const initResponse = await request<InstallInitResponse>(
     config,
     'POST',
-    '/github/connect/init',
+    '/github/install/init',
     {
-      body: JSON.stringify({ redirect_uri: redirectUri }),
+      body: JSON.stringify({ redirect_uri: SETTINGS_REDIRECT_BASE }),
       headers: { 'Content-Type': 'application/json' },
     }
   )
 
-  // Step 2: Start local server to receive callback
-  const callbackPromise = waitForGitHubCallback(port, AUTH_TIMEOUT_MS)
-
-  // Step 3: Open browser
-  process.stdout.write('Opening browser for GitHub authentication...\n')
+  // Step 2: Open browser for GitHub App installation
+  process.stdout.write('Opening browser to install the GitHub App...\n')
   try {
-    await open(initResponse.auth_url)
+    await open(initResponse.install_url)
   } catch {
-    process.stdout.write(`\nPlease open this URL in your browser:\n${initResponse.auth_url}\n\n`)
+    // Headless or browser unavailable - print URL for manual copy/paste
+    process.stdout.write(`\nCould not open browser automatically.\n`)
+    process.stdout.write(`Please open this URL in your browser:\n\n`)
+    process.stdout.write(`  ${initResponse.install_url}\n\n`)
   }
 
-  // Step 4: Wait for callback
-  const { code, state } = await callbackPromise
+  // Step 3: Poll for completion
+  process.stdout.write('Waiting for GitHub App installation...\n')
+  const startTime = Date.now()
 
-  // Step 5: Exchange code for connection
-  const callbackResponse = await request<GitHubCallbackResponse>(
-    config,
-    'POST',
-    '/github/connect/callback',
-    {
-      body: JSON.stringify({ code, state }),
-      headers: { 'Content-Type': 'application/json' },
+  while (Date.now() - startTime < POLL_TIMEOUT_MS) {
+    await sleep(POLL_INTERVAL_MS)
+
+    const status = await request<InstallStatusResponse>(
+      config,
+      'GET',
+      `/github/install/status?state=${encodeURIComponent(initResponse.state)}`
+    )
+
+    if (status.status === 'completed') {
+      await track('cli_github_connect', { success: true })
+      process.stdout.write('\n')
+      process.stdout.write(`Connected to GitHub as ${chalk.bold(status.github_account_login)}\n`)
+      if (status.github_account_type) {
+        process.stdout.write(`  Type: ${status.github_account_type}\n`)
+      }
+      return
     }
-  )
 
-  await track('cli_github_connect', { success: true })
-  process.stdout.write(`\nConnected to GitHub as ${chalk.bold(callbackResponse.username)}\n`)
+    if (status.status === 'failed') {
+      await track('cli_github_connect', { success: false })
+      throw new CliError(
+        `GitHub App installation failed: ${status.error_message || 'Unknown error'}`
+      )
+    }
+
+    // Still pending - continue polling
+  }
+
+  throw new CliError('GitHub App installation timed out after 5 minutes. Please try again.')
 }
 
 async function disconnectGitHub(config: ResolvedConfig): Promise<void> {
-  await request(config, 'DELETE', '/github/disconnect')
+  await request(config, 'DELETE', '/github/uninstall')
   await track('cli_github_disconnect')
-  process.stdout.write('Disconnected from GitHub.\n')
+  process.stdout.write('GitHub App uninstalled.\n')
 }
 
 async function getGitHubStatus(config: ResolvedConfig, json: boolean): Promise<void> {
-  const connection = await request<GitHubConnection>(config, 'GET', '/github/connection')
+  const connection = await request<ConnectionStatusResponse>(config, 'GET', '/github/connection')
 
   if (json) {
     printJson(connection)
@@ -370,73 +193,25 @@ async function getGitHubStatus(config: ResolvedConfig, json: boolean): Promise<v
 
   process.stdout.write(`GitHub Status:\n\n`)
   process.stdout.write(`  Connected: ${chalk.green('Yes')}\n`)
-  process.stdout.write(`  Username:  ${chalk.bold(connection.username)}\n`)
-  if (connection.connected_at) {
-    const date = new Date(connection.connected_at).toLocaleDateString()
+  process.stdout.write(`  Account:   ${chalk.bold(connection.github_account_login)}\n`)
+  if (connection.github_account_type) {
+    process.stdout.write(`  Type:      ${connection.github_account_type === 'User' ? 'User' : 'Organization'}\n`)
+  }
+  if (connection.installed_at) {
+    const date = new Date(connection.installed_at).toLocaleDateString()
     process.stdout.write(`  Since:     ${date}\n`)
   }
-  if (connection.scopes?.length) {
-    process.stdout.write(`  Scopes:    ${connection.scopes.join(', ')}\n`)
+  if (connection.suspended_at) {
+    process.stdout.write(`  Status:    ${chalk.yellow('Suspended')} (since ${new Date(connection.suspended_at).toLocaleDateString()})\n`)
   }
   process.stdout.write('\n')
-}
-
-async function listGitHubRepos(
-  config: ResolvedConfig,
-  search: string | undefined,
-  json: boolean
-): Promise<void> {
-  const params = new URLSearchParams()
-  if (search) {
-    params.append('search', search)
-  }
-  const queryStr = params.toString()
-  const repos = await request<GitHubRepo[]>(
-    config,
-    'GET',
-    `/github/repos${queryStr ? `?${queryStr}` : ''}`
-  )
-
-  await track('cli_github_list', { search: !!search, count: repos.length })
-
-  if (json) {
-    printJson(repos)
-    return
-  }
-
-  if (repos.length === 0) {
-    process.stdout.write('No repositories found.\n')
-    if (search) {
-      process.stdout.write(`\nTry a different search term or run without --search to see all repos.\n`)
-    }
-    return
-  }
-
-  const table = new Table({
-    head: [
-      chalk.bold('Repository'),
-      chalk.bold('Private'),
-      chalk.bold('Last Pushed'),
-    ],
-  })
-
-  repos.forEach((repo) => {
-    const visibility = repo.private ? chalk.yellow('Yes') : chalk.green('No')
-    const pushed = repo.pushed_at
-      ? new Date(repo.pushed_at).toLocaleDateString()
-      : '-'
-    table.push([repo.full_name, visibility, pushed])
-  })
-
-  process.stdout.write(`${table.toString()}\n`)
-  process.stdout.write(`\nFound ${repos.length} repositor${repos.length === 1 ? 'y' : 'ies'}.\n`)
 }
 
 async function scanGitHubRepo(
   config: ResolvedConfig,
   repo: string,
   json: boolean
-): Promise<ScanResult[]> {
+): Promise<ScanItem[]> {
   // Parse owner/repo format
   const parts = repo.split('/')
   if (parts.length !== 2) {
@@ -447,11 +222,13 @@ async function scanGitHubRepo(
   }
   const [owner, repoName] = parts
 
-  const results = await request<ScanResult[]>(
+  const response = await request<ScanResponse>(
     config,
     'GET',
     `/github/repos/${owner}/${repoName}/scan`
   )
+
+  const results = response.items
 
   await track('cli_github_scan', { repo, found: results.length })
 
@@ -477,7 +254,7 @@ async function scanGitHubRepo(
   })
 
   results.forEach((item) => {
-    const typeLabel = item.type === 'skill' ? chalk.cyan('skill') : chalk.magenta('agent')
+    const typeLabel = item.type === 'skill' ? chalk.cyan('skill') : chalk.magenta(item.type)
     table.push([typeLabel, item.path, item.name || '-'])
   })
 
@@ -499,7 +276,7 @@ async function importFromGitHub(
     json?: boolean
   }
 ): Promise<void> {
-  // Parse owner/repo format
+  // Validate owner/repo format
   const parts = repo.split('/')
   if (parts.length !== 2) {
     throw new CliError(
@@ -507,7 +284,6 @@ async function importFromGitHub(
       `Use owner/repo format, e.g.: orchagent github import myorg/myrepo`
     )
   }
-  const [owner, repoName] = parts
 
   let selectedPath = options.path
 
@@ -538,14 +314,13 @@ async function importFromGitHub(
   // Determine visibility (default to public)
   const isPublic = options.private ? false : true
 
-  const importResult = await request<ImportResult>(
+  const importResult = await request<ImportResponse>(
     config,
     'POST',
     '/github/import',
     {
       body: JSON.stringify({
-        owner,
-        repo: repoName,
+        repo,
         path: selectedPath,
         is_public: isPublic,
         name: options.name,
@@ -558,7 +333,7 @@ async function importFromGitHub(
     repo,
     path: selectedPath,
     is_public: isPublic,
-    type: importResult.type,
+    type: importResult.agent.type,
   })
 
   if (options.json) {
@@ -567,14 +342,67 @@ async function importFromGitHub(
   }
 
   process.stdout.write('\n')
-  process.stdout.write(`Imported ${chalk.bold(importResult.name)} from ${repo}\n`)
+  process.stdout.write(`Imported ${chalk.bold(importResult.agent.name)} from ${repo}\n`)
   process.stdout.write('\n')
-  process.stdout.write(`  Agent:   ${importResult.org_slug}/${importResult.name}\n`)
-  process.stdout.write(`  Version: ${importResult.version}\n`)
-  process.stdout.write(`  Type:    ${importResult.type}\n`)
+  process.stdout.write(`  Agent:   ${importResult.agent.name}\n`)
+  process.stdout.write(`  Version: ${importResult.agent.version}\n`)
+  process.stdout.write(`  Type:    ${importResult.agent.type}\n`)
   process.stdout.write(`  Public:  ${isPublic ? chalk.green('Yes') : chalk.yellow('No')}\n`)
   process.stdout.write('\n')
-  process.stdout.write(`View at: https://orchagent.io/${importResult.org_slug}/${importResult.name}\n`)
+}
+
+async function getSyncConfig(
+  config: ResolvedConfig,
+  agentId: string,
+  options: {
+    setAutoPublish?: string
+    json?: boolean
+  }
+): Promise<void> {
+  // If --set-auto-publish is specified, update config first
+  if (options.setAutoPublish !== undefined) {
+    const autoPublish = options.setAutoPublish === 'true'
+    await request(
+      config,
+      'PATCH',
+      `/github/agents/${agentId}/sync-config`,
+      {
+        body: JSON.stringify({ auto_publish: autoPublish }),
+        headers: { 'Content-Type': 'application/json' },
+      }
+    )
+    process.stdout.write(`Updated auto_publish to ${chalk.bold(String(autoPublish))} for agent ${agentId}\n`)
+    return
+  }
+
+  const syncConfig = await request<SyncConfigResponse>(
+    config,
+    'GET',
+    `/github/agents/${agentId}/sync-config`
+  )
+
+  if (options.json) {
+    printJson(syncConfig)
+    return
+  }
+
+  process.stdout.write(`Sync Config for ${chalk.bold(agentId)}:\n\n`)
+  process.stdout.write(`  Auto-publish: ${syncConfig.auto_publish ? chalk.green('enabled') : chalk.yellow('disabled')}\n`)
+  if (syncConfig.sync_status) {
+    process.stdout.write(`  Sync status:  ${syncConfig.sync_status}\n`)
+  }
+  process.stdout.write('\n')
+}
+
+async function approveSync(config: ResolvedConfig, agentId: string): Promise<void> {
+  await request(
+    config,
+    'POST',
+    `/github/agents/${agentId}/approve`
+  )
+
+  await track('cli_github_approve', { agent_id: agentId })
+  process.stdout.write(`Approved pending sync for agent ${chalk.bold(agentId)}.\n`)
 }
 
 // Command registration
@@ -586,25 +414,19 @@ export function registerGitHubCommand(program: Command): void {
 
   github
     .command('connect')
-    .description('Connect your GitHub account via browser OAuth')
-    .option('--port <port>', `Localhost port for callback (default: ${DEFAULT_AUTH_PORT})`, String(DEFAULT_AUTH_PORT))
-    .action(async (options: { port?: string }) => {
+    .description('Install the GitHub App to connect your account')
+    .action(async () => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orchagent login` first.')
       }
 
-      const port = parseInt(options.port || String(DEFAULT_AUTH_PORT), 10)
-      if (isNaN(port) || port < 1024 || port > 65535) {
-        throw new CliError('Port must be a number between 1024 and 65535')
-      }
-
-      await connectGitHub(config, port)
+      await connectGitHub(config)
     })
 
   github
     .command('disconnect')
-    .description('Remove GitHub connection')
+    .description('Remove GitHub App installation')
     .action(async () => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
@@ -625,20 +447,6 @@ export function registerGitHubCommand(program: Command): void {
       }
 
       await getGitHubStatus(config, options.json || false)
-    })
-
-  github
-    .command('list')
-    .description('List accessible GitHub repositories')
-    .option('--search <query>', 'Filter repositories by name')
-    .option('--json', 'Output raw JSON')
-    .action(async (options: { search?: string; json?: boolean }) => {
-      const config = await getResolvedConfig()
-      if (!config.apiKey) {
-        throw new CliError('Missing API key. Run `orchagent login` first.')
-      }
-
-      await listGitHubRepos(config, options.search, options.json || false)
     })
 
   github
@@ -675,5 +483,38 @@ export function registerGitHubCommand(program: Command): void {
       }
 
       await importFromGitHub(config, repo, options)
+    })
+
+  github
+    .command('sync-config <agent>')
+    .description('View or update sync configuration for a GitHub-linked agent')
+    .option('--set-auto-publish <value>', 'Set auto_publish (true or false)')
+    .option('--json', 'Output raw JSON')
+    .action(async (agent: string, options: {
+      setAutoPublish?: string
+      json?: boolean
+    }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orchagent login` first.')
+      }
+
+      if (options.setAutoPublish !== undefined && options.setAutoPublish !== 'true' && options.setAutoPublish !== 'false') {
+        throw new CliError('--set-auto-publish must be "true" or "false"')
+      }
+
+      await getSyncConfig(config, agent, options)
+    })
+
+  github
+    .command('approve <agent_id>')
+    .description('Approve a pending GitHub sync for an agent')
+    .action(async (agentId: string) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orchagent login` first.')
+      }
+
+      await approveSync(config, agentId)
     })
 }
