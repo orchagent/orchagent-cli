@@ -253,6 +253,7 @@ describe('pull command', () => {
     const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
     expect(manifest.name).toBe('my-agent')
     expect(manifest.entrypoint).toBe('main.py')
+    expect(manifest.runtime).toEqual({ command: 'python main.py' })
 
     // No prompt.md for code_runtime
     await expect(fs.access(path.join(outputDir, 'prompt.md'))).rejects.toThrow()
@@ -429,6 +430,7 @@ describe('pull command', () => {
         name: 'my-agent',
         version: 'v1',
         type: 'agent',
+        org_slug: 'acme',
         created_at: '2026-01-01T00:00:00Z',
       } as any,
     ])
@@ -449,6 +451,28 @@ describe('pull command', () => {
 
     const prompt = await fs.readFile(path.join(outputDir, 'prompt.md'), 'utf-8')
     expect(prompt).toBe('Private prompt.')
+  })
+
+  it('does not resolve private fallback from another org with same agent name', async () => {
+    mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
+
+    mockGetOrg.mockResolvedValue({ id: 'org-1', name: 'Acme', slug: 'acme', created_at: '2026-01-01' })
+    mockListMyAgents.mockResolvedValue([
+      {
+        id: 'agent-id-other',
+        name: 'my-agent',
+        version: 'v9',
+        type: 'agent',
+        org_slug: 'other-org',
+        created_at: '2026-01-01T00:00:00Z',
+      } as any,
+    ])
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+      ])
+    ).rejects.toThrow('not found')
   })
 
   // ─── Test 14: Skill target errors ────────────────────────────────────────
@@ -504,6 +528,95 @@ describe('pull command', () => {
     expect(manifest.skills_locked).toBe(true)
     expect(manifest.default_models).toEqual({ anthropic: 'claude-sonnet-4-5-20250929', openai: 'gpt-4o' })
     expect(manifest.supported_providers).toEqual(['anthropic', 'openai'])
+  })
+
+  it('preserves managed_loop config for round-trip publish', async () => {
+    const loopConfig = {
+      max_turns: 12,
+      custom_tools: [
+        {
+          name: 'repo_scan',
+          description: 'Scan repository',
+          command: 'python scan.py',
+          input_schema: { type: 'object' },
+        },
+      ],
+    }
+    mockPublicRequest.mockResolvedValue(
+      makeDownloadResponse({
+        execution_engine: 'managed_loop',
+        loop: loopConfig,
+      })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
+    expect(manifest.loop).toEqual(loopConfig)
+    expect(manifest.max_turns).toBe(12)
+    expect(manifest.custom_tools).toEqual(loopConfig.custom_tools)
+  })
+
+  it('preserves orchestration dependencies', async () => {
+    mockPublicRequest.mockResolvedValue(
+      makeDownloadResponse({
+        dependencies: [{ id: 'acme/helper', version: 'v2' }],
+      })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
+    expect(manifest.manifest).toEqual({
+      dependencies: [{ id: 'acme/helper', version: 'v2' }],
+    })
+  })
+
+  it('falls back to authenticated bundle download when public bundle is 403', async () => {
+    mockPublicRequest.mockRejectedValue(
+      new ApiError('Download disabled', 403, {
+        error: { code: 'DOWNLOAD_DISABLED', message: 'Download disabled' },
+      })
+    )
+
+    mockListMyAgents.mockResolvedValue([
+      {
+        id: 'agent-id-3',
+        name: 'my-agent',
+        version: 'v3',
+        type: 'agent',
+        org_slug: 'acme',
+        created_at: '2026-01-01T00:00:00Z',
+      } as any,
+    ])
+
+    mockRequest.mockResolvedValue({
+      id: 'agent-id-3',
+      name: 'my-agent',
+      version: 'v3',
+      type: 'tool',
+      execution_engine: 'code_runtime',
+      description: 'Tool agent',
+      code_bundle_url: 'supabase://bundles/agent-id-3.zip',
+      entrypoint: 'main.py',
+    } as any)
+
+    mockDownloadCodeBundle.mockRejectedValue(new ApiError('Forbidden', 403))
+    mockDownloadCodeBundleAuthenticated.mockRejectedValue(new ApiError('Not found', 404))
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    expect(mockDownloadCodeBundle).toHaveBeenCalled()
+    expect(mockDownloadCodeBundleAuthenticated).toHaveBeenCalledWith(
+      expect.any(Object),
+      'agent-id-3'
+    )
   })
 
   it('omits schema.json when no schemas exist', async () => {

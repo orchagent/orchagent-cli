@@ -36,10 +36,13 @@ type PullData = {
   type: string
   run_mode?: string | null
   execution_engine?: string | null
+  runtime?: Record<string, unknown> | null
+  loop?: Record<string, unknown> | null
   callable?: boolean
   prompt?: string
   input_schema?: object
   output_schema?: object
+  dependencies?: Array<{ id: string; version: string }>
   supported_providers?: string[]
   default_models?: Record<string, string>
   tags?: string[]
@@ -92,10 +95,25 @@ function resolveEngine(data: PullData): 'direct_llm' | 'managed_loop' | 'code_ru
   if (ee === 'direct_llm' || ee === 'managed_loop' || ee === 'code_runtime') {
     return ee
   }
+  const runtimeCommand = data.runtime?.command
+  if (typeof runtimeCommand === 'string' && runtimeCommand.trim()) return 'code_runtime'
+  if (data.loop && Object.keys(data.loop).length > 0) return 'managed_loop'
   const normalized = (data.type || '').toLowerCase()
   if (normalized === 'tool' || normalized === 'code') return 'code_runtime'
   if (normalized === 'agentic') return 'managed_loop'
   return 'direct_llm'
+}
+
+function commandForEntrypoint(entrypoint: string): string {
+  if (
+    entrypoint.endsWith('.js')
+    || entrypoint.endsWith('.mjs')
+    || entrypoint.endsWith('.cjs')
+    || entrypoint.endsWith('.ts')
+  ) {
+    return `node ${entrypoint}`
+  }
+  return `python ${entrypoint}`
 }
 
 // ─── Agent Resolution ───────────────────────────────────────────────────────
@@ -119,10 +137,13 @@ async function resolveAgent(
       type: (data.type as string) || 'agent',
       run_mode: data.run_mode as string | null | undefined,
       execution_engine: data.execution_engine as string | null | undefined,
+      runtime: data.runtime as Record<string, unknown> | null | undefined,
+      loop: data.loop as Record<string, unknown> | null | undefined,
       callable: data.callable as boolean | undefined,
       prompt: data.prompt as string | undefined,
       input_schema: data.input_schema as object | undefined,
       output_schema: data.output_schema as object | undefined,
+      dependencies: data.dependencies as Array<{ id: string; version: string }> | undefined,
       supported_providers: data.supported_providers as string[] | undefined,
       default_models: data.default_models as Record<string, string> | undefined,
       default_skills: data.default_skills as string[] | undefined,
@@ -214,7 +235,7 @@ async function resolveFromMyAgents(
   org: string
 ): Promise<Omit<PullData, 'source'> | null> {
   const agents = await listMyAgents(config)
-  const matching = agents.filter(a => a.name === agent)
+  const matching = agents.filter(a => a.name === agent && a.org_slug === org)
   if (matching.length === 0) return null
 
   let target: Agent
@@ -240,10 +261,14 @@ function mapAgentToPullData(agent: Agent): Omit<PullData, 'source'> {
     type: agent.type,
     run_mode: agent.run_mode ?? null,
     execution_engine: agent.execution_engine ?? null,
+    runtime: (agent as Agent & { runtime?: Record<string, unknown> | null }).runtime ?? null,
+    loop: (agent as Agent & { loop?: Record<string, unknown> | null }).loop ?? null,
     callable: agent.callable,
     prompt: agent.prompt,
     input_schema: agent.input_schema,
     output_schema: agent.output_schema,
+    dependencies:
+      ((agent.manifest as Record<string, unknown> | undefined)?.dependencies as Array<{ id: string; version: string }> | undefined),
     supported_providers: agent.supported_providers,
     default_models: agent.default_models,
     tags: agent.tags,
@@ -293,6 +318,18 @@ function buildManifest(data: PullData): Record<string, unknown> {
   const engine = resolveEngine(data)
 
   if (engine === 'code_runtime') {
+    const runtime =
+      (data.runtime && typeof data.runtime === 'object' && Object.keys(data.runtime).length > 0)
+        ? { ...data.runtime }
+        : undefined
+    const runtimeCommand =
+      (typeof runtime?.command === 'string' && runtime.command.trim())
+        ? runtime.command
+        : (data.run_command?.trim()
+          || (data.entrypoint ? commandForEntrypoint(data.entrypoint) : undefined))
+    if (runtimeCommand) {
+      manifest.runtime = { ...(runtime || {}), command: runtimeCommand }
+    }
     if (data.entrypoint && data.entrypoint !== 'sandbox_main.py') {
       manifest.entrypoint = data.entrypoint
     }
@@ -301,15 +338,43 @@ function buildManifest(data: PullData): Record<string, unknown> {
     if (data.run_command) manifest.run_command = data.run_command
   }
 
+  if (engine === 'managed_loop') {
+    const loop =
+      (data.loop && typeof data.loop === 'object' && Object.keys(data.loop).length > 0)
+        ? { ...data.loop }
+        : undefined
+    if (loop) {
+      manifest.loop = loop
+      const loopCustomTools = loop.custom_tools
+      if (Array.isArray(loopCustomTools) && loopCustomTools.length > 0) {
+        manifest.custom_tools = loopCustomTools
+      }
+      const loopMaxTurns = loop.max_turns
+      if (typeof loopMaxTurns === 'number') {
+        manifest.max_turns = loopMaxTurns
+      }
+    }
+  }
+
   // Include orchestration manifest if present (for dependencies, etc.)
   if (data.manifest && typeof data.manifest === 'object') {
     const m = { ...data.manifest }
+    if (
+      data.dependencies
+      && data.dependencies.length > 0
+      && (!Array.isArray((m as { dependencies?: unknown }).dependencies)
+      || (m as { dependencies?: unknown[] }).dependencies?.length === 0)
+    ) {
+      ;(m as { dependencies: Array<{ id: string; version: string }> }).dependencies = data.dependencies
+    }
     // Clean up fields that are already top-level
     delete m.runtime
     delete m.loop
     if (Object.keys(m).length > 0) {
       manifest.manifest = m
     }
+  } else if (data.dependencies && data.dependencies.length > 0) {
+    manifest.manifest = { dependencies: data.dependencies }
   }
 
   return manifest
@@ -327,7 +392,10 @@ async function downloadBundle(
   try {
     return await downloadCodeBundle(config, org, agent, version)
   } catch (err) {
-    if (!(err instanceof ApiError) || err.status !== 404) throw err
+    if (!(err instanceof ApiError)) throw err
+    if (err.status !== 404 && !(err.status === 403 && config.apiKey && agentId)) {
+      throw err
+    }
   }
 
   if (config.apiKey && agentId) {

@@ -269,7 +269,7 @@ export function registerInitCommand(program: Command): void {
 
       if (initMode.flavor === 'direct_llm' && runMode === 'always_on') {
         throw new CliError(
-          "run_mode=always_on requires a non-direct runtime. Use legacy '--type tool' or add runtime.command in orchagent.json."
+          "run_mode=always_on requires runtime.command in orchagent.json (e.g. \"runtime\": { \"command\": \"python main.py\" })."
         )
       }
 

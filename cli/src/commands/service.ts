@@ -21,8 +21,13 @@ interface AutomationService {
   agent_name: string
   agent_version: string
   desired_state: 'running' | 'stopped'
-  current_state: 'provisioning' | 'running' | 'unhealthy' | 'failed' | 'deleting' | 'deleted'
+  current_state: 'provisioning' | 'running' | 'unhealthy' | 'failed' | 'migrating' | 'deleting' | 'deleted'
   health_status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+  infrastructure_provider: string | null
+  service_tier: string | null
+  provider_service_id: string | null
+  provider_region: string | null
+  provider_url: string | null
   cloud_run_service: string | null
   cloud_run_region: string | null
   cloud_run_url: string | null
@@ -280,7 +285,7 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`  ${chalk.bold('Name:')}     ${svc.service_name}\n`)
         process.stdout.write(`  ${chalk.bold('Agent:')}    ${svc.agent_name}@${svc.agent_version}\n`)
         process.stdout.write(`  ${chalk.bold('State:')}    ${stateColor(svc.current_state)}\n`)
-        process.stdout.write(`  ${chalk.bold('URL:')}      ${svc.cloud_run_url || '-'}\n`)
+        process.stdout.write(`  ${chalk.bold('URL:')}      ${svc.provider_url || svc.cloud_run_url || '-'}\n`)
         process.stdout.write(`\n`)
         process.stdout.write(chalk.gray(`View logs: orch service logs ${svc.id}\n`))
       } catch (e) {
@@ -481,8 +486,8 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`  Fail Streak:  ${chalk.red(String(svc.consecutive_restart_failures))} / ${svc.max_restart_failures}\n`)
       }
       process.stdout.write(`  Instances:    ${svc.min_instances}-${svc.max_instances}\n`)
-      process.stdout.write(`  Cloud Run:    ${svc.cloud_run_service || '-'}\n`)
-      process.stdout.write(`  URL:          ${svc.cloud_run_url || '-'}\n`)
+      process.stdout.write(`  Service ID:   ${svc.provider_service_id || svc.cloud_run_service || '-'}\n`)
+      process.stdout.write(`  URL:          ${svc.provider_url || svc.cloud_run_url || '-'}\n`)
       process.stdout.write(`  Deployed:     ${formatDate(svc.last_deployed_at)}\n`)
       process.stdout.write(`  Last Restart: ${formatDate(svc.last_restart_at)}\n`)
 
