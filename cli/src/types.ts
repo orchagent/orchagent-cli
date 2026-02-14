@@ -60,8 +60,8 @@ export type PublicAgent = {
 export type LlmProvider = 'openai' | 'anthropic' | 'gemini' | 'any'
 // Note: 'any' is only used in supported_providers, not as an actual provider for keys
 
-export type AgentObjectType = 'agent' | 'skill'
-export type LegacyAgentObjectType = 'prompt' | 'tool' | 'agentic' | 'code'
+export type AgentObjectType = 'prompt' | 'tool' | 'agent' | 'skill'
+export type LegacyAgentObjectType = 'agentic' | 'code'
 export type AgentTypeValue = AgentObjectType | LegacyAgentObjectType
 export type AgentRunMode = 'on_demand' | 'always_on'
 export type AgentExecutionEngine = 'direct_llm' | 'managed_loop' | 'code_runtime'
@@ -70,7 +70,7 @@ export type AgentManifest = {
   name: string
   version: string
   description?: string
-  // Canonical values are "agent" | "skill". Legacy values are accepted for migration.
+  // Canonical values are "prompt" | "tool" | "agent" | "skill". Legacy aliases: "agentic" → "agent", "code" → "tool".
   type: AgentTypeValue
   run_mode?: AgentRunMode
   runtime?: {

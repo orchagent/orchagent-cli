@@ -7,7 +7,9 @@
 import { describe, it, expect } from 'vitest'
 import { runOrch, outputContains } from './setup'
 
-describe('info command', () => {
+const describeLive = process.env.ORCH_E2E_SKIP_LIVE === '1' ? describe.skip : describe
+
+describeLive('info command', () => {
   it('shows agent details for a valid agent', async () => {
     const result = await runOrch(['info', 'orchagent/leak-finder'])
 

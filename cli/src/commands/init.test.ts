@@ -7,7 +7,8 @@
  * - Skill type initialization
  * - Already initialized detection
  * - Tool type (code-runtime scaffolding)
- * - Agent/agentic scaffolding behavior
+ * - Prompt type (direct_llm scaffolding)
+ * - Agent/agentic scaffolding behavior (managed_loop)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -176,7 +177,7 @@ describe('init command', () => {
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.type).toBe('agent')
+      expect(manifest.type).toBe('tool')
       expect(manifest.run_mode).toBe('on_demand')
       expect(manifest.runtime).toEqual({ command: 'python main.py' })
     })
@@ -226,7 +227,56 @@ describe('init command', () => {
     })
   })
 
-  describe('agent type', () => {
+  describe('prompt type (default)', () => {
+    it('sets type to prompt in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-prompt', '--type', 'prompt'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      expect(manifestCall).toBeDefined()
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('prompt')
+    })
+
+    it('defaults to prompt type when no --type is specified', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('prompt')
+    })
+
+    it('creates prompt.md with simple template', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-prompt', '--type', 'prompt'])
+
+      const promptCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('prompt.md')
+      )
+      expect(promptCall).toBeDefined()
+      const content = promptCall![1] as string
+      expect(content).toContain('{{input}}')
+    })
+
+    it('does not create main.py', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-prompt', '--type', 'prompt'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainCall).toBeUndefined()
+    })
+
+    it('shows schema.json in next steps', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-prompt', '--type', 'prompt'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('schema.json'))
+    })
+  })
+
+  describe('agent type (managed_loop)', () => {
     it('sets type to agent in manifest', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
@@ -236,6 +286,26 @@ describe('init command', () => {
       expect(manifestCall).toBeDefined()
       const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.type).toBe('agent')
+    })
+
+    it('includes max_turns in loop for agent type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.loop?.max_turns).toBe(25)
+    })
+
+    it('includes supported_providers for agent type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.supported_providers).toEqual(['anthropic'])
     })
 
     it('does not include custom_tools in default manifest', async () => {
@@ -248,41 +318,32 @@ describe('init command', () => {
       expect(manifest.custom_tools).toBeUndefined()
     })
 
-    it('includes max_turns in loop for legacy agentic type', async () => {
+    it('legacy agentic alias produces same result as agent type', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
       expect(manifest.loop?.max_turns).toBe(25)
-    })
-
-    it('includes supported_providers for legacy agentic type', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
-
-      const manifestCall = mockFs.writeFile.mock.calls.find(
-        ([p]) => (p as string).endsWith('orchagent.json')
-      )
-      const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.supported_providers).toEqual(['anthropic'])
     })
 
-    it('creates prompt.md with managed-loop content for legacy agentic type', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
+    it('creates prompt.md with agent content', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const promptCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('prompt.md')
       )
       expect(promptCall).toBeDefined()
       const content = promptCall![1] as string
-      // Agent prompt should focus on domain expertise (platform context is auto-injected at runtime)
       expect(content).toContain('agent')
       expect(content).not.toContain('{{input}}')
     })
 
-    it('creates schema.json with task input field for legacy agentic type', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
+    it('creates schema.json with task input field', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const schemaCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('schema.json')

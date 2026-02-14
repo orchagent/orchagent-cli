@@ -8,7 +8,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { runOrch, createTestDir, cleanupTestDir, createTestProject, outputContains } from './setup'
 
-describe('run command', () => {
+const describeLive = process.env.ORCH_E2E_SKIP_LIVE === '1' ? describe.skip : describe
+
+describeLive('run command', () => {
   let testDir: string
 
   beforeAll(async () => {

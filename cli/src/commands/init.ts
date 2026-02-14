@@ -174,26 +174,23 @@ license: MIT
 Instructions and guidance for AI agents...
 `
 
-function resolveInitFlavor(typeOption: string): { type: 'agent' | 'skill'; flavor?: InitFlavor } {
-  const normalized = (typeOption || 'agent').trim().toLowerCase()
+function resolveInitFlavor(typeOption: string): { type: 'prompt' | 'tool' | 'agent' | 'skill'; flavor?: InitFlavor } {
+  const normalized = (typeOption || 'prompt').trim().toLowerCase()
   if (normalized === 'skill') {
     return { type: 'skill' }
   }
-  if (normalized === 'agent') {
-    return { type: 'agent', flavor: 'direct_llm' }
-  }
   if (normalized === 'prompt') {
-    return { type: 'agent', flavor: 'direct_llm' }
+    return { type: 'prompt', flavor: 'direct_llm' }
   }
-  if (normalized === 'agentic') {
+  if (normalized === 'agent' || normalized === 'agentic') {
     return { type: 'agent', flavor: 'managed_loop' }
   }
   if (normalized === 'tool' || normalized === 'code') {
-    return { type: 'agent', flavor: 'code_runtime' }
+    return { type: 'tool', flavor: 'code_runtime' }
   }
 
   throw new CliError(
-    `Unknown --type '${typeOption}'. Use 'agent' or 'skill' (legacy: prompt, tool, agentic, code).`
+    `Unknown --type '${typeOption}'. Use 'prompt', 'tool', 'agent', or 'skill' (legacy aliases: agentic, code).`
   )
 }
 
@@ -202,7 +199,7 @@ export function registerInitCommand(program: Command): void {
     .command('init')
     .description('Initialize a new agent project')
     .argument('[name]', 'Agent name (default: current directory name)')
-    .option('--type <type>', 'Type: agent or skill (legacy: prompt, tool, agentic, code)', 'agent')
+    .option('--type <type>', 'Type: prompt, tool, agent, or skill (legacy aliases: agentic, code)', 'prompt')
     .option('--run-mode <mode>', 'Run mode for agents: on_demand or always_on', 'on_demand')
     .action(async (name: string | undefined, options: { type: string; runMode: string }) => {
       const cwd = process.cwd()
@@ -267,16 +264,16 @@ export function registerInitCommand(program: Command): void {
         }
       }
 
-      if (initMode.flavor === 'direct_llm' && runMode === 'always_on') {
+      if (initMode.flavor !== 'code_runtime' && runMode === 'always_on') {
         throw new CliError(
-          "run_mode=always_on requires runtime.command in orchagent.json (e.g. \"runtime\": { \"command\": \"python main.py\" })."
+          "run_mode=always_on requires runtime.command in orchagent.json (e.g. \"runtime\": { \"command\": \"python main.py\" }). Use --type tool for code-runtime agents."
         )
       }
 
       // Create manifest and type-specific files
       const manifest = JSON.parse(MANIFEST_TEMPLATE)
       manifest.name = agentName
-      manifest.type = 'agent'
+      manifest.type = initMode.type
       manifest.run_mode = runMode
 
       if (initMode.flavor === 'managed_loop') {

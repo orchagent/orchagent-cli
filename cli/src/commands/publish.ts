@@ -177,19 +177,23 @@ async function collectSkillFiles(
   return files
 }
 
-type CanonicalType = 'agent' | 'skill'
+type CanonicalType = 'prompt' | 'tool' | 'agent' | 'skill'
 type ExecutionEngine = 'direct_llm' | 'managed_loop' | 'code_runtime'
 
 function canonicalizeManifestType(typeValue: string | undefined): { canonicalType: CanonicalType; rawType: string } {
   const rawType = (typeValue || 'agent').trim().toLowerCase()
-  if (rawType === 'skill') {
-    return { canonicalType: 'skill', rawType }
+  if (['prompt', 'tool', 'agent', 'skill'].includes(rawType)) {
+    return { canonicalType: rawType as CanonicalType, rawType }
   }
-  if (['agent', 'prompt', 'tool', 'agentic', 'code'].includes(rawType)) {
+  // Legacy aliases
+  if (rawType === 'agentic') {
     return { canonicalType: 'agent', rawType }
   }
+  if (rawType === 'code') {
+    return { canonicalType: 'tool', rawType }
+  }
   throw new CliError(
-    `Invalid type '${typeValue}'. Use 'agent' or 'skill' (legacy values accepted: prompt, tool, agentic, code).`
+    `Invalid type '${typeValue}'. Use 'prompt', 'tool', 'agent', or 'skill' (legacy aliases: agentic, code).`
   )
 }
 
@@ -796,6 +800,11 @@ export function registerPublishCommand(program: Command): void {
             } else if (uploadResult.environment_source === 'workspace_default') {
               process.stdout.write(`  ${chalk.cyan('Using workspace default environment')}\n`)
             }
+          }
+
+          // Show service auto-update info
+          if (uploadResult.services_updated && uploadResult.services_updated > 0) {
+            process.stdout.write(`  ${chalk.green(`Updated ${uploadResult.services_updated} service(s) to ${assignedVersion}`)}\n`)
           }
         } finally {
           // Clean up temp files

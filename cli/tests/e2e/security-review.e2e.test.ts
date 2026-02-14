@@ -11,7 +11,9 @@ import { writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
 import { runOrch, createTestDir, cleanupTestDir, createTestFile, outputContains } from './setup'
 
-describe('security-review agent', () => {
+const describeLive = process.env.ORCH_E2E_SKIP_LIVE === '1' ? describe.skip : describe
+
+describeLive('security-review agent', () => {
   let testDir: string
 
   beforeAll(async () => {

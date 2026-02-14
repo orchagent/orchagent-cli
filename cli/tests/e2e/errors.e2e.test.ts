@@ -8,7 +8,9 @@
 import { describe, it, expect } from 'vitest'
 import { runOrch, outputContains } from './setup'
 
-describe('error message quality', () => {
+const describeLive = process.env.ORCH_E2E_SKIP_LIVE === '1' ? describe.skip : describe
+
+describeLive('error message quality', () => {
   describe('Bug #1 regression: errors must be descriptive', () => {
     it('shows descriptive error when run is missing input', async () => {
       const result = await runOrch(['run', 'orchagent/leak-finder'], {

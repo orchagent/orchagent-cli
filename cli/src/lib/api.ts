@@ -262,7 +262,7 @@ export async function createAgent(
     // Local download toggle
     allow_local_download?: boolean
   }
-): Promise<{ agent: Agent; service_key?: string }> {
+): Promise<{ agent: Agent; service_key?: string; services_updated?: number }> {
   return request(config, 'POST', '/agents', {
     body: JSON.stringify(data),
     headers: { 'Content-Type': 'application/json' },
@@ -318,6 +318,7 @@ export async function uploadCodeBundle(
   bundle_size_bytes: number
   environment_id?: string
   environment_source?: 'dockerfile_new' | 'dockerfile_reused' | 'workspace_default' | null
+  services_updated?: number
 }> {
   if (!config.apiKey) {
     throw new ApiError('Missing API key. Run `orchagent login` first.', 401)

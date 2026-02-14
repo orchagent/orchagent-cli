@@ -24,7 +24,9 @@ const MINIMAL_PNG = Buffer.from([
   0x44, 0xae, 0x42, 0x60, 0x82,                   // IEND CRC
 ])
 
-describe('invoice-scanner agent', () => {
+const describeLive = process.env.ORCH_E2E_SKIP_LIVE === '1' ? describe.skip : describe
+
+describeLive('invoice-scanner agent', () => {
   let testDir: string
 
   beforeAll(async () => {
