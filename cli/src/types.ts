@@ -111,6 +111,8 @@ export type AgentManifest = {
   source_url?: string      // Git URL to install from (e.g., "git+https://github.com/org/repo#subdirectory=agents/name")
   pip_package?: string     // PyPI package name if published there
   run_command?: string     // Command to run locally (e.g., "python -m leak_finder.cli")
+  // Workspace secrets to inject as env vars in sandbox
+  required_secrets?: string[]
   // Skills composition: default skills to inject
   default_skills?: string[]
   skills_locked?: boolean
@@ -164,6 +166,7 @@ export type Agent = {
   code_bundle_url?: string
   entrypoint?: string
   is_public?: boolean
+  required_secrets?: string[]
   default_skills?: string[]
   skills_locked?: boolean
   pricing_mode?: 'free' | 'per_call' | null

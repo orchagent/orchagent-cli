@@ -41,6 +41,9 @@ interface AutomationService {
   max_restart_failures: number
   auto_paused_at: string | null
   alert_webhook_url: string | null
+  auto_update: boolean
+  env_json: Record<string, string>
+  secret_names: string[]
   created_at: string
   updated_at: string
 }
@@ -178,6 +181,7 @@ export function registerServiceCommand(program: Command): void {
     .option('--secret <NAME>', 'Workspace secret name (repeatable)', collectArray, [])
     .option('--command <cmd>', 'Override entrypoint command')
     .option('--arg <value>', 'Command argument (repeatable)', collectArray, [])
+    .option('--pin', 'Pin to deployed version (disable auto-update on publish)')
     .option('--json', 'Output as JSON')
     .action(async (agentArg: string, options: {
       workspace?: string
@@ -188,6 +192,7 @@ export function registerServiceCommand(program: Command): void {
       secret: string[]
       command?: string
       arg: string[]
+      pin?: boolean
       json?: boolean
     }) => {
       const config = await getResolvedConfig()
@@ -267,6 +272,7 @@ export function registerServiceCommand(program: Command): void {
               args: options.arg.length > 0 ? options.arg : null,
               env: Object.keys(options.env).length > 0 ? options.env : null,
               secret_names: options.secret.length > 0 ? options.secret : null,
+              ...(options.pin ? { auto_update: false } : {}),
             }),
             headers: { 'Content-Type': 'application/json' },
           }
@@ -286,6 +292,9 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`  ${chalk.bold('Agent:')}    ${svc.agent_name}@${svc.agent_version}\n`)
         process.stdout.write(`  ${chalk.bold('State:')}    ${stateColor(svc.current_state)}\n`)
         process.stdout.write(`  ${chalk.bold('URL:')}      ${svc.provider_url || svc.cloud_run_url || '-'}\n`)
+        if (options.pin) {
+          process.stdout.write(`  ${chalk.bold('Pinned:')}   ${chalk.yellow(`yes (won't auto-update on publish)`)}\n`)
+        }
         process.stdout.write(`\n`)
         process.stdout.write(chalk.gray(`View logs: orch service logs ${svc.id}\n`))
       } catch (e) {
@@ -498,6 +507,28 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`  Alert URL:    ${svc.alert_webhook_url.slice(0, 50)}...\n`)
       }
 
+      // Environment variables
+      const envKeys = Object.keys(svc.env_json || {})
+      if (envKeys.length > 0) {
+        process.stdout.write(`\n${chalk.bold('Environment Variables')} (${envKeys.length})\n`)
+        for (const key of envKeys) {
+          process.stdout.write(`  ${key}=${svc.env_json[key]}\n`)
+        }
+      } else {
+        process.stdout.write(`\n  Env Vars:     ${chalk.gray('none')}\n`)
+      }
+
+      // Attached secrets
+      const secrets = svc.secret_names || []
+      if (secrets.length > 0) {
+        process.stdout.write(`\n${chalk.bold('Attached Secrets')} (${secrets.length})\n`)
+        for (const name of secrets) {
+          process.stdout.write(`  ${name}\n`)
+        }
+      } else {
+        process.stdout.write(`  Secrets:      ${chalk.gray('none')}\n`)
+      }
+
       // Events timeline
       const events = svc.events || []
       if (events.length > 0) {
@@ -543,6 +574,301 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`${chalk.green('\u2713')} Service '${result.service.service_name}' deleted\n`)
       } catch (e) {
         spinner.fail('Delete failed')
+        throw e
+      }
+    })
+
+  // ============================================
+  // orch service env — manage environment variables
+  // ============================================
+
+  const envCmd = service
+    .command('env')
+    .description('Manage service environment variables')
+
+  // orch service env set <service-id> <KEY=VALUE...>
+  envCmd
+    .command('set <service-id> <pairs...>')
+    .description('Set environment variables on a service (KEY=VALUE pairs)')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
+    .action(async (serviceId: string, pairs: string[], options: { workspace?: string; json?: boolean }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      // Parse KEY=VALUE pairs
+      const newEnv: Record<string, string> = {}
+      for (const pair of pairs) {
+        const idx = pair.indexOf('=')
+        if (idx < 0) {
+          throw new CliError(`Invalid format: '${pair}'. Use KEY=VALUE.`)
+        }
+        newEnv[pair.slice(0, idx)] = pair.slice(idx + 1)
+      }
+
+      // Fetch current service to merge env
+      const current = await request<ServiceResponse>(
+        config, 'GET', `/workspaces/${workspaceId}/services/${serviceId}`
+      )
+      const currentEnv = current.service.env_json || {}
+      const mergedEnv = { ...currentEnv, ...newEnv }
+
+      const spinner = createSpinner('Updating environment...')
+      spinner.start()
+
+      try {
+        const result = await request<ServiceResponse>(
+          config,
+          'PATCH',
+          `/workspaces/${workspaceId}/services/${serviceId}`,
+          {
+            body: JSON.stringify({ env: mergedEnv }),
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
+
+        spinner.succeed('Environment updated')
+
+        if (options.json) {
+          printJson(result.service)
+          return
+        }
+
+        const addedKeys = Object.keys(newEnv)
+        process.stdout.write(`${chalk.green('\u2713')} Set ${addedKeys.length} variable${addedKeys.length !== 1 ? 's' : ''}: ${addedKeys.join(', ')}\n`)
+        if (current.service.desired_state !== 'stopped') {
+          process.stdout.write(chalk.gray('Service restarted to apply changes.\n'))
+        }
+      } catch (e) {
+        spinner.fail('Failed to update environment')
+        throw e
+      }
+    })
+
+  // orch service env unset <service-id> <KEY...>
+  envCmd
+    .command('unset <service-id> <keys...>')
+    .description('Remove environment variables from a service')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
+    .action(async (serviceId: string, keys: string[], options: { workspace?: string; json?: boolean }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      // Fetch current service
+      const current = await request<ServiceResponse>(
+        config, 'GET', `/workspaces/${workspaceId}/services/${serviceId}`
+      )
+      const currentEnv = { ...(current.service.env_json || {}) }
+
+      // Remove specified keys
+      const removed: string[] = []
+      for (const key of keys) {
+        if (key in currentEnv) {
+          delete currentEnv[key]
+          removed.push(key)
+        }
+      }
+
+      if (removed.length === 0) {
+        process.stdout.write(chalk.yellow('No matching environment variables found.\n'))
+        return
+      }
+
+      const spinner = createSpinner('Updating environment...')
+      spinner.start()
+
+      try {
+        const result = await request<ServiceResponse>(
+          config,
+          'PATCH',
+          `/workspaces/${workspaceId}/services/${serviceId}`,
+          {
+            body: JSON.stringify({ env: currentEnv }),
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
+
+        spinner.succeed('Environment updated')
+
+        if (options.json) {
+          printJson(result.service)
+          return
+        }
+
+        process.stdout.write(`${chalk.green('\u2713')} Removed ${removed.length} variable${removed.length !== 1 ? 's' : ''}: ${removed.join(', ')}\n`)
+        if (current.service.desired_state !== 'stopped') {
+          process.stdout.write(chalk.gray('Service restarted to apply changes.\n'))
+        }
+      } catch (e) {
+        spinner.fail('Failed to update environment')
+        throw e
+      }
+    })
+
+  // orch service env list <service-id>
+  envCmd
+    .command('list <service-id>')
+    .description('List environment variables for a service')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
+    .action(async (serviceId: string, options: { workspace?: string; json?: boolean }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      const result = await request<ServiceResponse>(
+        config, 'GET', `/workspaces/${workspaceId}/services/${serviceId}`
+      )
+      const envJson = result.service.env_json || {}
+
+      if (options.json) {
+        printJson(envJson)
+        return
+      }
+
+      const keys = Object.keys(envJson)
+      if (keys.length === 0) {
+        process.stdout.write('No environment variables set.\n')
+        return
+      }
+
+      for (const key of keys) {
+        process.stdout.write(`${key}=${envJson[key]}\n`)
+      }
+    })
+
+  // ============================================
+  // orch service secret — manage attached workspace secrets
+  // ============================================
+
+  const secretCmd = service
+    .command('secret')
+    .description('Manage workspace secrets attached to a service')
+
+  // orch service secret add <service-id> <NAME...>
+  secretCmd
+    .command('add <service-id> <names...>')
+    .description('Attach workspace secrets to a service')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
+    .action(async (serviceId: string, names: string[], options: { workspace?: string; json?: boolean }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      // Fetch current service and merge
+      const current = await request<ServiceResponse>(
+        config, 'GET', `/workspaces/${workspaceId}/services/${serviceId}`
+      )
+      const currentSecrets = current.service.secret_names || []
+      const merged = [...new Set([...currentSecrets, ...names])]
+
+      const spinner = createSpinner('Attaching secrets...')
+      spinner.start()
+
+      try {
+        const result = await request<ServiceResponse>(
+          config,
+          'PATCH',
+          `/workspaces/${workspaceId}/services/${serviceId}`,
+          {
+            body: JSON.stringify({ secret_names: merged }),
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
+
+        spinner.succeed('Secrets attached')
+
+        if (options.json) {
+          printJson(result.service)
+          return
+        }
+
+        const added = names.filter(n => !currentSecrets.includes(n))
+        if (added.length > 0) {
+          process.stdout.write(`${chalk.green('\u2713')} Attached ${added.length} secret${added.length !== 1 ? 's' : ''}: ${added.join(', ')}\n`)
+        } else {
+          process.stdout.write(chalk.yellow('All specified secrets were already attached.\n'))
+        }
+        if (current.service.desired_state !== 'stopped') {
+          process.stdout.write(chalk.gray('Service restarted to apply changes.\n'))
+        }
+      } catch (e) {
+        spinner.fail('Failed to attach secrets')
+        throw e
+      }
+    })
+
+  // orch service secret remove <service-id> <NAME...>
+  secretCmd
+    .command('remove <service-id> <names...>')
+    .description('Detach workspace secrets from a service')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
+    .action(async (serviceId: string, names: string[], options: { workspace?: string; json?: boolean }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      // Fetch current service and filter
+      const current = await request<ServiceResponse>(
+        config, 'GET', `/workspaces/${workspaceId}/services/${serviceId}`
+      )
+      const currentSecrets = current.service.secret_names || []
+      const namesToRemove = new Set(names)
+      const filtered = currentSecrets.filter(n => !namesToRemove.has(n))
+      const removed = currentSecrets.filter(n => namesToRemove.has(n))
+
+      if (removed.length === 0) {
+        process.stdout.write(chalk.yellow('No matching secrets found on this service.\n'))
+        return
+      }
+
+      const spinner = createSpinner('Detaching secrets...')
+      spinner.start()
+
+      try {
+        const result = await request<ServiceResponse>(
+          config,
+          'PATCH',
+          `/workspaces/${workspaceId}/services/${serviceId}`,
+          {
+            body: JSON.stringify({ secret_names: filtered }),
+            headers: { 'Content-Type': 'application/json' },
+          }
+        )
+
+        spinner.succeed('Secrets detached')
+
+        if (options.json) {
+          printJson(result.service)
+          return
+        }
+
+        process.stdout.write(`${chalk.green('\u2713')} Detached ${removed.length} secret${removed.length !== 1 ? 's' : ''}: ${removed.join(', ')}\n`)
+        if (current.service.desired_state !== 'stopped') {
+          process.stdout.write(chalk.gray('Service restarted to apply changes.\n'))
+        }
+      } catch (e) {
+        spinner.fail('Failed to detach secrets')
         throw e
       }
     })

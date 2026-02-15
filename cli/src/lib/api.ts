@@ -254,6 +254,8 @@ export async function createAgent(
     sdk_compatible?: boolean
     // Orchestration manifest (includes dependencies)
     manifest?: object
+    // Workspace secrets to inject as env vars in sandbox
+    required_secrets?: string[]
     // Skills configuration
     default_skills?: string[]
     skills_locked?: boolean

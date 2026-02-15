@@ -93,6 +93,67 @@ describe('service state formatting', () => {
   })
 })
 
+describe('deploy request body construction', () => {
+  // Mirrors the body construction logic from service.ts deploy action
+  function buildDeployBody(options: {
+    name: string
+    agentId: string
+    agentName: string
+    agentVersion: string
+    env: Record<string, string>
+    secret: string[]
+    pin?: boolean
+  }) {
+    return {
+      agent_id: options.agentId,
+      agent_name: options.agentName,
+      agent_version: options.agentVersion,
+      service_name: options.name,
+      env: Object.keys(options.env).length > 0 ? options.env : null,
+      secret_names: options.secret.length > 0 ? options.secret : null,
+      ...(options.pin ? { auto_update: false } : {}),
+    }
+  }
+
+  it('includes auto_update=false when --pin is set', () => {
+    const body = buildDeployBody({
+      name: 'my-svc',
+      agentId: 'abc-123',
+      agentName: 'my-agent',
+      agentVersion: 'v1',
+      env: {},
+      secret: [],
+      pin: true,
+    })
+    expect(body.auto_update).toBe(false)
+  })
+
+  it('omits auto_update when --pin is not set', () => {
+    const body = buildDeployBody({
+      name: 'my-svc',
+      agentId: 'abc-123',
+      agentName: 'my-agent',
+      agentVersion: 'v1',
+      env: {},
+      secret: [],
+    })
+    expect(body).not.toHaveProperty('auto_update')
+  })
+
+  it('omits auto_update when pin is explicitly false', () => {
+    const body = buildDeployBody({
+      name: 'my-svc',
+      agentId: 'abc-123',
+      agentName: 'my-agent',
+      agentVersion: 'v1',
+      env: {},
+      secret: [],
+      pin: false,
+    })
+    expect(body).not.toHaveProperty('auto_update')
+  })
+})
+
 describe('agent ref parsing', () => {
   function parseAgentRef(agentArg: string) {
     const parts = agentArg.split('/')
@@ -122,5 +183,126 @@ describe('agent ref parsing', () => {
 
   it('throws on bad format', () => {
     expect(() => parseAgentRef('noorg')).toThrow('Invalid format')
+  })
+})
+
+describe('env set merge logic', () => {
+  function mergeEnv(currentEnv: Record<string, string>, pairs: string[]): Record<string, string> {
+    const newEnv: Record<string, string> = {}
+    for (const pair of pairs) {
+      const idx = pair.indexOf('=')
+      if (idx < 0) throw new Error(`Invalid format: '${pair}'. Use KEY=VALUE.`)
+      newEnv[pair.slice(0, idx)] = pair.slice(idx + 1)
+    }
+    return { ...currentEnv, ...newEnv }
+  }
+
+  it('merges new keys into empty env', () => {
+    expect(mergeEnv({}, ['FOO=bar', 'BAZ=qux'])).toEqual({ FOO: 'bar', BAZ: 'qux' })
+  })
+
+  it('overwrites existing keys', () => {
+    expect(mergeEnv({ FOO: 'old' }, ['FOO=new'])).toEqual({ FOO: 'new' })
+  })
+
+  it('preserves unmodified keys', () => {
+    expect(mergeEnv({ A: '1', B: '2' }, ['C=3'])).toEqual({ A: '1', B: '2', C: '3' })
+  })
+
+  it('handles value with equals sign', () => {
+    expect(mergeEnv({}, ['URL=https://x.com?a=1'])).toEqual({ URL: 'https://x.com?a=1' })
+  })
+
+  it('throws on invalid pair', () => {
+    expect(() => mergeEnv({}, ['NOEQUALS'])).toThrow('Invalid format')
+  })
+})
+
+describe('env unset logic', () => {
+  function unsetEnv(currentEnv: Record<string, string>, keys: string[]): { result: Record<string, string>; removed: string[] } {
+    const result = { ...currentEnv }
+    const removed: string[] = []
+    for (const key of keys) {
+      if (key in result) {
+        delete result[key]
+        removed.push(key)
+      }
+    }
+    return { result, removed }
+  }
+
+  it('removes existing keys', () => {
+    const { result, removed } = unsetEnv({ A: '1', B: '2', C: '3' }, ['A', 'C'])
+    expect(result).toEqual({ B: '2' })
+    expect(removed).toEqual(['A', 'C'])
+  })
+
+  it('ignores non-existent keys', () => {
+    const { result, removed } = unsetEnv({ A: '1' }, ['X'])
+    expect(result).toEqual({ A: '1' })
+    expect(removed).toEqual([])
+  })
+
+  it('handles empty env', () => {
+    const { result, removed } = unsetEnv({}, ['A'])
+    expect(result).toEqual({})
+    expect(removed).toEqual([])
+  })
+
+  it('removes all keys when all specified', () => {
+    const { result, removed } = unsetEnv({ A: '1', B: '2' }, ['A', 'B'])
+    expect(result).toEqual({})
+    expect(removed).toEqual(['A', 'B'])
+  })
+})
+
+describe('secret add merge logic', () => {
+  function mergeSecrets(current: string[], toAdd: string[]): string[] {
+    return [...new Set([...current, ...toAdd])]
+  }
+
+  it('adds new secrets', () => {
+    expect(mergeSecrets([], ['TOKEN'])).toEqual(['TOKEN'])
+  })
+
+  it('deduplicates existing secrets', () => {
+    expect(mergeSecrets(['TOKEN'], ['TOKEN'])).toEqual(['TOKEN'])
+  })
+
+  it('merges new with existing', () => {
+    const result = mergeSecrets(['A'], ['B', 'C'])
+    expect(result).toEqual(['A', 'B', 'C'])
+  })
+
+  it('deduplicates mixed', () => {
+    const result = mergeSecrets(['A', 'B'], ['B', 'C'])
+    expect(result).toEqual(['A', 'B', 'C'])
+  })
+})
+
+describe('secret remove filter logic', () => {
+  function removeSecrets(current: string[], toRemove: string[]): { filtered: string[]; removed: string[] } {
+    const namesToRemove = new Set(toRemove)
+    const filtered = current.filter(n => !namesToRemove.has(n))
+    const removed = current.filter(n => namesToRemove.has(n))
+    return { filtered, removed }
+  }
+
+  it('removes specified secrets', () => {
+    const { filtered, removed } = removeSecrets(['A', 'B', 'C'], ['B'])
+    expect(filtered).toEqual(['A', 'C'])
+    expect(removed).toEqual(['B'])
+  })
+
+  it('ignores non-existent secrets', () => {
+    const { filtered, removed } = removeSecrets(['A'], ['X'])
+    expect(filtered).toEqual(['A'])
+    expect(removed).toEqual([])
+  })
+
+  it('removes all when all specified', () => {
+    const { filtered, removed } = removeSecrets(['A', 'B'], ['A', 'B'])
+    expect(filtered).toEqual([])
+    expect(removed).toEqual(['A', 'B'])
   })
 })

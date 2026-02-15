@@ -693,6 +693,7 @@ export function registerPublishCommand(program: Command): void {
           sdk_compatible: sdkCompatible || undefined,
           // Orchestration manifest (includes dependencies)
           manifest: manifest.manifest,
+          required_secrets: manifest.required_secrets,
           default_skills: skillsFromFlag || manifest.default_skills,
           skills_locked: manifest.skills_locked || options.skillsLocked || undefined,
           allow_local_download: options.localDownload || false,
