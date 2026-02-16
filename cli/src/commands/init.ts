@@ -72,6 +72,9 @@ def main():
     user_input = data.get("input", "")
 
     # --- Your logic here ---
+    # To use workspace secrets, add them to "required_secrets" in orchagent.json:
+    #   "required_secrets": ["MY_API_KEY"]
+    # Then access via: os.environ["MY_API_KEY"]
     result = f"Received: {user_input}"
     # --- End your logic ---
 
@@ -280,9 +283,11 @@ export function registerInitCommand(program: Command): void {
         manifest.description = 'An AI agent with tool use'
         manifest.supported_providers = ['anthropic']
         manifest.loop = { max_turns: 25 }
+        manifest.required_secrets = []
       } else if (initMode.flavor === 'code_runtime') {
         manifest.description = 'A code-runtime agent'
         manifest.runtime = { command: 'python main.py' }
+        manifest.required_secrets = []
       }
 
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')

@@ -26,6 +26,7 @@ interface Schedule {
   input_data: Record<string, unknown>
   llm_provider: string | null
   enabled: boolean
+  auto_update: boolean
   webhook_secret_preview?: string
   webhook_url?: string
   webhook_secret?: string
@@ -205,9 +206,13 @@ export function registerScheduleCommand(program: Command): void {
           ? chalk.red(String(s.consecutive_failures))
           : chalk.gray('0')
 
+        const agentLabel = s.auto_update === false
+          ? `${s.agent_name}@${s.agent_version} ${chalk.yellow('[pinned]')}`
+          : `${s.agent_name}@${s.agent_version}`
+
         table.push([
           s.id.slice(0, 8),
-          `${s.agent_name}@${s.agent_version}`,
+          agentLabel,
           s.schedule_type,
           s.schedule_type === 'cron' ? (s.cron_expression ?? '-') : 'webhook',
           enabledLabel,
@@ -231,6 +236,7 @@ export function registerScheduleCommand(program: Command): void {
     .option('--timezone <tz>', 'Timezone for cron schedule (default: UTC)', 'UTC')
     .option('--input <json>', 'Input data as JSON string')
     .option('--provider <provider>', 'LLM provider (anthropic, openai, gemini)')
+    .option('--pin-version', 'Pin to this version (disable auto-update on publish)')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .action(async (agentArg: string, options: {
       cron?: string
@@ -238,6 +244,7 @@ export function registerScheduleCommand(program: Command): void {
       timezone?: string
       input?: string
       provider?: string
+      pinVersion?: boolean
       workspace?: string
     }) => {
       const config = await getResolvedConfig()
@@ -282,6 +289,7 @@ export function registerScheduleCommand(program: Command): void {
       if (options.cron) body.cron_expression = options.cron
       if (inputData) body.input_data = inputData
       if (options.provider) body.llm_provider = options.provider
+      if (options.pinVersion) body.auto_update = false
 
       const result = await request<ScheduleResponse>(
         config,
@@ -325,6 +333,8 @@ export function registerScheduleCommand(program: Command): void {
     .option('--provider <provider>', 'New LLM provider')
     .option('--enable', 'Enable the schedule')
     .option('--disable', 'Disable the schedule')
+    .option('--auto-update', 'Enable auto-update on publish')
+    .option('--pin-version', 'Pin to current version (disable auto-update)')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .action(async (scheduleId: string, options: {
       cron?: string
@@ -333,6 +343,8 @@ export function registerScheduleCommand(program: Command): void {
       provider?: string
       enable?: boolean
       disable?: boolean
+      autoUpdate?: boolean
+      pinVersion?: boolean
       workspace?: string
     }) => {
       const config = await getResolvedConfig()
@@ -343,6 +355,9 @@ export function registerScheduleCommand(program: Command): void {
       if (options.enable && options.disable) {
         throw new CliError('Cannot use both --enable and --disable')
       }
+      if (options.autoUpdate && options.pinVersion) {
+        throw new CliError('Cannot use both --auto-update and --pin-version')
+      }
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
 
@@ -352,6 +367,8 @@ export function registerScheduleCommand(program: Command): void {
       if (options.provider) updates.llm_provider = options.provider
       if (options.enable) updates.enabled = true
       if (options.disable) updates.enabled = false
+      if (options.autoUpdate) updates.auto_update = true
+      if (options.pinVersion) updates.auto_update = false
 
       if (options.input) {
         try {
@@ -499,6 +516,7 @@ export function registerScheduleCommand(program: Command): void {
         process.stdout.write(`  Timezone:   ${s.timezone}\n`)
       }
       process.stdout.write(`  Enabled:    ${s.enabled ? chalk.green('yes') : chalk.red('no')}\n`)
+      process.stdout.write(`  Auto-update: ${s.auto_update === false ? chalk.yellow('pinned') : chalk.green('yes')}\n`)
 
       if (s.auto_disabled_at) {
         process.stdout.write(`  ${chalk.bgRed.white(' AUTO-DISABLED ')} at ${formatDate(s.auto_disabled_at)}\n`)

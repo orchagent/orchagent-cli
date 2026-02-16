@@ -32,6 +32,7 @@ import { registerScheduleCommand } from './schedule'
 import { registerServiceCommand } from './service'
 import { registerTransferCommand } from './transfer'
 import { registerPullCommand } from './pull'
+import { registerLogsCommand } from './logs'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -66,4 +67,5 @@ export function registerCommands(program: Command): void {
   registerServiceCommand(program)
   registerTransferCommand(program)
   registerPullCommand(program)
+  registerLogsCommand(program)
 }

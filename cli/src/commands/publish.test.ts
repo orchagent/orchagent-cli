@@ -19,7 +19,7 @@ vi.mock('../lib/api')
 vi.mock('../lib/bundle')
 
 import fs from 'fs/promises'
-import { registerPublishCommand, extractTemplateVariables, deriveInputSchema } from './publish'
+import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars } from './publish'
 import { getResolvedConfig } from '../lib/config'
 import { createAgent, getOrg, previewAgentVersion, uploadCodeBundle } from '../lib/api'
 import { detectEntrypoint, createCodeBundle, validateBundle, previewBundle } from '../lib/bundle'
@@ -876,5 +876,91 @@ describe('publish command - schema auto-migration', () => {
     // Should show "Would create" message
     const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(stderrOutput).toContain('Would create schema.json')
+  })
+})
+
+describe('scanUndeclaredEnvVars', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('detects os.environ["KEY"] references', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('api_key = os.environ["MY_API_KEY"]\ndb = os.environ["DB_URL"]')
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual(['DB_URL', 'MY_API_KEY'])
+  })
+
+  it('detects os.getenv() references', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue("key = os.getenv('SECRET_TOKEN')")
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual(['SECRET_TOKEN'])
+  })
+
+  it('detects os.environ.get() references', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('val = os.environ.get("REDIS_URL", "localhost")')
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual(['REDIS_URL'])
+  })
+
+  it('excludes vars already in required_secrets', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('os.environ["MY_SECRET"]\nos.environ["UNDECLARED"]')
+
+    const result = await scanUndeclaredEnvVars('/test', ['MY_SECRET'])
+    expect(result).toEqual(['UNDECLARED'])
+  })
+
+  it('excludes auto-injected platform vars', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue(
+      'os.environ["ANTHROPIC_API_KEY"]\nos.environ["ORCHAGENT_SERVICE_KEY"]\nos.environ["PATH"]'
+    )
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual([])
+  })
+
+  it('skips non-py files', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+      { name: 'readme.md', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('os.environ["CUSTOM_VAR"]')
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual(['CUSTOM_VAR'])
+    // readFile should only be called for .py files (readdir also calls it for path arg)
+  })
+
+  it('returns empty array when no py files exist', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'readme.md', isFile: () => true, isDirectory: () => false },
+    ] as any)
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual([])
+  })
+
+  it('handles directory read errors gracefully', async () => {
+    mockFs.readdir.mockRejectedValue(new Error('ENOENT'))
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual([])
   })
 })

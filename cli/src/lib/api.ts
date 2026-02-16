@@ -52,13 +52,38 @@ export async function safeFetchWithRetryForCalls(
 
       // Retry on 5xx or 429
       if (response.status >= 500 || response.status === 429) {
+        // Read body to check if error is retryable
+        const bodyText = await response.text().catch(() => '')
+        let parsed: Record<string, unknown> | null = null
+        try { parsed = JSON.parse(bodyText) } catch { /* ignore */ }
+        const detail = (parsed?.error as Record<string, unknown>)?.message as string ||
+          (parsed as Record<string, unknown>)?.message as string || ''
+        const isRetryable = (parsed?.error as Record<string, unknown>)?.is_retryable
+
+        // Don't retry if server explicitly says error is not retryable
+        if (isRetryable === false) {
+          return new Response(bodyText, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          })
+        }
+
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1)
           const jitter = Math.random() * 500
-          process.stderr.write(`Request failed (${response.status}), retrying in ${Math.round((delay + jitter) / 1000)}s...\n`)
+          const detailSuffix = detail ? `: ${detail}` : ''
+          process.stderr.write(`Request failed (${response.status}${detailSuffix}), retrying in ${Math.round((delay + jitter) / 1000)}s...\n`)
           await new Promise(r => setTimeout(r, delay + jitter))
           continue
         }
+
+        // Last attempt — return reconstructed response (body was consumed)
+        return new Response(bodyText, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        })
       }
 
       return response
@@ -93,13 +118,38 @@ async function safeFetchWithRetry(
 
       // Retry on 5xx or 429
       if (response.status >= 500 || response.status === 429) {
+        // Read body to check if error is retryable
+        const bodyText = await response.text().catch(() => '')
+        let parsed: Record<string, unknown> | null = null
+        try { parsed = JSON.parse(bodyText) } catch { /* ignore */ }
+        const detail = (parsed?.error as Record<string, unknown>)?.message as string ||
+          (parsed as Record<string, unknown>)?.message as string || ''
+        const isRetryable = (parsed?.error as Record<string, unknown>)?.is_retryable
+
+        // Don't retry if server explicitly says error is not retryable
+        if (isRetryable === false) {
+          return new Response(bodyText, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          })
+        }
+
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1)
           const jitter = Math.random() * 500
-          process.stderr.write(`Request failed (${response.status}), retrying in ${Math.round((delay + jitter) / 1000)}s...\n`)
+          const detailSuffix = detail ? `: ${detail}` : ''
+          process.stderr.write(`Request failed (${response.status}${detailSuffix}), retrying in ${Math.round((delay + jitter) / 1000)}s...\n`)
           await new Promise(r => setTimeout(r, delay + jitter))
           continue
         }
+
+        // Last attempt — return reconstructed response (body was consumed)
+        return new Response(bodyText, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        })
       }
 
       return response

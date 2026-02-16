@@ -1032,7 +1032,7 @@ describe('Bug 6: 500 error messages', () => {
         'node', 'test', 'run', 'test-org/test-agent',
         '--data', '{"test": true}',
       ])
-    ).rejects.toThrow('server-side error')
+    ).rejects.toThrow('platform error')
   })
 
   it('shows actionable guidance on 502 errors', async () => {
@@ -1055,7 +1055,93 @@ describe('Bug 6: 500 error messages', () => {
         'node', 'test', 'run', 'test-org/test-agent',
         '--data', '{"test": true}',
       ])
-    ).rejects.toThrow('server-side error')
+    ).rejects.toThrow('platform error')
+  })
+
+  it('shows SANDBOX_ERROR with agent-specific guidance', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          message: 'Code execution failed with exit code 1: ModuleNotFoundError: No module named \'pandas\'',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_test123' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/error in the agent's code/)
+  })
+
+  it('shows SANDBOX_TIMEOUT with timeout-specific guidance', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 504,
+      statusText: 'Gateway Timeout',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_TIMEOUT',
+          message: 'Execution timed out after 120s',
+          is_retryable: true,
+        },
+        metadata: { request_id: 'req_timeout456' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/did not complete in time/)
+  })
+
+  it('includes request_id in error output for support correlation', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: { code: 'INTERNAL_ERROR', message: 'Something went wrong' },
+        metadata: { request_id: 'req_abc123def' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow('req_abc123def')
   })
 
   it('does not show server guidance for 4xx errors', async () => {

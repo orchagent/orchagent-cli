@@ -53,6 +53,70 @@ export function deriveInputSchema(variables: string[]): object {
   }
 }
 
+/**
+ * Scan Python files for environment variable references and return var names
+ * that aren't covered by required_secrets or auto-injected by the platform.
+ */
+export async function scanUndeclaredEnvVars(agentDir: string, requiredSecrets: string[]): Promise<string[]> {
+  // Auto-injected by the gateway — never need to be in required_secrets
+  const autoInjected = new Set([
+    'ORCHAGENT_SERVICE_KEY', 'ORCHAGENT_GATEWAY_URL', 'ORCHAGENT_CALL_CHAIN',
+    'ORCHAGENT_DEADLINE_MS', 'ORCHAGENT_MAX_HOPS', 'ORCHAGENT_DOWNSTREAM_REMAINING',
+    'ORCHAGENT_SDK_REQUIRED', 'ORCHAGENT_BILLING_ORG_ID', 'ORCHAGENT_ROOT_RUN_ID',
+    'ORCHAGENT_REQUEST_ID',
+    // LLM keys injected via the platform's credential mechanism
+    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'LLM_MODEL',
+    // Standard system env vars
+    'PATH', 'HOME', 'USER', 'LANG', 'SHELL', 'TERM', 'PWD', 'TMPDIR',
+  ])
+  const declared = new Set(requiredSecrets)
+
+  // Python env var access patterns
+  const patterns = [
+    /os\.environ\s*\[\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\]/g,
+    /os\.environ\.get\s*\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g,
+    /os\.getenv\s*\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g,
+  ]
+
+  const found = new Set<string>()
+
+  // Scan .py files in the agent directory (up to 2 levels deep)
+  async function scanDir(dir: string, depth: number) {
+    let entries: import('fs').Dirent[]
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+      if (!entries || !Array.isArray(entries)) return
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const name = entry.name as string
+      const fullPath = path.join(dir, name)
+      if (entry.isDirectory() && depth < 2 && !name.startsWith('.') && name !== 'node_modules' && name !== '__pycache__' && name !== 'venv' && name !== '.venv') {
+        await scanDir(fullPath, depth + 1)
+      } else if (entry.isFile() && name.endsWith('.py')) {
+        try {
+          const content = await fs.readFile(fullPath, 'utf-8')
+          for (const re of patterns) {
+            re.lastIndex = 0
+            let m: RegExpExecArray | null
+            while ((m = re.exec(content)) !== null) { // eslint-disable-line no-cond-assign
+              found.add(m[1])
+            }
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    }
+  }
+
+  await scanDir(agentDir, 0)
+
+  // Return env vars that are referenced but not declared or auto-injected
+  return [...found].filter(v => !declared.has(v) && !autoInjected.has(v)).sort()
+}
+
 interface SkillFrontmatter {
   name: string
   description: string
@@ -664,6 +728,32 @@ export function registerPublishCommand(program: Command): void {
         process.stderr.write(`API endpoint: POST ${config.apiUrl}/${preview.org_slug}/${manifest.name}/${preview.next_version}/run\n\n`)
         process.stderr.write('No changes made (dry run)\n')
         return
+      }
+
+      // Warn if ORCHAGENT_SERVICE_KEY is in required_secrets — the gateway
+      // auto-injects it for agents with manifest dependencies (F-12).
+      if (manifest.required_secrets?.includes('ORCHAGENT_SERVICE_KEY')) {
+        process.stderr.write(
+          '\n⚠ Warning: ORCHAGENT_SERVICE_KEY found in required_secrets.\n' +
+          '  The gateway auto-injects this for agents with manifest dependencies.\n' +
+          '  Having it in required_secrets can override the auto-injected key and\n' +
+          '  break orchestration. Remove it from required_secrets in orchagent.json.\n\n'
+        )
+      }
+
+      // Scan code for env var references not covered by required_secrets (F-1a).
+      // Only relevant for agents with code (code_runtime engine).
+      if (executionEngine === 'code_runtime') {
+        const undeclared = await scanUndeclaredEnvVars(cwd, manifest.required_secrets || [])
+        if (undeclared.length > 0) {
+          process.stderr.write(
+            chalk.yellow(`\n⚠ Your code references environment variables not in required_secrets:\n`) +
+            chalk.yellow(`  ${undeclared.join(', ')}\n\n`) +
+            `  If these should be workspace secrets, add them to required_secrets\n` +
+            `  in orchagent.json so they're available in the sandbox at runtime.\n` +
+            `  (Platform-injected vars like LLM API keys are already excluded.)\n\n`
+          )
+        }
       }
 
       // Create the agent (server auto-assigns version)

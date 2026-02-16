@@ -270,8 +270,6 @@ async function importFromGitHub(
   repo: string,
   options: {
     path?: string
-    public?: boolean
-    private?: boolean
     name?: string
     json?: boolean
   }
@@ -311,9 +309,6 @@ async function importFromGitHub(
     }
   }
 
-  // Determine visibility (default to public)
-  const isPublic = options.private ? false : true
-
   const importResult = await request<ImportResponse>(
     config,
     'POST',
@@ -322,7 +317,6 @@ async function importFromGitHub(
       body: JSON.stringify({
         repo,
         path: selectedPath,
-        is_public: isPublic,
         name: options.name,
       }),
       headers: { 'Content-Type': 'application/json' },
@@ -332,7 +326,6 @@ async function importFromGitHub(
   await track('cli_github_import', {
     repo,
     path: selectedPath,
-    is_public: isPublic,
     type: importResult.agent.type,
   })
 
@@ -347,7 +340,6 @@ async function importFromGitHub(
   process.stdout.write(`  Agent:   ${importResult.agent.name}\n`)
   process.stdout.write(`  Version: ${importResult.agent.version}\n`)
   process.stdout.write(`  Type:    ${importResult.agent.type}\n`)
-  process.stdout.write(`  Public:  ${isPublic ? chalk.green('Yes') : chalk.yellow('No')}\n`)
   process.stdout.write('\n')
 }
 
@@ -466,14 +458,10 @@ export function registerGitHubCommand(program: Command): void {
     .command('import <repo>')
     .description('Import an agent or skill from GitHub')
     .option('--path <path>', 'Path to manifest within repo (scans if not specified)')
-    .option('--public', 'Make the agent public (default)')
-    .option('--private', 'Make the agent private')
     .option('--name <name>', 'Override agent name')
     .option('--json', 'Output raw JSON')
     .action(async (repo: string, options: {
       path?: string
-      public?: boolean
-      private?: boolean
       name?: string
       json?: boolean
     }) => {

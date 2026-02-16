@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { request, publicRequest, ApiError, getOrg } from './api'
+import { request, publicRequest, ApiError, getOrg, safeFetchWithRetryForCalls } from './api'
 import type { ResolvedConfig } from '../types'
 
 // Mock fetch globally
@@ -253,6 +253,103 @@ describe('getOrg', () => {
       expect.objectContaining({ method: 'GET' })
     )
     expect(result).toEqual(orgData)
+  })
+})
+
+describe('safeFetchWithRetryForCalls', () => {
+  beforeEach(() => {
+    mockFetch.mockReset()
+    // Suppress retry messages
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('does not retry when is_retryable is false', async () => {
+    const errorBody = JSON.stringify({
+      error: {
+        code: 'SANDBOX_ERROR',
+        message: 'Code execution failed with exit code 1: ModuleNotFoundError',
+        is_retryable: false,
+      },
+      metadata: { request_id: 'req_test123' },
+    })
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: () => Promise.resolve(errorBody),
+      headers: new Headers(),
+    })
+
+    const response = await safeFetchWithRetryForCalls('https://api.test.com/run')
+
+    // Should only call fetch once — no retries
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(response.status).toBe(500)
+
+    // Response body should be preserved
+    const text = await response.text()
+    const parsed = JSON.parse(text)
+    expect(parsed.error.code).toBe('SANDBOX_ERROR')
+    expect(parsed.error.is_retryable).toBe(false)
+  })
+
+  it('retries when is_retryable is true', async () => {
+    const errorBody = JSON.stringify({
+      error: {
+        code: 'SANDBOX_TIMEOUT',
+        message: 'Execution timed out',
+        is_retryable: true,
+      },
+    })
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 504,
+        statusText: 'Gateway Timeout',
+        text: () => Promise.resolve(errorBody),
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: 'success' }),
+      })
+
+    const response = await safeFetchWithRetryForCalls('https://api.test.com/run')
+
+    // Should retry and succeed on second attempt
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(response.ok).toBe(true)
+  })
+
+  it('retries when is_retryable is not present (backward compat)', async () => {
+    // Old gateway versions don't include is_retryable
+    const errorBody = JSON.stringify({
+      error: { message: 'Something failed' },
+    })
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        text: () => Promise.resolve(errorBody),
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ data: 'success' }),
+      })
+
+    const response = await safeFetchWithRetryForCalls('https://api.test.com/run')
+
+    // Should still retry (default behavior)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(response.ok).toBe(true)
   })
 })
 

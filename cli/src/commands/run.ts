@@ -5,6 +5,7 @@ import os from 'os'
 import { spawn } from 'child_process'
 
 import chalk from 'chalk'
+import { loadDotEnv } from '../lib/dotenv'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import {
   getPublicAgent,
@@ -1634,6 +1635,18 @@ async function executeLocalFromDir(
     loop: (manifest.loop as Record<string, unknown> | undefined) || null,
   })
 
+  // Load .env from agent directory (existing env vars take precedence)
+  const dotEnvVars = await loadDotEnv(resolved)
+  const dotEnvCount = Object.keys(dotEnvVars).length
+  if (dotEnvCount > 0) {
+    for (const [key, value] of Object.entries(dotEnvVars)) {
+      if (!(key in process.env) || process.env[key] === undefined) {
+        process.env[key] = value
+      }
+    }
+    process.stderr.write(chalk.gray(`Loaded ${dotEnvCount} variable${dotEnvCount === 1 ? '' : 's'} from .env\n`))
+  }
+
   if (localType === 'skill') {
     throw new CliError(
       'Skills cannot be run directly.\n\n' +
@@ -2296,7 +2309,8 @@ async function executeCloud(
   }
   } // end of non-injection path
 
-  const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${parsed.agent}/${parsed.version}/${endpoint}`
+  const verboseQs = options.verbose ? '?verbose=true' : ''
+  const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${parsed.agent}/${parsed.version}/${endpoint}${verboseQs}`
 
   // Enable SSE streaming for managed-loop agents (unless --json or --no-stream or --output)
   const isManagedLoopAgent = cloudType === 'agent' && cloudEngine === 'managed_loop'
@@ -2397,17 +2411,51 @@ async function executeCloud(
           response.statusText
         : response.statusText
 
+    const requestId =
+      typeof payload === 'object' && payload
+        ? (payload as { metadata?: { request_id?: string } }).metadata?.request_id
+        : undefined
+    const refSuffix = requestId ? `\n\nref: ${requestId}` : ''
+
+    if (errorCode === 'SANDBOX_ERROR') {
+      spinner?.fail('Agent execution failed')
+      const hint =
+        typeof payload === 'object' && payload
+          ? (payload as { error?: { hint?: string } }).error?.hint
+          : undefined
+      throw new CliError(
+        `${message}\n\n` +
+        `This is an error in the agent's code, not the platform.\n` +
+        `Check the agent code and requirements, then republish.` +
+        (hint ? `\n\nHint: ${hint}` : '') +
+        refSuffix
+      )
+    }
+
+    if (errorCode === 'SANDBOX_TIMEOUT') {
+      spinner?.fail('Agent timed out')
+      throw new CliError(
+        `${message}\n\n` +
+        `The agent did not complete in time. Try:\n` +
+        `  - Simplifying the input\n` +
+        `  - Using a smaller dataset\n` +
+        `  - Contacting the agent author to increase the timeout` +
+        refSuffix
+      )
+    }
+
     if (response.status >= 500) {
       spinner?.fail(`Server error (${response.status})`)
       throw new CliError(
         `${message}\n\n` +
-        `This is a server-side error. Try again in a moment.\n` +
-        `If it persists, check the dashboard for run logs or try a different provider.`
+        `This is a platform error — try again in a moment.\n` +
+        `If it persists, contact support.` +
+        refSuffix
       )
     }
 
     spinner?.fail(`Run failed: ${message}`)
-    throw new CliError(message)
+    throw new CliError(message + refSuffix)
   }
 
   // Handle SSE streaming response
@@ -2478,6 +2526,9 @@ async function executeCloud(
             const total = (usage.input_tokens || 0) + (usage.output_tokens || 0)
             parts.push(`${total.toLocaleString()} tokens (${(usage.input_tokens || 0).toLocaleString()} in, ${(usage.output_tokens || 0).toLocaleString()} out)`)
           }
+          if (typeof meta.request_id === 'string') {
+            parts.push(`ref: ${meta.request_id}`)
+          }
           if (parts.length > 0) {
             process.stderr.write(chalk.gray(`${parts.join(' · ')}\n`))
           }
@@ -2547,6 +2598,21 @@ async function executeCloud(
   if (typeof payload === 'object' && payload !== null && 'metadata' in payload) {
     const meta = (payload as Record<string, unknown>).metadata as Record<string, unknown> | undefined
     if (meta) {
+      // Show sandbox output when --verbose
+      if (options.verbose) {
+        const stderr = meta.stderr as string | null | undefined
+        const stdout = meta.stdout as string | null | undefined
+        if (stderr) {
+          process.stderr.write(chalk.bold.yellow('\n--- stderr ---') + '\n' + stderr + '\n')
+        }
+        if (stdout) {
+          process.stderr.write(chalk.bold.cyan('\n--- stdout ---') + '\n' + stdout + '\n')
+        }
+        if (!stderr && !stdout) {
+          process.stderr.write(chalk.gray('\nNo sandbox output captured.\n'))
+        }
+      }
+
       const parts: string[] = []
       if (typeof meta.processing_time_ms === 'number') {
         parts.push(`${(meta.processing_time_ms / 1000).toFixed(1)}s total`)
@@ -2558,6 +2624,9 @@ async function executeCloud(
       if (usage && (usage.input_tokens || usage.output_tokens)) {
         const total = (usage.input_tokens || 0) + (usage.output_tokens || 0)
         parts.push(`${total.toLocaleString()} tokens (${(usage.input_tokens || 0).toLocaleString()} in, ${(usage.output_tokens || 0).toLocaleString()} out)`)
+      }
+      if (typeof meta.request_id === 'string') {
+        parts.push(`ref: ${meta.request_id}`)
       }
       if (parts.length > 0) {
         process.stderr.write(chalk.gray(`\n${parts.join(' · ')}\n`))
@@ -2861,6 +2930,7 @@ type RunOptions = {
   downloadOnly?: boolean
   withDeps?: boolean
   json?: boolean
+  verbose?: boolean
   skills?: string
   skillsOnly?: string
   noSkills?: boolean
@@ -2887,6 +2957,7 @@ export function registerRunCommand(program: Command): void {
     .option('--data <json>', 'JSON payload (string or @file, @- for stdin)')
     .option('--input <json>', 'Alias for --data')
     .option('--json', 'Output raw JSON')
+    .option('--verbose', 'Show sandbox stdout/stderr output (cloud only)')
     .option('--provider <provider>', 'LLM provider (openai, anthropic, gemini, ollama)')
     .option('--model <model>', 'LLM model to use (overrides agent default)')
     .option('--key <key>', 'LLM API key (overrides env vars)')

@@ -9,6 +9,7 @@ import { Command } from 'commander'
 
 import { registerCommands } from './commands'
 import { exitWithError } from './lib/errors'
+import { enhanceUnknownOptionSuggestions } from './lib/suggest'
 import { initPostHog, shutdownPostHog } from './lib/analytics'
 import { loadConfig } from './lib/config'
 import { setProgressEnabled } from './lib/spinner'
@@ -42,6 +43,7 @@ Documentation: https://docs.orchagent.io
 `)
 
 registerCommands(program)
+enhanceUnknownOptionSuggestions(program)
 
 // Initialize progress setting before parsing
 async function main() {

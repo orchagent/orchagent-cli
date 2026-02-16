@@ -181,6 +181,16 @@ describe('init command', () => {
       expect(manifest.run_mode).toBe('on_demand')
       expect(manifest.runtime).toEqual({ command: 'python main.py' })
     })
+
+    it('includes empty required_secrets in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-tool', '--type', 'tool'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.required_secrets).toEqual([])
+    })
   })
 
   describe('skill type', () => {
@@ -269,6 +279,16 @@ describe('init command', () => {
       expect(mainCall).toBeUndefined()
     })
 
+    it('does not include required_secrets for prompt type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-prompt', '--type', 'prompt'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.required_secrets).toBeUndefined()
+    })
+
     it('shows schema.json in next steps', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-prompt', '--type', 'prompt'])
 
@@ -316,6 +336,16 @@ describe('init command', () => {
       )
       const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.custom_tools).toBeUndefined()
+    })
+
+    it('includes empty required_secrets in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.required_secrets).toEqual([])
     })
 
     it('legacy agentic alias produces same result as agent type', async () => {

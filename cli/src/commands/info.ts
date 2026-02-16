@@ -25,6 +25,7 @@ type AgentDownload = {
   version: string
   description?: string
   supported_providers: string[]
+  callable?: boolean
   source_url?: string
   run_command?: string
   url?: string
@@ -100,6 +101,7 @@ async function getAgentInfo(
       version: publicMeta.version,
       description: (publicMeta.description ?? undefined) as string | undefined,
       supported_providers: publicMeta.supported_providers || ['any'],
+      callable: publicMeta.callable ?? false,
       input_schema: publicMeta.input_schema as AgentDownload['input_schema'],
       output_schema: publicMeta.output_schema as AgentDownload['output_schema'],
       source_url: meta.source_url as string | undefined,
@@ -147,6 +149,7 @@ async function getAgentInfo(
     version: targetAgent.version,
     description: targetAgent.description,
     prompt: targetAgent.prompt,
+    callable: targetAgent.callable ?? false,
     input_schema: targetAgent.input_schema as AgentDownload['input_schema'],
     output_schema: targetAgent.output_schema as AgentDownload['output_schema'],
     supported_providers: targetAgent.supported_providers || ['any'],
@@ -190,6 +193,9 @@ export function registerInfoCommand(program: Command): void {
       }
 
       process.stdout.write(`Type: ${agentData.type}\n`)
+      if (agentData.callable) {
+        process.stdout.write(`Callable: ${chalk.green('yes')} — other agents can invoke this via the orchagent SDK\n`)
+      }
       process.stdout.write(`Providers: ${agentData.supported_providers.join(', ')}\n`)
 
       // Display pricing information

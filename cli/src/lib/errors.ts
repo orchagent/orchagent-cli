@@ -21,7 +21,12 @@ export function formatError(err: unknown): string {
   if (err instanceof Error) {
     const anyErr = err as Error & { status?: number; payload?: unknown }
     if (anyErr.status && anyErr.payload) {
-      return `${anyErr.message} (status ${anyErr.status})`
+      const p = anyErr.payload as { error?: { code?: string; detail?: string }; detail?: string }
+      const code = p.error?.code
+      const detail = p.error?.detail || p.detail
+      let msg = `${anyErr.message} (status ${anyErr.status}${code ? `, ${code}` : ''})`
+      if (detail) msg += `\n${detail}`
+      return msg
     }
     return anyErr.message
   }
