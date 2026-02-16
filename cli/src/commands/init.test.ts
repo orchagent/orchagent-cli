@@ -400,6 +400,147 @@ describe('init command', () => {
     })
   })
 
+  describe('orchestrator flag', () => {
+    it('sets type to agent in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      expect(manifestCall).toBeDefined()
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+    })
+
+    it('includes runtime.command in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+    })
+
+    it('includes manifest.dependencies with placeholder', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.manifest).toBeDefined()
+      expect(manifest.manifest.manifest_version).toBe(1)
+      expect(manifest.manifest.dependencies).toEqual([{ id: 'org/agent-name', version: 'v1' }])
+      expect(manifest.manifest.max_hops).toBe(3)
+      expect(manifest.manifest.timeout_ms).toBe(120000)
+      expect(manifest.manifest.per_call_downstream_cap).toBe(50)
+    })
+
+    it('includes empty required_secrets', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.required_secrets).toEqual([])
+    })
+
+    it('creates main.py with AgentClient SDK usage', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('from orchagent import AgentClient')
+      expect(content).toContain('client.call(')
+      expect(content).toContain('asyncio.run(')
+    })
+
+    it('creates requirements.txt with orchagent-sdk', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const reqCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('requirements.txt')
+      )
+      expect(reqCall).toBeDefined()
+      const content = reqCall![1] as string
+      expect(content).toContain('orchagent-sdk>=0.1.0')
+    })
+
+    it('creates schema.json with task input field', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const schemaCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('schema.json')
+      )
+      expect(schemaCall).toBeDefined()
+      const schema = JSON.parse(schemaCall![1] as string)
+      expect(schema.input.properties).toHaveProperty('task')
+      expect(schema.output.properties).toHaveProperty('success')
+    })
+
+    it('does not create prompt.md', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const promptCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('prompt.md')
+      )
+      expect(promptCall).toBeUndefined()
+    })
+
+    it('shows orchestrator-specific next steps', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('manifest.dependencies'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Publish dependency agents first'))
+    })
+
+    it('shows requirements.txt in file list', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('requirements.txt'))
+    })
+
+    it('shows execution as code_runtime (orchestrator)', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('code_runtime (orchestrator)'))
+    })
+
+    it('overrides --type when --orchestrator is set', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--type', 'prompt', '--orchestrator'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.manifest.dependencies).toBeDefined()
+    })
+
+    it('throws when combined with --type skill', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-orch', '--type', 'skill', '--orchestrator'])
+      ).rejects.toThrow('Cannot use --orchestrator with --type skill')
+    })
+
+    it('creates README with dependencies section', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const readmeCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('README.md')
+      )
+      expect(readmeCall).toBeDefined()
+      const content = readmeCall![1] as string
+      expect(content).toContain('Dependencies')
+      expect(content).toContain('Publish order')
+    })
+  })
+
   describe('multiple inits in same parent directory', () => {
     it('can create two different agent subdirectories', async () => {
       // First init

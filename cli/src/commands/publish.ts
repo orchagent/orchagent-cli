@@ -5,13 +5,12 @@ import os from 'os'
 import yaml from 'yaml'
 import chalk from 'chalk'
 
-import { getResolvedConfig } from '../lib/config'
-import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion } from '../lib/api'
+import { getResolvedConfig, loadConfig } from '../lib/config'
+import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion, request, getPublicAgent, ApiError } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
-import { ApiError } from '../lib/api'
 import { track } from '../lib/analytics'
 import { createCodeBundle, detectEntrypoint, validateBundle, previewBundle } from '../lib/bundle'
-import type { AgentManifest } from '../types'
+import type { AgentManifest, Agent, ResolvedConfig } from '../types'
 
 /**
  * Extract template placeholders from a prompt template.
@@ -296,6 +295,68 @@ function commandForEntrypoint(entrypoint: string): string {
   return `python ${entrypoint}`
 }
 
+export type DepCheckResult = {
+  ref: string
+  status: 'found_callable' | 'found_not_callable' | 'not_found'
+}
+
+/**
+ * Check if manifest dependencies are published and callable.
+ * Best-effort: network errors cause the check to be silently skipped
+ * (returns empty array) to avoid false alarms.
+ */
+export async function checkDependencies(
+  config: ResolvedConfig,
+  dependencies: Array<{ id: string; version: string }>,
+  publishingOrgSlug: string,
+  workspaceId?: string
+): Promise<DepCheckResult[]> {
+  // Pre-fetch user's agents if any deps are in the same org (one API call)
+  let myAgents: Agent[] | null = null
+  const hasSameOrgDeps = dependencies.some(d => {
+    const [org] = d.id.split('/')
+    return org === publishingOrgSlug
+  })
+
+  if (hasSameOrgDeps) {
+    try {
+      const headers: Record<string, string> = {}
+      if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+      myAgents = await request<Agent[]>(config, 'GET', '/agents', { headers })
+    } catch {
+      return [] // Can't reach API — skip check entirely
+    }
+  }
+
+  return Promise.all(
+    dependencies.map(async (dep): Promise<DepCheckResult> => {
+      const parts = dep.id.split('/')
+      const ref = `${dep.id}@${dep.version}`
+      if (parts.length !== 2) return { ref, status: 'not_found' }
+      const [depOrg, depName] = parts
+
+      // Same org: check against pre-fetched agent list
+      if (depOrg === publishingOrgSlug && myAgents) {
+        const match = myAgents.find(a => a.name === depName && a.version === dep.version)
+        if (!match) return { ref, status: 'not_found' }
+        return { ref, status: match.callable ? 'found_callable' : 'found_not_callable' }
+      }
+
+      // Different org: try public endpoint
+      try {
+        const agent = await getPublicAgent(config, depOrg, depName, dep.version)
+        return { ref, status: agent.callable ? 'found_callable' : 'found_not_callable' }
+      } catch (err: unknown) {
+        if ((err as { status?: number })?.status === 404) {
+          return { ref, status: 'not_found' }
+        }
+        // Network/unexpected error — don't false alarm
+        return { ref, status: 'found_callable' }
+      }
+    })
+  )
+}
+
 export function registerPublishCommand(program: Command): void {
   program
     .command('publish')
@@ -314,13 +375,34 @@ export function registerPublishCommand(program: Command): void {
       const config = await getResolvedConfig({}, options.profile)
       const cwd = process.cwd()
 
+      // Resolve workspace context — if `orch workspace use` was called, publish
+      // to that workspace instead of the personal org (F-5)
+      const configFile = await loadConfig()
+      let workspaceId: string | undefined
+      if (configFile.workspace) {
+        const { workspaces } = await request<{ workspaces: Array<{ id: string; slug: string; name: string }> }>(
+          config, 'GET', '/workspaces'
+        )
+        const ws = workspaces.find(w => w.slug === configFile.workspace)
+        if (!ws) {
+          throw new CliError(
+            `Workspace '${configFile.workspace}' not found. Run \`orch workspace list\` to see available workspaces.`
+          )
+        }
+        workspaceId = ws.id
+      }
+
       // Check for SKILL.md first (skills take precedence)
       const skillMdPath = path.join(cwd, 'SKILL.md')
       const skillData = await parseSkillMd(skillMdPath)
 
       if (skillData) {
         // Publish as a skill (server auto-assigns version)
-        const org = await getOrg(config)
+        const org = await getOrg(config, workspaceId)
+
+        if (workspaceId && !options.dryRun) {
+          process.stdout.write(`Workspace: ${org.slug}\n`)
+        }
 
         // SC-05: Collect all files in the skill directory for multi-file support
         const skillFiles = await collectSkillFiles(cwd)
@@ -328,7 +410,7 @@ export function registerPublishCommand(program: Command): void {
 
         // Handle dry-run for skills
         if (options.dryRun) {
-          const preview = await previewAgentVersion(config, skillData.frontmatter.name)
+          const preview = await previewAgentVersion(config, skillData.frontmatter.name, workspaceId)
           const skillBodyBytes = Buffer.byteLength(skillData.body, 'utf-8')
           const totalFilesSize = skillFiles.reduce((sum, f) => sum + f.size, 0)
           const versionInfo = preview.existing_versions.length > 0
@@ -346,6 +428,9 @@ export function registerPublishCommand(program: Command): void {
           process.stderr.write('\nSkill Preview:\n')
           process.stderr.write(`  Name:        ${skillData.frontmatter.name}\n`)
           process.stderr.write(`  Type:        skill\n`)
+          if (workspaceId) {
+            process.stderr.write(`  Workspace:   ${org.slug}\n`)
+          }
           process.stderr.write(`  Version:     ${versionInfo}\n`)
           process.stderr.write(`  Visibility:  private\n`)
           process.stderr.write(`  Providers:   any\n`)
@@ -377,7 +462,7 @@ export function registerPublishCommand(program: Command): void {
             // SC-05: Include all skill files for UI preview
             skill_files: hasMultipleFiles ? skillFiles : undefined,
             allow_local_download: options.localDownload || false,
-          })
+          }, workspaceId)
           const skillVersion = skillResult.agent?.version || 'v1'
           const skillAgentId = skillResult.agent?.id
 
@@ -630,8 +715,12 @@ export function registerPublishCommand(program: Command): void {
         throw new CliError('--docker is only supported for code runtime agents')
       }
 
-      // Get org info
-      const org = await getOrg(config)
+      // Get org info (workspace-aware — returns workspace org if workspace is active)
+      const org = await getOrg(config, workspaceId)
+
+      if (workspaceId && !options.dryRun) {
+        process.stdout.write(`Workspace: ${org.slug}\n`)
+      }
 
       // Default to 'any' provider if not specified
       const supportedProviders = manifest.supported_providers || ['any']
@@ -645,9 +734,40 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
+      // Check if manifest dependencies are published and callable (F-9b).
+      // Runs for both dry-run and normal publish so users catch issues early.
+      const manifestDeps = manifest.manifest?.dependencies
+      if (manifestDeps?.length) {
+        const depResults = await checkDependencies(config, manifestDeps, org.slug, workspaceId)
+        const notFound = depResults.filter(r => r.status === 'not_found')
+        const notCallable = depResults.filter(r => r.status === 'found_not_callable')
+
+        if (notFound.length > 0) {
+          process.stderr.write(chalk.yellow(`\n⚠ Unpublished dependencies:\n`))
+          for (const dep of notFound) {
+            process.stderr.write(chalk.yellow(`  - ${dep.ref}\n`))
+          }
+          process.stderr.write(
+            `\n  These agents must be published before this orchestrator can call them.\n` +
+            `  Publish each dependency first, then re-run this publish.\n\n`
+          )
+        }
+
+        if (notCallable.length > 0) {
+          process.stderr.write(chalk.yellow(`\n⚠ Dependencies not marked as callable:\n`))
+          for (const dep of notCallable) {
+            process.stderr.write(chalk.yellow(`  - ${dep.ref}\n`))
+          }
+          process.stderr.write(
+            `\n  Agents must have callable: true in orchagent.json to be invoked\n` +
+            `  by orchestrators. Update and republish each dependency.\n\n`
+          )
+        }
+      }
+
       // Handle dry-run for agents
       if (options.dryRun) {
-        const preview = await previewAgentVersion(config, manifest.name)
+        const preview = await previewAgentVersion(config, manifest.name, workspaceId)
         const versionInfo = preview.existing_versions.length > 0
           ? `${preview.next_version} (new version, ${preview.existing_versions[preview.existing_versions.length - 1]} exists)`
           : `${preview.next_version} (first version)`
@@ -702,6 +822,9 @@ export function registerPublishCommand(program: Command): void {
         process.stderr.write('\nAgent Preview:\n')
         process.stderr.write(`  Name:        ${manifest.name}\n`)
         process.stderr.write(`  Type:        ${canonicalType}\n`)
+        if (workspaceId) {
+          process.stderr.write(`  Workspace:   ${org.slug}\n`)
+        }
         process.stderr.write(`  Run mode:    ${runMode}\n`)
         process.stderr.write(`  Engine:      ${executionEngine}${shouldUploadBundle ? ' (hosted)' : ''}\n`)
         process.stderr.write(`  Callable:    ${callable ? 'enabled' : 'disabled'}\n`)
@@ -787,7 +910,7 @@ export function registerPublishCommand(program: Command): void {
           default_skills: skillsFromFlag || manifest.default_skills,
           skills_locked: manifest.skills_locked || options.skillsLocked || undefined,
           allow_local_download: options.localDownload || false,
-        })
+        }, workspaceId)
       } catch (err) {
         // Improve SECURITY_BLOCKED error display
         if (err instanceof ApiError && err.status === 422) {
@@ -934,6 +1057,22 @@ export function registerPublishCommand(program: Command): void {
       if (result.service_key) {
         process.stdout.write(`\nService key (save this - shown only once):\n`)
         process.stdout.write(`  ${result.service_key}\n`)
+      }
+
+      // Show next-step CLI command based on run mode
+      const runRef = `${org.slug}/${manifest.name}`
+      if (runMode === 'always_on') {
+        process.stdout.write(`\nDeploy as service:\n`)
+        process.stdout.write(`  orch service deploy ${runRef}\n`)
+      } else {
+        const schemaProps = inputSchema && typeof inputSchema === 'object' && 'properties' in inputSchema
+          ? Object.keys((inputSchema as Record<string, unknown>).properties as Record<string, unknown>).slice(0, 3)
+          : null
+        const exampleFields = schemaProps?.length
+          ? schemaProps.map(k => `"${k}": "..."`).join(', ')
+          : '"input": "..."'
+        process.stdout.write(`\nRun with CLI:\n`)
+        process.stdout.write(`  orch run ${runRef} --data '{${exampleFields}}'\n`)
       }
 
       process.stdout.write(`\nAPI endpoint:\n`)

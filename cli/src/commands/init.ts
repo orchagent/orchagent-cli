@@ -86,11 +86,11 @@ if __name__ == "__main__":
     main()
 `
 
-type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime'
+type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator'
 
 function readmeTemplate(agentName: string, flavor: InitFlavor): string {
-  const inputField = flavor === 'managed_loop' ? 'task' : 'input'
-  const inputDescription = flavor === 'managed_loop' ? 'The task to perform' : 'The input to process'
+  const inputField = flavor === 'managed_loop' || flavor === 'orchestrator' ? 'task' : 'input'
+  const inputDescription = flavor === 'managed_loop' || flavor === 'orchestrator' ? 'The task to perform' : 'The input to process'
   const cloudExample =
     flavor === 'code_runtime'
       ? `orchagent run ${agentName} --data '{"input": "Hello world"}'`
@@ -100,7 +100,7 @@ function readmeTemplate(agentName: string, flavor: InitFlavor): string {
       ? `orchagent run ${agentName} --local --data '{"input": "Hello world"}'`
       : `orchagent run ${agentName} --local --data '{"${inputField}": "Hello world"}'`
 
-  return `# ${agentName}
+  let readme = `# ${agentName}
 
 A brief description of what this agent does.
 
@@ -130,6 +130,22 @@ ${localExample}
 |-------|------|-------------|
 | \`result\` | string | The agent's response |
 `
+
+  if (flavor === 'orchestrator') {
+    readme += `
+## Dependencies
+
+This orchestrator calls other agents. Update \`manifest.dependencies\` in \`orchagent.json\` with your actual dependencies.
+
+**Publish order:** Publish dependency agents first, then this orchestrator.
+
+| Dependency | Version | Description |
+|------------|---------|-------------|
+| \`org/agent-name\` | v1 | TODO: describe what this agent does |
+`
+  }
+
+  return readme
 }
 
 const AGENT_PROMPT_TEMPLATE = `You are a helpful AI agent.
@@ -164,6 +180,67 @@ const AGENT_SCHEMA_TEMPLATE = `{
     "required": ["result", "success"]
   }
 }
+`
+
+const ORCHESTRATOR_MAIN_PY = `"""
+orchagent orchestrator entrypoint.
+
+Reads JSON input from stdin, calls dependency agents via the orchagent SDK,
+and writes JSON output to stdout.
+
+Usage:
+  echo '{"task": "do something"}' | python main.py
+"""
+
+import asyncio
+import json
+import sys
+
+from orchagent import AgentClient
+
+
+def main():
+    # Read JSON input from stdin
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON input"}))
+        sys.exit(1)
+
+    task = data.get("task", "")
+
+    # --- Your orchestration logic here ---
+    # The AgentClient reads ORCHAGENT_SERVICE_KEY from the environment automatically.
+    # Do NOT add ORCHAGENT_SERVICE_KEY to required_secrets — the gateway injects it.
+    client = AgentClient()
+
+    # Call a dependency agent (must be listed in manifest.dependencies)
+    result = asyncio.run(
+        client.call("org/agent-name@v1", {"input": task})
+    )
+
+    # You can chain multiple calls, run them in parallel, or add conditional logic:
+    #
+    # Sequential:
+    #   result2 = asyncio.run(client.call("org/another-agent@v1", {"input": result}))
+    #
+    # Parallel:
+    #   r1, r2 = asyncio.run(asyncio.gather(
+    #       client.call("org/agent-a@v1", {"input": task}),
+    #       client.call("org/agent-b@v1", {"input": task}),
+    #   ))
+    # --- End orchestration logic ---
+
+    # Write JSON output to stdout
+    print(json.dumps({"result": result, "success": True}))
+
+
+if __name__ == "__main__":
+    main()
+`
+
+const ORCHESTRATOR_REQUIREMENTS = `orchagent-sdk>=0.1.0
 `
 
 const SKILL_TEMPLATE = `---
@@ -203,14 +280,22 @@ export function registerInitCommand(program: Command): void {
     .description('Initialize a new agent project')
     .argument('[name]', 'Agent name (default: current directory name)')
     .option('--type <type>', 'Type: prompt, tool, agent, or skill (legacy aliases: agentic, code)', 'prompt')
+    .option('--orchestrator', 'Create an orchestrator agent with dependency scaffolding and SDK boilerplate')
     .option('--run-mode <mode>', 'Run mode for agents: on_demand or always_on', 'on_demand')
-    .action(async (name: string | undefined, options: { type: string; runMode: string }) => {
+    .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; runMode: string }) => {
       const cwd = process.cwd()
       const runMode = (options.runMode || 'on_demand').trim().toLowerCase()
       if (!['on_demand', 'always_on'].includes(runMode)) {
         throw new CliError("Invalid --run-mode. Use 'on_demand' or 'always_on'.")
       }
-      const initMode = resolveInitFlavor(options.type)
+      let initMode = resolveInitFlavor(options.type)
+
+      if (options.orchestrator) {
+        if (initMode.type === 'skill') {
+          throw new CliError('Cannot use --orchestrator with --type skill. Orchestrators are agent-type agents that call other agents.')
+        }
+        initMode = { type: 'agent', flavor: 'orchestrator' }
+      }
 
       // When a name is provided, create a subdirectory for the project
       const targetDir = name ? path.join(cwd, name) : cwd
@@ -267,7 +352,7 @@ export function registerInitCommand(program: Command): void {
         }
       }
 
-      if (initMode.flavor !== 'code_runtime' && runMode === 'always_on') {
+      if (initMode.flavor !== 'code_runtime' && initMode.flavor !== 'orchestrator' && runMode === 'always_on') {
         throw new CliError(
           "run_mode=always_on requires runtime.command in orchagent.json (e.g. \"runtime\": { \"command\": \"python main.py\" }). Use --type tool for code-runtime agents."
         )
@@ -279,7 +364,18 @@ export function registerInitCommand(program: Command): void {
       manifest.type = initMode.type
       manifest.run_mode = runMode
 
-      if (initMode.flavor === 'managed_loop') {
+      if (initMode.flavor === 'orchestrator') {
+        manifest.description = 'An orchestrator agent that coordinates other agents'
+        manifest.runtime = { command: 'python main.py' }
+        manifest.manifest = {
+          manifest_version: 1,
+          dependencies: [{ id: 'org/agent-name', version: 'v1' }],
+          max_hops: 3,
+          timeout_ms: 120000,
+          per_call_downstream_cap: 50,
+        }
+        manifest.required_secrets = []
+      } else if (initMode.flavor === 'managed_loop') {
         manifest.description = 'An AI agent with tool use'
         manifest.supported_providers = ['anthropic']
         manifest.loop = { max_turns: 25 }
@@ -292,7 +388,13 @@ export function registerInitCommand(program: Command): void {
 
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
 
-      if (initMode.flavor === 'code_runtime') {
+      if (initMode.flavor === 'orchestrator') {
+        const entrypointPath = path.join(targetDir, 'main.py')
+        const requirementsPath = path.join(targetDir, 'requirements.txt')
+        await fs.writeFile(entrypointPath, ORCHESTRATOR_MAIN_PY)
+        await fs.writeFile(requirementsPath, ORCHESTRATOR_REQUIREMENTS)
+        await fs.writeFile(schemaPath, AGENT_SCHEMA_TEMPLATE)
+      } else if (initMode.flavor === 'code_runtime') {
         const entrypointPath = path.join(targetDir, 'main.py')
         await fs.writeFile(entrypointPath, CODE_TEMPLATE_PY)
         await fs.writeFile(schemaPath, SCHEMA_TEMPLATE)
@@ -311,18 +413,29 @@ export function registerInitCommand(program: Command): void {
       process.stdout.write(`Initialized agent "${agentName}" in ${targetDir}\n`)
       process.stdout.write(`\nFiles created:\n`)
       const prefix = name ? name + '/' : ''
-      process.stdout.write(`  ${prefix}orchagent.json - Agent configuration\n`)
-      if (initMode.flavor === 'code_runtime') {
-        process.stdout.write(`  ${prefix}main.py        - Agent entrypoint (stdin/stdout JSON)\n`)
+      process.stdout.write(`  ${prefix}orchagent.json    - Agent configuration\n`)
+      if (initMode.flavor === 'orchestrator') {
+        process.stdout.write(`  ${prefix}main.py           - Orchestrator entrypoint (SDK calls)\n`)
+        process.stdout.write(`  ${prefix}requirements.txt  - Python dependencies (orchagent-sdk)\n`)
+      } else if (initMode.flavor === 'code_runtime') {
+        process.stdout.write(`  ${prefix}main.py           - Agent entrypoint (stdin/stdout JSON)\n`)
       } else {
-        process.stdout.write(`  ${prefix}prompt.md      - Prompt template\n`)
+        process.stdout.write(`  ${prefix}prompt.md         - Prompt template\n`)
       }
-      process.stdout.write(`  ${prefix}schema.json    - Input/output schemas\n`)
-      process.stdout.write(`  ${prefix}README.md      - Agent documentation\n`)
+      process.stdout.write(`  ${prefix}schema.json       - Input/output schemas\n`)
+      process.stdout.write(`  ${prefix}README.md         - Agent documentation\n`)
       process.stdout.write(`  Run mode: ${runMode}\n`)
-      process.stdout.write(`  Execution: ${initMode.flavor}\n`)
+      process.stdout.write(`  Execution: ${initMode.flavor === 'orchestrator' ? 'code_runtime (orchestrator)' : initMode.flavor}\n`)
       process.stdout.write(`\nNext steps:\n`)
-      if (initMode.flavor === 'code_runtime') {
+      if (initMode.flavor === 'orchestrator') {
+        const stepNum = name ? 2 : 1
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+        }
+        process.stdout.write(`  ${stepNum}. Update manifest.dependencies in orchagent.json with your actual agents\n`)
+        process.stdout.write(`  ${stepNum + 1}. Edit main.py with your orchestration logic\n`)
+        process.stdout.write(`  ${stepNum + 2}. Publish dependency agents first, then: orchagent publish\n`)
+      } else if (initMode.flavor === 'code_runtime') {
         const stepNum = name ? 2 : 1
         if (name) {
           process.stdout.write(`  1. cd ${name}\n`)

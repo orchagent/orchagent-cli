@@ -247,8 +247,10 @@ export async function publicRequest<T>(
   return (await response.json()) as T
 }
 
-export async function getOrg(config: ResolvedConfig): Promise<Org> {
-  return request<Org>(config, 'GET', '/org')
+export async function getOrg(config: ResolvedConfig, workspaceId?: string): Promise<Org> {
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request<Org>(config, 'GET', '/org', { headers })
 }
 
 export async function updateOrg(
@@ -313,11 +315,14 @@ export async function createAgent(
     skill_files?: { path: string; content: string; size: number }[]
     // Local download toggle
     allow_local_download?: boolean
-  }
+  },
+  workspaceId?: string
 ): Promise<{ agent: Agent; service_key?: string; services_updated?: number }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
   return request(config, 'POST', '/agents', {
     body: JSON.stringify(data),
-    headers: { 'Content-Type': 'application/json' },
+    headers,
   })
 }
 
@@ -587,9 +592,12 @@ export async function transferAgent(
  */
 export async function previewAgentVersion(
   config: ResolvedConfig,
-  agentName: string
+  agentName: string,
+  workspaceId?: string
 ): Promise<{ name: string; existing_versions: string[]; next_version: string; org_slug: string }> {
-  return request(config, 'GET', `/agents/preview?name=${encodeURIComponent(agentName)}`)
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request(config, 'GET', `/agents/preview?name=${encodeURIComponent(agentName)}`, { headers })
 }
 
 /**

@@ -19,15 +19,18 @@ vi.mock('../lib/api')
 vi.mock('../lib/bundle')
 
 import fs from 'fs/promises'
-import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars } from './publish'
-import { getResolvedConfig } from '../lib/config'
-import { createAgent, getOrg, previewAgentVersion, uploadCodeBundle } from '../lib/api'
+import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, checkDependencies } from './publish'
+import { getResolvedConfig, loadConfig } from '../lib/config'
+import { createAgent, getOrg, previewAgentVersion, uploadCodeBundle, request, getPublicAgent } from '../lib/api'
 import { detectEntrypoint, createCodeBundle, validateBundle, previewBundle } from '../lib/bundle'
 
 const mockFs = vi.mocked(fs)
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
+const mockLoadConfig = vi.mocked(loadConfig)
+const mockRequest = vi.mocked(request)
 const mockCreateAgent = vi.mocked(createAgent)
 const mockGetOrg = vi.mocked(getOrg)
+const mockGetPublicAgent = vi.mocked(getPublicAgent)
 const mockDetectEntrypoint = vi.mocked(detectEntrypoint)
 const mockPreviewAgentVersion = vi.mocked(previewAgentVersion)
 const mockUploadCodeBundle = vi.mocked(uploadCodeBundle)
@@ -52,11 +55,12 @@ describe('publish command', () => {
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
 
-    // Mock config
+    // Mock config (no workspace by default)
     mockGetResolvedConfig.mockResolvedValue({
       apiKey: 'sk_test_123',
       apiUrl: 'https://api.test.com',
     })
+    mockLoadConfig.mockResolvedValue({})
 
     // Mock getOrg
     mockGetOrg.mockResolvedValue({
@@ -130,7 +134,8 @@ describe('publish command', () => {
             },
             required: ['input'],
           },
-        })
+        }),
+        undefined
       )
       // Note: version is NOT sent to createAgent - server auto-assigns it
     })
@@ -172,7 +177,8 @@ describe('publish command', () => {
         expect.objectContaining({
           input_schema: schemas.input,
           output_schema: schemas.output,
-        })
+        }),
+        undefined
       )
     })
 
@@ -307,7 +313,8 @@ describe('publish command', () => {
           run_mode: 'on_demand',
           runtime: { command: 'python main.py' },
           url: 'https://my-agent.run.app',
-        })
+        }),
+        undefined
       )
     })
 
@@ -342,7 +349,8 @@ describe('publish command', () => {
         expect.any(Object),
         expect.objectContaining({
           supported_providers: ['openai', 'anthropic'],
-        })
+        }),
+        undefined
       )
     })
 
@@ -378,6 +386,60 @@ describe('publish command', () => {
       await program.parseAsync(['node', 'test', 'publish'])
 
       expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('sk_service_abc123'))
+    })
+
+    it('shows orch run command with schema field names after publish', async () => {
+      const manifest = {
+        name: 'run-hint-agent',
+        type: 'prompt',
+        description: 'Test run hint',
+      }
+
+      const schemas = {
+        input: { type: 'object', properties: { text: { type: 'string' }, tone: { type: 'string' } } },
+        output: { type: 'object', properties: { result: { type: 'string' } } },
+      }
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        if (path.includes('orchagent.json')) return JSON.stringify(manifest)
+        if (path.includes('prompt.md')) return 'Rewrite {{text}} in {{tone}} tone'
+        if (path.includes('schema.json')) return JSON.stringify(schemas)
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+      expect(allOutput).toContain('Run with CLI:')
+      expect(allOutput).toContain('orch run test-org/run-hint-agent')
+      expect(allOutput).toContain('"text": "..."')
+      expect(allOutput).toContain('"tone": "..."')
+    })
+
+    it('shows generic run hint when no input schema', async () => {
+      const manifest = {
+        name: 'no-schema-agent',
+        type: 'prompt',
+        description: 'No schema',
+      }
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        if (path.includes('orchagent.json')) return JSON.stringify(manifest)
+        if (path.includes('prompt.md')) return 'You are a helpful assistant.'
+        if (path.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+      expect(allOutput).toContain('Run with CLI:')
+      expect(allOutput).toContain('orch run test-org/no-schema-agent')
+      expect(allOutput).toContain('"input": "..."')
     })
 
     it('auto-derives input schema from template variables when no schema.json', async () => {
@@ -417,7 +479,8 @@ describe('publish command', () => {
             },
             required: ['text', 'tone'],
           },
-        })
+        }),
+        undefined
       )
     })
 
@@ -467,7 +530,8 @@ describe('publish command', () => {
         expect.any(Object),
         expect.objectContaining({
           input_schema: schemas.input,
-        })
+        }),
+        undefined
       )
     })
 
@@ -501,7 +565,8 @@ describe('publish command', () => {
         expect.any(Object),
         expect.objectContaining({
           input_schema: undefined,
-        })
+        }),
+        undefined
       )
     })
   })
@@ -585,7 +650,8 @@ Use this prompt to guide the agent.`
           prompt: expect.stringContaining('You are a helpful skill'),
           is_public: false,
           supported_providers: ['any'],
-        })
+        }),
+        undefined
       )
       // Note: version is NOT sent to createAgent - server auto-assigns it
     })
@@ -648,7 +714,8 @@ Skill content here.`
           name: 'fallback-agent',
           type: 'prompt',
           run_mode: 'on_demand',
-        })
+        }),
+        undefined
       )
     })
 
@@ -690,7 +757,8 @@ Missing description field.`
           name: 'manifest-agent',
           type: 'prompt',
           run_mode: 'on_demand',
-        })
+        }),
+        undefined
       )
     })
 
@@ -724,6 +792,147 @@ Skill prompt.`
       // Version comes from server response, not from metadata in SKILL.md
     })
   })
+
+  describe('workspace context (F-5)', () => {
+    it('publishes to workspace when workspace is set in config', async () => {
+      const manifest = {
+        name: 'team-agent',
+        type: 'prompt',
+        description: 'Team agent',
+      }
+
+      // Config has workspace set
+      mockLoadConfig.mockResolvedValue({ workspace: 'team-ws' })
+
+      // Mock workspace resolution
+      mockRequest.mockResolvedValue({
+        workspaces: [
+          { id: 'ws-123', slug: 'team-ws', name: 'Team Workspace' },
+        ],
+      } as any)
+
+      // getOrg returns workspace org when workspace header is sent
+      mockGetOrg.mockResolvedValue({
+        id: 'ws-123',
+        slug: 'team-ws',
+        name: 'Team Workspace',
+      })
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const p = String(filePath)
+        if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+        if (p.includes('prompt.md')) return 'Hello {{name}}'
+        if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        throw new Error(`Unexpected file: ${p}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      // Should pass workspace ID to createAgent
+      expect(mockCreateAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ name: 'team-agent' }),
+        'ws-123'
+      )
+
+      // Should pass workspace ID to getOrg
+      expect(mockGetOrg).toHaveBeenCalledWith(expect.any(Object), 'ws-123')
+
+      // Output should show workspace and correct org slug
+      const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+      expect(allOutput).toContain('Workspace: team-ws')
+      expect(allOutput).toContain('team-ws/team-agent')
+    })
+
+    it('publishes to personal org when no workspace is set', async () => {
+      const manifest = {
+        name: 'personal-agent',
+        type: 'prompt',
+        description: 'Personal agent',
+      }
+
+      mockLoadConfig.mockResolvedValue({})
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const p = String(filePath)
+        if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+        if (p.includes('prompt.md')) return 'Hello'
+        if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        throw new Error(`Unexpected file: ${p}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      // Should NOT call request for workspace resolution
+      expect(mockRequest).not.toHaveBeenCalled()
+
+      // Should pass undefined workspace to createAgent
+      expect(mockCreateAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ name: 'personal-agent' }),
+        undefined
+      )
+
+      // Output should NOT show workspace line
+      const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+      expect(allOutput).not.toContain('Workspace:')
+      expect(allOutput).toContain('test-org/personal-agent')
+    })
+
+    it('throws error when configured workspace is not found', async () => {
+      mockLoadConfig.mockResolvedValue({ workspace: 'deleted-ws' })
+      mockRequest.mockResolvedValue({ workspaces: [] } as any)
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const p = String(filePath)
+        if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        if (p.includes('orchagent.json')) return JSON.stringify({ name: 'agent', type: 'prompt' })
+        if (p.includes('prompt.md')) return 'Hello'
+        if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        throw new Error(`Unexpected file: ${p}`)
+      })
+
+      await expect(program.parseAsync(['node', 'test', 'publish'])).rejects.toThrow(
+        "Workspace 'deleted-ws' not found"
+      )
+    })
+
+    it('publishes skill to workspace when workspace is set', async () => {
+      const skillMd = `---
+name: team-skill
+description: A team skill
+---
+Skill content.`
+
+      mockLoadConfig.mockResolvedValue({ workspace: 'team-ws' })
+      mockRequest.mockResolvedValue({
+        workspaces: [{ id: 'ws-123', slug: 'team-ws', name: 'Team Workspace' }],
+      } as any)
+      mockGetOrg.mockResolvedValue({ id: 'ws-123', slug: 'team-ws', name: 'Team Workspace' })
+      mockFs.readdir.mockResolvedValue([])
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const p = String(filePath)
+        if (p.includes('SKILL.md')) return skillMd
+        throw new Error(`Unexpected file: ${p}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      // Skill should be created with workspace context
+      expect(mockCreateAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ name: 'team-skill', type: 'skill' }),
+        'ws-123'
+      )
+
+      const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+      expect(allOutput).toContain('Workspace: team-ws')
+      expect(allOutput).toContain('team-ws/team-skill')
+    })
+  })
 })
 
 describe('publish command - schema auto-migration', () => {
@@ -745,6 +954,7 @@ describe('publish command - schema auto-migration', () => {
       apiKey: 'sk_test_123',
       apiUrl: 'https://api.test.com',
     })
+    mockLoadConfig.mockResolvedValue({})
 
     mockGetOrg.mockResolvedValue({
       id: 'org-123',
@@ -962,5 +1172,381 @@ describe('scanUndeclaredEnvVars', () => {
 
     const result = await scanUndeclaredEnvVars('/test', [])
     expect(result).toEqual([])
+  })
+})
+
+describe('checkDependencies', () => {
+  const config = { apiKey: 'sk_test_123', apiUrl: 'https://api.test.com' }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns found_callable for same-org dep that exists and is callable', async () => {
+    mockRequest.mockResolvedValue([
+      { name: 'worker', version: 'v1', callable: true },
+    ] as any)
+
+    const results = await checkDependencies(
+      config,
+      [{ id: 'myorg/worker', version: 'v1' }],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'myorg/worker@v1', status: 'found_callable' },
+    ])
+  })
+
+  it('returns found_not_callable for same-org dep that exists but is not callable', async () => {
+    mockRequest.mockResolvedValue([
+      { name: 'worker', version: 'v1', callable: false },
+    ] as any)
+
+    const results = await checkDependencies(
+      config,
+      [{ id: 'myorg/worker', version: 'v1' }],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'myorg/worker@v1', status: 'found_not_callable' },
+    ])
+  })
+
+  it('returns not_found for same-org dep that does not exist', async () => {
+    mockRequest.mockResolvedValue([
+      { name: 'other-agent', version: 'v1', callable: true },
+    ] as any)
+
+    const results = await checkDependencies(
+      config,
+      [{ id: 'myorg/missing-agent', version: 'v1' }],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'myorg/missing-agent@v1', status: 'not_found' },
+    ])
+  })
+
+  it('returns not_found for same-org dep with wrong version', async () => {
+    mockRequest.mockResolvedValue([
+      { name: 'worker', version: 'v1', callable: true },
+    ] as any)
+
+    const results = await checkDependencies(
+      config,
+      [{ id: 'myorg/worker', version: 'v2' }],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'myorg/worker@v2', status: 'not_found' },
+    ])
+  })
+
+  it('uses public endpoint for cross-org dependencies', async () => {
+    mockGetPublicAgent.mockResolvedValue({
+      id: 'agent-1', org_name: 'Other', org_slug: 'other-org',
+      name: 'parser', version: 'v1', callable: true,
+    } as any)
+
+    const results = await checkDependencies(
+      config,
+      [{ id: 'other-org/parser', version: 'v1' }],
+      'myorg'
+    )
+
+    expect(mockGetPublicAgent).toHaveBeenCalledWith(config, 'other-org', 'parser', 'v1')
+    expect(results).toEqual([
+      { ref: 'other-org/parser@v1', status: 'found_callable' },
+    ])
+    // Should NOT have fetched the user's agent list (no same-org deps)
+    expect(mockRequest).not.toHaveBeenCalled()
+  })
+
+  it('returns not_found for cross-org dep that 404s on public endpoint', async () => {
+    mockGetPublicAgent.mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }))
+
+    const results = await checkDependencies(
+      config,
+      [{ id: 'other-org/missing', version: 'v1' }],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'other-org/missing@v1', status: 'not_found' },
+    ])
+  })
+
+  it('treats network errors as found to avoid false alarms', async () => {
+    mockGetPublicAgent.mockRejectedValue(new Error('Network error'))
+
+    const results = await checkDependencies(
+      config,
+      [{ id: 'other-org/flaky', version: 'v1' }],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'other-org/flaky@v1', status: 'found_callable' },
+    ])
+  })
+
+  it('returns empty array when agent list fetch fails', async () => {
+    mockRequest.mockRejectedValue(new Error('Network error'))
+
+    const results = await checkDependencies(
+      config,
+      [{ id: 'myorg/worker', version: 'v1' }],
+      'myorg'
+    )
+
+    expect(results).toEqual([])
+  })
+
+  it('handles mixed same-org and cross-org deps', async () => {
+    mockRequest.mockResolvedValue([
+      { name: 'local-worker', version: 'v1', callable: true },
+    ] as any)
+    mockGetPublicAgent.mockResolvedValue({
+      id: 'agent-2', org_name: 'External', org_slug: 'external',
+      name: 'service', version: 'v1', callable: true,
+    } as any)
+
+    const results = await checkDependencies(
+      config,
+      [
+        { id: 'myorg/local-worker', version: 'v1' },
+        { id: 'external/service', version: 'v1' },
+      ],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'myorg/local-worker@v1', status: 'found_callable' },
+      { ref: 'external/service@v1', status: 'found_callable' },
+    ])
+  })
+
+  it('passes workspace header when checking same-org deps', async () => {
+    mockRequest.mockResolvedValue([
+      { name: 'worker', version: 'v1', callable: true },
+    ] as any)
+
+    await checkDependencies(
+      config,
+      [{ id: 'myorg/worker', version: 'v1' }],
+      'myorg',
+      'ws-123'
+    )
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      config, 'GET', '/agents',
+      { headers: { 'X-Workspace-Id': 'ws-123' } }
+    )
+  })
+
+  it('handles malformed dependency id', async () => {
+    const results = await checkDependencies(
+      config,
+      [{ id: 'no-slash', version: 'v1' }],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'no-slash@v1', status: 'not_found' },
+    ])
+  })
+})
+
+describe('publish command - dependency warnings (F-9b)', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetOrg.mockResolvedValue({
+      id: 'org-123',
+      slug: 'test-org',
+      name: 'Test Org',
+    } as any)
+    mockCreateAgent.mockResolvedValue({
+      agent: { id: 'agent-1', version: 'v1' },
+    } as any)
+
+    process.cwd = () => '/test/project'
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('warns about unpublished dependencies', async () => {
+    const manifest = {
+      name: 'orchestrator',
+      type: 'agent',
+      runtime: { command: 'python main.py' },
+      manifest: {
+        manifest_version: 1,
+        dependencies: [{ id: 'test-org/missing-worker', version: 'v1' }],
+        max_hops: 2,
+        timeout_ms: 60000,
+        per_call_downstream_cap: 50,
+      },
+    }
+
+    // Same-org dep: return empty agent list (dep not published)
+    mockRequest.mockResolvedValue([] as any)
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123', bundle_size_bytes: 100,
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('Unpublished dependencies')
+    expect(stderrOutput).toContain('test-org/missing-worker@v1')
+  })
+
+  it('warns about dependencies not marked callable', async () => {
+    const manifest = {
+      name: 'orchestrator',
+      type: 'agent',
+      runtime: { command: 'python main.py' },
+      manifest: {
+        manifest_version: 1,
+        dependencies: [{ id: 'test-org/not-callable-worker', version: 'v1' }],
+        max_hops: 2,
+        timeout_ms: 60000,
+        per_call_downstream_cap: 50,
+      },
+    }
+
+    // Same-org dep: return agent that exists but is NOT callable
+    mockRequest.mockResolvedValue([
+      { name: 'not-callable-worker', version: 'v1', callable: false },
+    ] as any)
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123', bundle_size_bytes: 100,
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('not marked as callable')
+    expect(stderrOutput).toContain('test-org/not-callable-worker@v1')
+  })
+
+  it('shows no warning when dependencies are published and callable', async () => {
+    const manifest = {
+      name: 'orchestrator',
+      type: 'agent',
+      runtime: { command: 'python main.py' },
+      manifest: {
+        manifest_version: 1,
+        dependencies: [{ id: 'test-org/good-worker', version: 'v1' }],
+        max_hops: 2,
+        timeout_ms: 60000,
+        per_call_downstream_cap: 50,
+      },
+    }
+
+    // Same-org dep: return agent that exists and is callable
+    mockRequest.mockResolvedValue([
+      { name: 'good-worker', version: 'v1', callable: true },
+    ] as any)
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123', bundle_size_bytes: 100,
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('Unpublished dependencies')
+    expect(stderrOutput).not.toContain('not marked as callable')
+  })
+
+  it('shows no dependency warnings when agent has no manifest dependencies', async () => {
+    const manifest = {
+      name: 'simple-agent',
+      type: 'prompt',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'Hello'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('Unpublished dependencies')
+    expect(stderrOutput).not.toContain('not marked as callable')
+    // Should not have fetched agent list
+    expect(mockRequest).not.toHaveBeenCalled()
   })
 })
