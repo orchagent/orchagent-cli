@@ -2002,6 +2002,43 @@ async function executeCloud(
     loop: (agentMeta as Agent & { loop?: Record<string, unknown> | null }).loop ?? null,
   })
 
+  // Pre-flight: check required secrets before running (F-18)
+  // Only for sandbox-backed engines where secrets are injected as env vars
+  if (cloudEngine !== 'direct_llm') {
+    const agentRequiredSecrets = (agentMeta as Agent).required_secrets
+    if (agentRequiredSecrets?.length) {
+      try {
+        const wsSlug = configFile.workspace
+        if (wsSlug) {
+          const { workspaces } = await request<{ workspaces: Array<{ id: string; slug: string }> }>(
+            resolved, 'GET', '/workspaces'
+          )
+          const ws = workspaces.find((w: { slug: string }) => w.slug === wsSlug)
+          if (ws) {
+            const secretsResult = await request<{ secrets: Array<{ name: string }> }>(
+              resolved, 'GET', `/workspaces/${ws.id}/secrets`
+            )
+            const existingNames = new Set(secretsResult.secrets.map((s: { name: string }) => s.name))
+            const missing = agentRequiredSecrets.filter((s: string) => !existingNames.has(s))
+            if (missing.length > 0) {
+              throw new CliError(
+                `Agent requires secrets not found in workspace '${wsSlug}':\n` +
+                missing.map((s: string) => `  - ${s}`).join('\n') + '\n\n' +
+                `Set them before running:\n` +
+                missing.map((s: string) => `  orch secrets set ${s} <value>`).join('\n') + '\n\n' +
+                `Secrets are injected as environment variables into the agent sandbox.\n` +
+                `View existing secrets: orch secrets list`
+              )
+            }
+          }
+        }
+      } catch (err) {
+        if (err instanceof CliError) throw err
+        // Non-fatal: gateway will catch missing secrets at execution time
+      }
+    }
+  }
+
   // Pre-call balance check for paid agents
   let pricingInfo: { price_cents: number | null } | undefined
   if (isPaidAgent(agentMeta)) {
@@ -2058,6 +2095,7 @@ async function executeCloud(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${resolved.apiKey}`,
     'X-CLI-Version': packageJson.version,
+    'X-OrchAgent-Client': 'cli',
   }
   if (options.tenant) {
     headers['X-OrchAgent-Tenant'] = options.tenant
@@ -2444,6 +2482,40 @@ async function executeCloud(
       )
     }
 
+    if (errorCode === 'MISSING_SECRETS') {
+      spinner?.fail('Missing workspace secrets')
+
+      // Extract secret names from gateway message:
+      // "Agent requires secret(s) not found in workspace: NAME1, NAME2. Add them in Settings > Secrets."
+      const secretNames: string[] = []
+      if (message) {
+        const match = message.match(/not found in workspace:\s*(.+?)\./)
+        if (match) {
+          secretNames.push(...match[1].split(',').map((s: string) => s.trim()).filter(Boolean))
+        }
+      }
+
+      let hint = ''
+      if (secretNames.length > 0) {
+        hint += `Missing secrets:\n`
+        for (const name of secretNames) {
+          hint += `  - ${name}\n`
+        }
+        hint += `\nSet them with:\n`
+        for (const name of secretNames) {
+          hint += `  orch secrets set ${name} <value>\n`
+        }
+      } else {
+        hint += `${message}\n\n`
+        hint += `Set missing secrets:\n`
+        hint += `  orch secrets set <NAME> <value>\n`
+      }
+      hint += `\nView existing secrets:\n`
+      hint += `  orch secrets list`
+
+      throw new CliError(hint + refSuffix)
+    }
+
     if (response.status >= 500) {
       spinner?.fail(`Server error (${response.status})`)
       throw new CliError(
@@ -2531,6 +2603,10 @@ async function executeCloud(
           }
           if (parts.length > 0) {
             process.stderr.write(chalk.gray(`${parts.join(' · ')}\n`))
+          }
+          const runId = response.headers?.get?.('x-run-id')
+          if (runId) {
+            process.stderr.write(chalk.gray(`View logs: orch logs ${runId}\n`))
           }
         }
       }
@@ -2630,6 +2706,10 @@ async function executeCloud(
       }
       if (parts.length > 0) {
         process.stderr.write(chalk.gray(`\n${parts.join(' · ')}\n`))
+      }
+      const runId = response.headers?.get?.('x-run-id')
+      if (runId) {
+        process.stderr.write(chalk.gray(`View logs: orch logs ${runId}\n`))
       }
     }
   }

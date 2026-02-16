@@ -838,6 +838,9 @@ export function registerPublishCommand(program: Command): void {
         } else if (effectiveSkills?.length) {
           process.stderr.write(`  Skills:      ${effectiveSkills.join(', ')}\n`)
         }
+        if (manifest.required_secrets?.length) {
+          process.stderr.write(`  Secrets:     ${manifest.required_secrets.join(', ')}\n`)
+        }
 
         process.stderr.write(`\nWould publish: ${preview.org_slug}/${manifest.name}@${preview.next_version}\n`)
         if (shouldUploadBundle) {
@@ -1040,6 +1043,19 @@ export function registerPublishCommand(program: Command): void {
       process.stdout.write(`Callable: ${callable ? 'enabled' : 'disabled'}\n`)
       process.stdout.write(`Providers: ${supportedProviders.join(', ')}\n`)
       process.stdout.write(`Visibility: private\n`)
+
+      // Show required secrets with setup instructions (F-18)
+      if (manifest.required_secrets?.length) {
+        process.stdout.write(`\nRequired secrets:\n`)
+        for (const secret of manifest.required_secrets) {
+          process.stdout.write(`  ${secret}\n`)
+        }
+        process.stdout.write(`\nSet secrets before running:\n`)
+        for (const secret of manifest.required_secrets) {
+          process.stdout.write(`  orch secrets set ${secret} <value>\n`)
+        }
+        process.stdout.write(`\nView existing secrets: ${chalk.cyan('orch secrets list')}\n`)
+      }
 
       // Show security review result if available
       const secReview = (result as Record<string, unknown>).security_review as

@@ -26,7 +26,7 @@ vi.mock('../lib/pricing', () => ({
 import fs from 'fs/promises'
 import { registerRunCommand, isKeyedFileArg, mountDirectory, buildInjectedPayload } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
-import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls } from '../lib/api'
+import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request } from '../lib/api'
 import {
   detectLlmKeyFromEnv,
   getDefaultModel,
@@ -43,6 +43,7 @@ const mockPublicRequest = vi.mocked(publicRequest)
 const mockGetPublicAgent = vi.mocked(getPublicAgent)
 const mockGetAgentWithFallback = vi.mocked(getAgentWithFallback)
 const mockSafeFetchWithRetryForCalls = vi.mocked(safeFetchWithRetryForCalls)
+const mockRequest = vi.mocked(request)
 
 describe('run command --local - agent ref parsing', () => {
   let program: Command
@@ -1576,5 +1577,328 @@ describe('Keyed --file and --mount in cloud execution', () => {
     const body = JSON.parse(fetchCall[1].body as string)
     // Unkeyed: should use schema inference (field: "code")
     expect(body.code).toBe('const x = 1;')
+  })
+})
+
+// ─── F-18: Required secrets signposting ──────────────────────────────────────
+
+describe('F-18: MISSING_SECRETS error handling', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('shows orch secrets set commands for MISSING_SECRETS error', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'MISSING_SECRETS',
+          message: "Agent requires secret(s) not found in workspace: DISCORD_TOKEN, GITHUB_TOKEN. Add them in Settings > Secrets.",
+        },
+        metadata: { request_id: 'req_secrets_test' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/orch secrets set DISCORD_TOKEN/)
+
+    // Also check it suggests the list command
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/orch secrets list/)
+  })
+
+  it('extracts individual secret names from MISSING_SECRETS error', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'MISSING_SECRETS',
+          message: "Agent requires secret(s) not found in workspace: API_KEY. Add them in Settings > Secrets.",
+        },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/orch secrets set API_KEY <value>/)
+  })
+
+  it('shows generic guidance when secret names cannot be parsed', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: 'Bad Request',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'MISSING_SECRETS',
+          message: 'Secrets resolution failed',
+        },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/orch secrets set <NAME> <value>/)
+  })
+})
+
+describe('F-18: Pre-flight secrets check', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('catches missing secrets before making the run request', async () => {
+    // Workspace configured
+    mockLoadConfig.mockResolvedValue({ workspace: 'my-workspace' })
+
+    // Agent has required_secrets and is code_runtime
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      required_secrets: ['STRIPE_KEY', 'WEBHOOK_URL'],
+      execution_engine: 'code_runtime',
+    } as any)
+
+    // Mock workspace resolution
+    mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: 'ws-123', slug: 'my-workspace' }] }
+      }
+      if (path === '/workspaces/ws-123/secrets') {
+        return { secrets: [{ name: 'STRIPE_KEY' }] } // WEBHOOK_URL is missing
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/WEBHOOK_URL/)
+
+    // Should NOT have made the actual run request
+    expect(mockSafeFetchWithRetryForCalls).not.toHaveBeenCalled()
+  })
+
+  it('skips pre-flight when no workspace is configured', async () => {
+    // No workspace
+    mockLoadConfig.mockResolvedValue({})
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      required_secrets: ['SECRET_KEY'],
+      execution_engine: 'code_runtime',
+    } as any)
+
+    // Mock a successful run response
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({ result: 'ok' }),
+      json: async () => ({ result: 'ok' }),
+    } as any)
+
+    // Should proceed to the run (not blocked by pre-flight)
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{"test": true}',
+    ])
+
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+  })
+
+  it('skips pre-flight for direct_llm agents', async () => {
+    mockLoadConfig.mockResolvedValue({ workspace: 'my-workspace' })
+
+    // direct_llm agent with required_secrets (unusual but should not trigger check)
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      required_secrets: ['SOME_KEY'],
+    } as any)
+
+    // Mock a successful run
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({ result: 'ok' }),
+      json: async () => ({ result: 'ok' }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{"test": true}',
+    ])
+
+    // Should NOT have called workspaces API for secrets check
+    expect(mockRequest).not.toHaveBeenCalledWith(
+      expect.anything(), 'GET', '/workspaces'
+    )
+  })
+
+  it('proceeds when all required secrets are present', async () => {
+    mockLoadConfig.mockResolvedValue({ workspace: 'my-workspace' })
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      required_secrets: ['API_KEY'],
+      execution_engine: 'code_runtime',
+    } as any)
+
+    mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: 'ws-123', slug: 'my-workspace' }] }
+      }
+      if (path === '/workspaces/ws-123/secrets') {
+        return { secrets: [{ name: 'API_KEY' }] } // Present
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({ result: 'ok' }),
+      json: async () => ({ result: 'ok' }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{"test": true}',
+    ])
+
+    // Should proceed to the actual run
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+  })
+
+  it('shows orch secrets set for each missing secret', async () => {
+    mockLoadConfig.mockResolvedValue({ workspace: 'my-workspace' })
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      required_secrets: ['DB_URL', 'REDIS_URL', 'API_TOKEN'],
+      execution_engine: 'managed_loop',
+    } as any)
+
+    mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: 'ws-123', slug: 'my-workspace' }] }
+      }
+      if (path === '/workspaces/ws-123/secrets') {
+        return { secrets: [{ name: 'DB_URL' }] } // REDIS_URL and API_TOKEN missing
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      expect(err.message).toContain('orch secrets set REDIS_URL <value>')
+      expect(err.message).toContain('orch secrets set API_TOKEN <value>')
+      expect(err.message).not.toContain('orch secrets set DB_URL') // DB_URL exists
+    }
   })
 })

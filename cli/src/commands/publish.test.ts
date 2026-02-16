@@ -1087,6 +1087,110 @@ describe('publish command - schema auto-migration', () => {
     const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(stderrOutput).toContain('Would create schema.json')
   })
+
+  it('shows required_secrets with setup instructions after publish (F-18)', async () => {
+    const manifest = {
+      name: 'secret-agent',
+      type: 'agent',
+      description: 'Agent with secrets',
+      required_secrets: ['DISCORD_WEBHOOK_URL', 'GITHUB_TOKEN'],
+      runtime: { command: 'python main.py' },
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 512, entrypoint: 'main.py' })
+    mockValidateBundle.mockResolvedValue({ valid: true })
+    mockUploadCodeBundle.mockResolvedValue({ code_hash: 'abc123def456' })
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-123')
+    mockFs.rm.mockResolvedValue(undefined)
+    mockFs.access.mockResolvedValue(undefined)
+    mockCreateAgent.mockResolvedValue({
+      agent: { id: 'agent-123', version: 'v1', name: 'secret-agent' },
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const output = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('Required secrets:')
+    expect(output).toContain('DISCORD_WEBHOOK_URL')
+    expect(output).toContain('GITHUB_TOKEN')
+    expect(output).toContain('orch secrets set DISCORD_WEBHOOK_URL <value>')
+    expect(output).toContain('orch secrets set GITHUB_TOKEN <value>')
+    expect(output).toContain('orch secrets list')
+  })
+
+  it('shows required_secrets in dry-run preview (F-18)', async () => {
+    const manifest = {
+      name: 'secret-agent',
+      type: 'agent',
+      description: 'Agent with secrets',
+      required_secrets: ['API_KEY', 'DB_URL'],
+      runtime: { command: 'python main.py' },
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.access.mockResolvedValue(undefined)
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'secret-agent',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+    mockPreviewBundle.mockResolvedValue({
+      fileCount: 1,
+      totalSizeBytes: 512,
+      entrypoint: 'main.py',
+      files: [],
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('Secrets:     API_KEY, DB_URL')
+  })
+
+  it('does not show secrets section when required_secrets is empty', async () => {
+    const manifest = {
+      name: 'no-secret-agent',
+      type: 'prompt',
+      description: 'Agent without secrets',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You are helpful.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockCreateAgent.mockResolvedValue({
+      agent: { id: 'agent-456', version: 'v1', name: 'no-secret-agent' },
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const output = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).not.toContain('Required secrets:')
+    expect(output).not.toContain('orch secrets set')
+  })
 })
 
 describe('scanUndeclaredEnvVars', () => {

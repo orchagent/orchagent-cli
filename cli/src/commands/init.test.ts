@@ -541,6 +541,393 @@ describe('init command', () => {
     })
   })
 
+  describe('discord template', () => {
+    it('creates correct files when --template discord is used', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const writtenFiles = mockFs.writeFile.mock.calls.map(([p]) => path.basename(p as string))
+      expect(writtenFiles).toContain('orchagent.json')
+      expect(writtenFiles).toContain('main.py')
+      expect(writtenFiles).toContain('requirements.txt')
+      expect(writtenFiles).toContain('.env.example')
+      expect(writtenFiles).toContain('README.md')
+    })
+
+    it('does not create prompt.md or schema.json', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const writtenFiles = mockFs.writeFile.mock.calls.map(([p]) => path.basename(p as string))
+      expect(writtenFiles).not.toContain('prompt.md')
+      expect(writtenFiles).not.toContain('schema.json')
+    })
+
+    it('sets type to agent and run_mode to always_on in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.run_mode).toBe('always_on')
+    })
+
+    it('includes runtime.command in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+    })
+
+    it('includes supported_providers and required_secrets in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.supported_providers).toEqual(['anthropic'])
+      expect(manifest.required_secrets).toEqual(['DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS'])
+    })
+
+    it('includes discord tags in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.tags).toEqual(['discord', 'always-on'])
+    })
+
+    it('creates main.py with discord.py imports', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('import discord')
+      expect(content).toContain('import anthropic')
+      expect(content).toContain('discord.Client')
+      expect(content).toContain('on_message')
+    })
+
+    it('creates requirements.txt with discord.py and anthropic', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const reqCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('requirements.txt')
+      )
+      expect(reqCall).toBeDefined()
+      const content = reqCall![1] as string
+      expect(content).toContain('discord.py')
+      expect(content).toContain('anthropic')
+    })
+
+    it('creates .env.example with required env vars', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const envCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('.env.example')
+      )
+      expect(envCall).toBeDefined()
+      const content = envCall![1] as string
+      expect(content).toContain('DISCORD_BOT_TOKEN')
+      expect(content).toContain('ANTHROPIC_API_KEY')
+      expect(content).toContain('DISCORD_CHANNEL_IDS')
+    })
+
+    it('overrides --type when --template discord is set', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--type', 'prompt', '--template', 'discord'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.run_mode).toBe('always_on')
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+    })
+
+    it('overrides --run-mode when --template discord is set', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--run-mode', 'on_demand', '--template', 'discord'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.run_mode).toBe('always_on')
+    })
+
+    it('throws when combined with --orchestrator', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-bot', '--orchestrator', '--template', 'discord'])
+      ).rejects.toThrow('Cannot use --template with --orchestrator')
+    })
+
+    it('throws when combined with --type skill', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-bot', '--type', 'skill', '--template', 'discord'])
+      ).rejects.toThrow('Cannot use --template with --type skill')
+    })
+
+    it('throws for unknown template name', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'unknown'])
+      ).rejects.toThrow("Unknown --template 'unknown'")
+    })
+
+    it('creates README with Discord setup instructions', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const readmeCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('README.md')
+      )
+      expect(readmeCall).toBeDefined()
+      const content = readmeCall![1] as string
+      expect(content).toContain('Discord')
+      expect(content).toContain('Message Content Intent')
+      expect(content).toContain('discord.com/developers')
+      expect(content).toContain('orch publish')
+    })
+
+    it('shows discord-specific next steps', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Discord bot'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Message Content Intent'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('.env.example'))
+    })
+
+    it('shows execution as code_runtime (discord)', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('code_runtime (discord)'))
+    })
+
+    it('shows run mode as always_on', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('always_on'))
+    })
+
+    it('works without a name argument (current directory)', async () => {
+      await program.parseAsync(['node', 'test', 'init', '--template', 'discord'])
+
+      expect(mockFs.mkdir).not.toHaveBeenCalled()
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      expect(manifestCall).toBeDefined()
+      expect(manifestCall![0]).toBe(path.join(process.cwd(), 'orchagent.json'))
+    })
+
+    it('does not show schema.json in file list', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-bot', '--template', 'discord'])
+
+      const schemaCalls = stdoutSpy.mock.calls.filter(
+        ([msg]) => typeof msg === 'string' && msg.includes('schema.json')
+      )
+      expect(schemaCalls).toHaveLength(0)
+    })
+  })
+
+  describe('github-weekly-summary template', () => {
+    it('creates all 11 files in the correct locations', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const writtenFiles = mockFs.writeFile.mock.calls.map(([p]) => path.basename(p as string))
+      expect(writtenFiles).toContain('orchagent.json')
+      expect(writtenFiles).toContain('main.py')
+      expect(writtenFiles).toContain('config.py')
+      expect(writtenFiles).toContain('github_fetcher.py')
+      expect(writtenFiles).toContain('activity_store.py')
+      expect(writtenFiles).toContain('analyst.py')
+      expect(writtenFiles).toContain('models.py')
+      expect(writtenFiles).toContain('requirements.txt')
+      expect(writtenFiles).toContain('weekly_summary.md')
+      expect(writtenFiles).toContain('.env.example')
+      expect(writtenFiles).toContain('README.md')
+      expect(mockFs.writeFile.mock.calls).toHaveLength(11)
+    })
+
+    it('creates prompts/ subdirectory', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      expect(mockFs.mkdir).toHaveBeenCalledWith(
+        path.join(process.cwd(), 'my-summary', 'prompts'),
+        { recursive: true }
+      )
+    })
+
+    it('writes weekly_summary.md into prompts/ subdirectory', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const promptCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('weekly_summary.md')
+      )
+      expect(promptCall).toBeDefined()
+      expect(promptCall![0]).toBe(
+        path.join(process.cwd(), 'my-summary', 'prompts', 'weekly_summary.md')
+      )
+    })
+
+    it('substitutes {{name}} in orchagent.json', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      expect(manifestCall).toBeDefined()
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.name).toBe('my-summary')
+      expect(manifestCall![1]).not.toContain('{{name}}')
+    })
+
+    it('substitutes {{name}} in README.md', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const readmeCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('README.md')
+      )
+      expect(readmeCall).toBeDefined()
+      const content = readmeCall![1] as string
+      expect(content).toContain('my-summary')
+      expect(content).not.toContain('{{name}}')
+    })
+
+    it('has correct manifest structure', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.version).toBe('v1')
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.required_secrets).toEqual([
+        'ORCHAGENT_API_KEY',
+        'DISCORD_WEBHOOK_URL',
+        'ANTHROPIC_API_KEY',
+        'GITHUB_REPOS',
+      ])
+      expect(manifest.bundle).toBeDefined()
+      expect(manifest.bundle.include).toContain('*.py')
+    })
+
+    it('does not create prompt.md or schema.json', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const writtenFiles = mockFs.writeFile.mock.calls.map(([p]) => path.basename(p as string))
+      expect(writtenFiles).not.toContain('prompt.md')
+      expect(writtenFiles).not.toContain('schema.json')
+    })
+
+    it('throws when orchagent.json already exists', async () => {
+      mockFs.access.mockResolvedValue(undefined)
+
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+      ).rejects.toThrow('Already initialized')
+    })
+
+    it('works without a name argument (current directory)', async () => {
+      await program.parseAsync(['node', 'test', 'init', '--template', 'github-weekly-summary'])
+
+      expect(mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )).toBeDefined()
+
+      // Should not create project subdirectory (only prompts/)
+      const mkdirCalls = mockFs.mkdir.mock.calls.map(([p]) => p as string)
+      expect(mkdirCalls).toHaveLength(1)
+      expect(mkdirCalls[0]).toContain('prompts')
+    })
+
+    it('creates subdirectory when name is provided', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      // First mkdir: project dir, second: prompts/
+      expect(mockFs.mkdir).toHaveBeenCalledWith(
+        path.join(process.cwd(), 'my-summary'),
+        { recursive: true }
+      )
+    })
+
+    it('throws when combined with --orchestrator', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-summary', '--orchestrator', '--template', 'github-weekly-summary'])
+      ).rejects.toThrow('Cannot use --template with --orchestrator')
+    })
+
+    it('throws when combined with --type skill', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-summary', '--type', 'skill', '--template', 'github-weekly-summary'])
+      ).rejects.toThrow('Cannot use --template with --type skill')
+    })
+
+    it('shows next steps with github connect and schedule', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('orch github connect'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('orch publish'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('orch schedule create'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('README.md'))
+    })
+
+    it('shows cd instruction when name provided', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('cd my-summary'))
+    })
+
+    it('substitutes {{name}} in .env.example', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const envCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('.env.example')
+      )
+      expect(envCall).toBeDefined()
+      const content = envCall![1] as string
+      expect(content).toContain('my-summary')
+      expect(content).not.toContain('{{name}}')
+    })
+
+    it('.env.example lists all required secrets', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const envCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('.env.example')
+      )
+      const content = envCall![1] as string
+      expect(content).toContain('ORCHAGENT_API_KEY')
+      expect(content).toContain('DISCORD_WEBHOOK_URL')
+      expect(content).toContain('ANTHROPIC_API_KEY')
+      expect(content).toContain('GITHUB_REPOS')
+    })
+
+    it('main.py contains the correct agent entrypoint', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-summary', '--template', 'github-weekly-summary'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('from config import Config')
+      expect(content).toContain('from github_fetcher import GitHubFetcher')
+      expect(content).toContain('asyncio.run(run())')
+      expect(content).toContain('post_to_discord')
+    })
+  })
+
   describe('multiple inits in same parent directory', () => {
     it('can create two different agent subdirectories', async () => {
       // First init

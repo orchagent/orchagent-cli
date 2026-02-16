@@ -33,6 +33,7 @@ import { registerServiceCommand } from './service'
 import { registerTransferCommand } from './transfer'
 import { registerPullCommand } from './pull'
 import { registerLogsCommand } from './logs'
+import { registerSecretsCommand } from './secrets'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -68,4 +69,5 @@ export function registerCommands(program: Command): void {
   registerTransferCommand(program)
   registerPullCommand(program)
   registerLogsCommand(program)
+  registerSecretsCommand(program)
 }
