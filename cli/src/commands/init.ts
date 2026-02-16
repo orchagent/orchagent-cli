@@ -646,7 +646,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${s}. orch github connect                  Connect your GitHub account\n`)
         process.stdout.write(`  ${s + 1}. orch publish                          Publish the agent\n`)
         process.stdout.write(`  ${s + 2}. Add secrets in web dashboard          ORCHAGENT_API_KEY, DISCORD_WEBHOOK_URL, ANTHROPIC_API_KEY, GITHUB_REPOS\n`)
-        process.stdout.write(`  ${s + 3}. orch run <org>/${agentName} --cloud   Test it\n`)
+        process.stdout.write(`  ${s + 3}. orch run <org>/${agentName}            Test it\n`)
         process.stdout.write(`  ${s + 4}. orch schedule create <org>/${agentName} --cron "0 9 * * 1"   Schedule weekly\n`)
         process.stdout.write(`\n  See README.md for full setup guide.\n`)
         return

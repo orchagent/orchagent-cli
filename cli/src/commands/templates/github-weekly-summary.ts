@@ -769,8 +769,8 @@ Repos: {repos}
 export const TEMPLATE_ENV_EXAMPLE = `# Required secrets -- add these via: orch secrets set NAME VALUE
 # Or in the web dashboard: Settings > Secrets
 
-# orchagent API key -- created automatically when you publish
-# Get one from: orch agent-keys create <your-org>/{{name}}
+# orchagent API key -- create after publishing:
+#   orch agent-keys create <your-org>/{{name}}
 ORCHAGENT_API_KEY=
 
 # Discord webhook URL -- create at: Server Settings > Integrations > Webhooks > New Webhook
@@ -832,7 +832,7 @@ orch secrets set CLAUDE_MODEL claude-sonnet-4-5-20250929
 ### 4. Test run
 
 \`\`\`bash
-orch run <your-org>/{{name}} --cloud
+orch run <your-org>/{{name}}
 \`\`\`
 
 Check your Discord channel -- the summary should appear within ~30 seconds.
@@ -853,7 +853,7 @@ This runs every Monday at 9am. Adjust the cron and timezone:
 View runs and logs:
 
 \`\`\`bash
-orch runs list                       # Recent runs
+orch logs                            # Recent runs
 orch schedule list                   # Your schedules
 orch schedule trigger <schedule-id>  # Manual trigger
 \`\`\`
@@ -897,7 +897,7 @@ To post to different Discord channels, deploy multiple instances with different 
 | "GitHub App not installed" | Run \`orch github connect\` and grant repo access |
 | Empty summary | Check \`GITHUB_REPOS\` format -- must be \`owner/repo\`, not just \`repo\` |
 | Discord webhook 400/404 | Regenerate webhook in Discord server settings |
-| No runs appearing | Check \`orch runs list\` and \`orch schedule list\` |
+| No runs appearing | Check \`orch logs\` and \`orch schedule list\` |
 `
 
 // ─── Available templates registry ────────────────────────────────────────────
