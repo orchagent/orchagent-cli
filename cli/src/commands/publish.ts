@@ -377,9 +377,11 @@ export function registerPublishCommand(program: Command): void {
 
       // Resolve workspace context — if `orch workspace use` was called, publish
       // to that workspace instead of the personal org (F-5)
+      // Skip workspace resolution when using a named profile — the global
+      // workspace belongs to the default profile's context, not the named one.
       const configFile = await loadConfig()
       let workspaceId: string | undefined
-      if (configFile.workspace) {
+      if (configFile.workspace && !options.profile) {
         const { workspaces } = await request<{ workspaces: Array<{ id: string; slug: string; name: string }> }>(
           config, 'GET', '/workspaces'
         )
