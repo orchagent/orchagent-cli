@@ -3,7 +3,7 @@ import readline from 'readline/promises'
 import chalk from 'chalk'
 
 import { getResolvedConfig } from '../lib/config'
-import { listMyAgents, checkAgentDelete, deleteAgent } from '../lib/api'
+import { listMyAgents, checkAgentDelete, deleteAgent, resolveWorkspaceIdForOrg } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { parseAgentRef } from '../lib/agent-ref'
 import { track } from '../lib/analytics'
@@ -42,10 +42,13 @@ Examples:
         throw new CliError('Not logged in. Run `orchagent login` first.')
       }
 
+      // Resolve workspace context for the target org
+      const workspaceId = await resolveWorkspaceIdForOrg(config, ref.org)
+
       process.stdout.write('Finding agent...\n')
 
       // Find the agent by name, filtering by org if provided
-      const agents = await listMyAgents(config)
+      const agents = await listMyAgents(config, workspaceId)
       const matching = agents.filter(a =>
         a.name === ref.agent && (!a.org_slug || a.org_slug === ref.org)
       )

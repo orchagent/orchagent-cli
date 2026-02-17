@@ -24,6 +24,7 @@ vi.mock('../lib/api', () => {
     getOrg: vi.fn(),
     downloadCodeBundle: vi.fn(),
     downloadCodeBundleAuthenticated: vi.fn(),
+    resolveWorkspaceIdForOrg: vi.fn().mockResolvedValue(undefined),
   }
 })
 vi.mock('../lib/analytics')

@@ -4,7 +4,7 @@ import path from 'path'
 import os from 'os'
 
 import { getResolvedConfig, getDefaultFormats, getDefaultScope, setDefaultFormats, FORMAT_SKILL_DIRS, VALID_FORMAT_IDS, loadConfig, type FormatId } from '../lib/config'
-import { publicRequest, ApiError, getOrg, listMyAgents, reportInstall, getPublicAgent, request } from '../lib/api'
+import { publicRequest, ApiError, getOrg, listMyAgents, reportInstall, getPublicAgent, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { trackInstall, computeHash, untrackInstall, type InstalledAgent } from '../lib/installed'
@@ -75,7 +75,8 @@ async function downloadSkillWithFallback(
   config: ResolvedConfig,
   org: string,
   skill: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<SkillDownload> {
   // Fetch metadata first to check if paid
   let skillMeta
@@ -104,13 +105,13 @@ async function downloadSkillWithFallback(
   if (skillMeta && isPaidAgent(skillMeta)) {
     // Paid skill - check ownership
     if (config.apiKey) {
-      const callerOrg = await getOrg(config)
+      const callerOrg = await getOrg(config, workspaceId)
       const isOwner = (skillMeta.org_id && callerOrg.id === skillMeta.org_id) ||
                       (skillMeta.org_slug && callerOrg.slug === skillMeta.org_slug)
 
       if (isOwner) {
         // Owner - fetch from authenticated endpoint with full content
-        const myAgents = await listMyAgents(config)
+        const myAgents = await listMyAgents(config, workspaceId)
         const matching = myAgents.filter(a => a.name === skill && a.type === 'skill')
 
         if (matching.length > 0) {
@@ -160,13 +161,13 @@ async function downloadSkillWithFallback(
   // Check if download is disabled (server-only skill)
   if (skillMeta && skillMeta.allow_local_download === false) {
     if (config.apiKey) {
-      const callerOrg = await getOrg(config)
+      const callerOrg = await getOrg(config, workspaceId)
       const isOwner = (skillMeta.org_id && callerOrg.id === skillMeta.org_id) ||
                       (skillMeta.org_slug && callerOrg.slug === skillMeta.org_slug)
 
       if (isOwner) {
         // Owner - fetch from authenticated endpoint
-        const myAgents = await listMyAgents(config)
+        const myAgents = await listMyAgents(config, workspaceId)
         const matching = myAgents.filter(a => a.name === skill && a.type === 'skill')
 
         if (matching.length > 0) {
@@ -234,13 +235,13 @@ async function downloadSkillWithFallback(
     throw new ApiError(`Skill '${org}/${skill}@${version}' not found`, 404)
   }
 
-  const userOrg = await getOrg(config)
+  const userOrg = await getOrg(config, workspaceId)
   if (userOrg.slug !== org) {
     throw new ApiError(`Skill '${org}/${skill}@${version}' not found`, 404)
   }
 
   // Find skill in user's list
-  const agents = await listMyAgents(config)
+  const agents = await listMyAgents(config, workspaceId)
   const matching = agents.filter(a => a.name === skill && a.type === 'skill')
   if (matching.length === 0) {
     throw new ApiError(`Skill '${org}/${skill}@${version}' not found`, 404)
@@ -473,6 +474,9 @@ Instructions and guidance for AI agents...
         result.skill = `${org}/${parsed.skill}`
         result.version = parsed.version
 
+        // Resolve workspace context for the target org
+        const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
+
         // Download skill (tries public first, falls back to authenticated for private)
         let skillData: SkillDownload
         try {
@@ -480,7 +484,8 @@ Instructions and guidance for AI agents...
             resolved,
             org,
             parsed.skill,
-            parsed.version
+            parsed.version,
+            workspaceId
           )
         } catch (err) {
           if (jsonMode) {

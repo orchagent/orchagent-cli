@@ -25,6 +25,7 @@ vi.mock('../lib/api', () => {
     getOrg: vi.fn(),
     listMyAgents: vi.fn(),
     getPublicAgent: vi.fn(),
+    resolveWorkspaceIdForOrg: vi.fn().mockResolvedValue(undefined),
   }
 })
 vi.mock('../lib/pricing', () => ({

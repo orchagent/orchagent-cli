@@ -1,8 +1,8 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 
-import { getResolvedConfig } from '../lib/config'
-import { listMyAgents, listAgentKeys, createAgentKey, deleteAgentKey } from '../lib/api'
+import { getResolvedConfig, loadConfig } from '../lib/config'
+import { listMyAgents, listAgentKeys, createAgentKey, deleteAgentKey, resolveWorkspaceIdForOrg } from '../lib/api'
 import { CliError } from '../lib/errors'
 import type { ResolvedConfig, Agent } from '../types'
 
@@ -13,8 +13,14 @@ import type { ResolvedConfig, Agent } from '../types'
 async function resolveAgentId(config: ResolvedConfig, ref: string): Promise<{ agent: Agent; agentId: string }> {
   const parts = ref.split('/')
   const agentName = parts.length >= 2 ? parts[1] : parts[0]
+  const orgSlug = parts.length >= 2 ? parts[0] : undefined
 
-  const agents = await listMyAgents(config)
+  // Resolve workspace context from org slug or config
+  const configFile = await loadConfig()
+  const resolvedOrg = orgSlug ?? configFile.workspace ?? config.defaultOrg
+  const workspaceId = resolvedOrg ? await resolveWorkspaceIdForOrg(config, resolvedOrg) : undefined
+
+  const agents = await listMyAgents(config, workspaceId)
   const matching = agents.filter(a => a.name === agentName)
 
   if (matching.length === 0) {

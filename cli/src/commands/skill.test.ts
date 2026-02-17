@@ -48,6 +48,7 @@ vi.mock('../lib/api', () => {
     listMyAgents: vi.fn(),
     reportInstall: vi.fn().mockReturnValue(Promise.resolve()),
     request: vi.fn(),
+    resolveWorkspaceIdForOrg: vi.fn().mockResolvedValue(undefined),
   }
 })
 vi.mock('../lib/analytics', () => ({

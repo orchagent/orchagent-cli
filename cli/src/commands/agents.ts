@@ -1,8 +1,8 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 
-import { getResolvedConfig } from '../lib/config'
-import { listMyAgents } from '../lib/api'
+import { getResolvedConfig, loadConfig } from '../lib/config'
+import { listMyAgents, resolveWorkspaceIdForOrg } from '../lib/api'
 import { printJson } from '../lib/output'
 
 export function registerAgentsCommand(program: Command): void {
@@ -13,7 +13,13 @@ export function registerAgentsCommand(program: Command): void {
     .option('--json', 'Output raw JSON')
     .action(async (options: { filter?: string; json?: boolean }) => {
       const config = await getResolvedConfig()
-      const agents = await listMyAgents(config)
+
+      // Resolve workspace context
+      const configFile = await loadConfig()
+      const orgSlug = configFile.workspace ?? config.defaultOrg
+      const workspaceId = orgSlug ? await resolveWorkspaceIdForOrg(config, orgSlug) : undefined
+
+      const agents = await listMyAgents(config, workspaceId)
 
       // Apply filter if provided
       const filteredAgents = options.filter

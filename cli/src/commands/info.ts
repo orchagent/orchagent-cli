@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 
 import { getResolvedConfig } from '../lib/config'
-import { ApiError, getOrg, listMyAgents, getPublicAgent } from '../lib/api'
+import { ApiError, getOrg, listMyAgents, getPublicAgent, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { isPaidAgent, formatPrice } from '../lib/pricing'
 import type { AgentTypeValue } from '../types'
@@ -89,7 +89,8 @@ async function getAgentInfo(
   config: { apiKey?: string; apiUrl: string; defaultOrg?: string },
   org: string,
   agent: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<AgentDownload> {
   // Use public metadata endpoint as primary source — never blocked by download restrictions
   try {
@@ -119,12 +120,12 @@ async function getAgentInfo(
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
 
-  const userOrg = await getOrg(config as { apiKey: string; apiUrl: string })
+  const userOrg = await getOrg(config as { apiKey: string; apiUrl: string }, workspaceId)
   if (userOrg.slug !== org) {
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
 
-  const agents = await listMyAgents(config as { apiKey: string; apiUrl: string })
+  const agents = await listMyAgents(config as { apiKey: string; apiUrl: string }, workspaceId)
   const matching = agents.filter(a => a.name === agent)
   if (matching.length === 0) {
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
@@ -170,8 +171,11 @@ export function registerInfoCommand(program: Command): void {
       const config = await getResolvedConfig()
       const { org, agent, version } = parseAgentRef(agentArg)
 
+      // Resolve workspace context for the target org
+      const workspaceId = await resolveWorkspaceIdForOrg(config, org)
+
       // Fetch agent metadata
-      const agentData = await getAgentInfo(config, org, agent, version)
+      const agentData = await getAgentInfo(config, org, agent, version, workspaceId)
 
       if (options.json) {
         // Don't expose internal routing URLs in JSON output

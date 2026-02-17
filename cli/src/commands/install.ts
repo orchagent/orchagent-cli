@@ -4,7 +4,7 @@ import path from 'path'
 import os from 'os'
 
 import { getResolvedConfig, getDefaultFormats, getDefaultScope, loadConfig } from '../lib/config'
-import { publicRequest, ApiError, getOrg, listMyAgents, getPublicAgent, request } from '../lib/api'
+import { publicRequest, ApiError, getOrg, listMyAgents, getPublicAgent, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { adapterRegistry, type CanonicalAgent } from '../adapters'
@@ -39,7 +39,8 @@ async function downloadAgentWithFallback(
   config: ResolvedConfig,
   org: string,
   name: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<CanonicalAgent> {
   // Fetch public metadata first to check if paid
   let publicMeta
@@ -58,13 +59,13 @@ async function downloadAgentWithFallback(
   if (publicMeta && isPaidAgent(publicMeta)) {
     // Paid agent - check if owner
     if (config.apiKey) {
-      const callerOrg = await getOrg(config)
+      const callerOrg = await getOrg(config, workspaceId)
       const isOwner = (publicMeta.org_id && callerOrg.id === publicMeta.org_id) ||
                       (publicMeta.org_slug && callerOrg.slug === publicMeta.org_slug)
 
       if (isOwner) {
         // Owner - fetch from authenticated endpoint with full prompt
-        const myAgents = await listMyAgents(config)
+        const myAgents = await listMyAgents(config, workspaceId)
         const matching = myAgents.filter(a => a.name === name)
         if (matching.length > 0) {
           let targetAgent: Agent
@@ -105,13 +106,13 @@ async function downloadAgentWithFallback(
   if (publicMeta && publicMeta.allow_local_download === false) {
     // Check if owner (can bypass)
     if (config.apiKey) {
-      const callerOrg = await getOrg(config)
+      const callerOrg = await getOrg(config, workspaceId)
       const isOwner = (publicMeta.org_id && callerOrg.id === publicMeta.org_id) ||
                       (publicMeta.org_slug && callerOrg.slug === publicMeta.org_slug)
 
       if (isOwner) {
         // Owner - fetch from authenticated endpoint
-        const myAgents = await listMyAgents(config)
+        const myAgents = await listMyAgents(config, workspaceId)
         const matching = myAgents.filter(a => a.name === name)
         if (matching.length > 0) {
           let targetAgent: Agent
@@ -153,12 +154,12 @@ async function downloadAgentWithFallback(
     throw new ApiError(`Agent '${org}/${name}@${version}' not found`, 404)
   }
 
-  const userOrg = await getOrg(config)
+  const userOrg = await getOrg(config, workspaceId)
   if (userOrg.slug !== org) {
     throw new ApiError(`Agent '${org}/${name}@${version}' not found`, 404)
   }
 
-  const agents = await listMyAgents(config)
+  const agents = await listMyAgents(config, workspaceId)
   const matching = agents.filter(a => a.name === name)
   if (matching.length === 0) {
     throw new ApiError(`Agent '${org}/${name}@${version}' not found`, 404)
@@ -285,11 +286,14 @@ Note: Paid agents cannot be installed locally - they run on server only.
         }
         result.scope = scope
 
+        // Resolve workspace context for the target org
+        const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
+
         // Download agent
         log(`Fetching ${org}/${parsed.name}@${parsed.version}...\n`)
         let agent: CanonicalAgent
         try {
-          agent = await downloadAgentWithFallback(resolved, org, parsed.name, parsed.version)
+          agent = await downloadAgentWithFallback(resolved, org, parsed.name, parsed.version, workspaceId)
         } catch (err) {
           if (jsonMode) {
             result.errors.push(err instanceof Error ? err.message : String(err))

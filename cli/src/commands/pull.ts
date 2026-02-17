@@ -14,6 +14,7 @@ import {
   downloadCodeBundle,
   downloadCodeBundleAuthenticated,
   ApiError,
+  resolveWorkspaceIdForOrg,
 } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { track } from '../lib/analytics'
@@ -122,7 +123,8 @@ async function resolveAgent(
   config: ResolvedConfig,
   org: string,
   agent: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<PullData> {
   // 1. Try public download endpoint
   try {
@@ -164,7 +166,7 @@ async function resolveAgent(
       if (errorCode === 'PAID_AGENT_SERVER_ONLY' || errorCode === 'DOWNLOAD_DISABLED') {
         // Try authenticated owner path
         if (config.apiKey) {
-          const ownerData = await tryOwnerFallback(config, org, agent, version)
+          const ownerData = await tryOwnerFallback(config, org, agent, version, workspaceId)
           if (ownerData) return { ...ownerData, source: 'owner_authenticated' }
         }
 
@@ -191,12 +193,12 @@ async function resolveAgent(
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
 
-  const userOrg = await getOrg(config)
+  const userOrg = await getOrg(config, workspaceId)
   if (userOrg.slug !== org) {
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
 
-  const data = await resolveFromMyAgents(config, agent, version, org)
+  const data = await resolveFromMyAgents(config, agent, version, org, workspaceId)
   if (!data) {
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
@@ -207,10 +209,11 @@ async function tryOwnerFallback(
   config: ResolvedConfig,
   org: string,
   agent: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<Omit<PullData, 'source'> | null> {
   try {
-    const myAgents = await listMyAgents(config)
+    const myAgents = await listMyAgents(config, workspaceId)
     let match: Agent | undefined
     if (version === 'latest') {
       match = myAgents
@@ -232,9 +235,10 @@ async function resolveFromMyAgents(
   config: ResolvedConfig,
   agent: string,
   version: string,
-  org: string
+  org: string,
+  workspaceId?: string
 ): Promise<Omit<PullData, 'source'> | null> {
-  const agents = await listMyAgents(config)
+  const agents = await listMyAgents(config, workspaceId)
   const matching = agents.filter(a => a.name === agent && a.org_slug === org)
   if (matching.length === 0) return null
 
@@ -470,10 +474,13 @@ Examples:
         )
       }
 
+      // Resolve workspace context for the target org
+      const workspaceId = await resolveWorkspaceIdForOrg(config, org)
+
       write(`Resolving ${org}/${parsed.agent}@${parsed.version}...\n`)
 
       // Resolve agent data
-      const data = await resolveAgent(config, org, parsed.agent, parsed.version)
+      const data = await resolveAgent(config, org, parsed.agent, parsed.version, workspaceId)
 
       // Reject skills
       if (canonicalType(data.type) === 'skill') {
