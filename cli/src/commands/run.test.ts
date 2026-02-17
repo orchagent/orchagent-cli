@@ -26,7 +26,7 @@ vi.mock('../lib/pricing', () => ({
 import fs from 'fs/promises'
 import { registerRunCommand, isKeyedFileArg, mountDirectory, buildInjectedPayload } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
-import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request } from '../lib/api'
+import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import {
   detectLlmKeyFromEnv,
   getDefaultModel,
@@ -44,6 +44,7 @@ const mockGetPublicAgent = vi.mocked(getPublicAgent)
 const mockGetAgentWithFallback = vi.mocked(getAgentWithFallback)
 const mockSafeFetchWithRetryForCalls = vi.mocked(safeFetchWithRetryForCalls)
 const mockRequest = vi.mocked(request)
+const mockResolveWorkspaceIdForOrg = vi.mocked(resolveWorkspaceIdForOrg)
 
 describe('run command --local - agent ref parsing', () => {
   let program: Command
@@ -1733,6 +1734,9 @@ describe('F-18: Pre-flight secrets check', () => {
     // Workspace configured
     mockLoadConfig.mockResolvedValue({ workspace: 'my-workspace' })
 
+    // Resolve workspace ID for the org slug
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-123')
+
     // Agent has required_secrets and is code_runtime
     mockGetAgentWithFallback.mockResolvedValue({
       type: 'tool',
@@ -1743,11 +1747,8 @@ describe('F-18: Pre-flight secrets check', () => {
       execution_engine: 'code_runtime',
     } as any)
 
-    // Mock workspace resolution
+    // Mock secrets check
     mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
-      if (path === '/workspaces') {
-        return { workspaces: [{ id: 'ws-123', slug: 'my-workspace' }] }
-      }
       if (path === '/workspaces/ws-123/secrets') {
         return { secrets: [{ name: 'STRIPE_KEY' }] } // WEBHOOK_URL is missing
       }
@@ -1870,6 +1871,9 @@ describe('F-18: Pre-flight secrets check', () => {
   it('shows orch secrets set for each missing secret', async () => {
     mockLoadConfig.mockResolvedValue({ workspace: 'my-workspace' })
 
+    // Resolve workspace ID for the org slug
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-123')
+
     mockGetAgentWithFallback.mockResolvedValue({
       type: 'agent',
       name: 'test-agent',
@@ -1880,9 +1884,6 @@ describe('F-18: Pre-flight secrets check', () => {
     } as any)
 
     mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
-      if (path === '/workspaces') {
-        return { workspaces: [{ id: 'ws-123', slug: 'my-workspace' }] }
-      }
       if (path === '/workspaces/ws-123/secrets') {
         return { secrets: [{ name: 'DB_URL' }] } // REDIS_URL and API_TOKEN missing
       }
@@ -1900,5 +1901,164 @@ describe('F-18: Pre-flight secrets check', () => {
       expect(err.message).toContain('orch secrets set API_TOKEN <value>')
       expect(err.message).not.toContain('orch secrets set DB_URL') // DB_URL exists
     }
+  })
+})
+
+// ─── Workspace-aware agent resolution ────────────────────────────────────────
+
+describe('Workspace-aware cloud execution', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'personal-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('resolves workspace ID for team org and passes to getAgentWithFallback', async () => {
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-123')
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'team-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'team-org/team-agent',
+      '--data', '{"test": true}',
+    ])
+
+    // Verify resolveWorkspaceIdForOrg was called with the org slug
+    expect(mockResolveWorkspaceIdForOrg).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'sk_test_123' }),
+      'team-org'
+    )
+
+    // Verify getAgentWithFallback received workspace ID
+    expect(mockGetAgentWithFallback).toHaveBeenCalledWith(
+      expect.any(Object),
+      'team-org',
+      'team-agent',
+      'latest',
+      'ws-team-123'
+    )
+  })
+
+  it('includes X-Workspace-Id header in cloud execution POST', async () => {
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-123')
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'team-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'team-org/team-agent',
+      '--data', '{"test": true}',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    expect(fetchCall[1].headers['X-Workspace-Id']).toBe('ws-team-123')
+  })
+
+  it('does not include X-Workspace-Id when org is personal', async () => {
+    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'my-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result": "ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'personal-org/my-agent',
+      '--data', '{"test": true}',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    expect(fetchCall[1].headers['X-Workspace-Id']).toBeUndefined()
+  })
+
+  it('reuses resolved workspaceId for secrets pre-flight', async () => {
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-123')
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'team-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      required_secrets: ['API_KEY'],
+      execution_engine: 'code_runtime',
+    } as any)
+
+    // Mock secrets check using already-resolved workspace ID
+    mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
+      if (path === '/workspaces/ws-team-123/secrets') {
+        return { secrets: [{ name: 'API_KEY' }] }
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({ result: 'ok' }),
+      json: async () => ({ result: 'ok' }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'team-org/team-agent',
+      '--data', '{"test": true}',
+    ])
+
+    // Verify secrets were checked using the resolved workspace ID
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.any(Object), 'GET', '/workspaces/ws-team-123/secrets'
+    )
+
+    // Should proceed to actual run
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
   })
 })

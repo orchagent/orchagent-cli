@@ -263,8 +263,8 @@ export function registerScheduleCommand(program: Command): void {
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const ref = parseAgentRef(agentArg)
 
-      // Resolve agent to get the ID
-      const agent = await getAgentWithFallback(config, ref.org, ref.agent, ref.version)
+      // Resolve agent to get the ID (pass workspace context for private agents)
+      const agent = await getAgentWithFallback(config, ref.org, ref.agent, ref.version, workspaceId)
 
       // Parse input data
       let inputData: Record<string, unknown> | undefined

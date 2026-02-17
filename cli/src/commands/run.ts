@@ -19,6 +19,7 @@ import {
   getAgentWithFallback,
   safeFetchWithRetryForCalls,
   getCreditsBalance,
+  resolveWorkspaceIdForOrg,
 } from '../lib/api'
 import { CliError, jsonInputError, ExitCodes } from '../lib/errors'
 import { printJson } from '../lib/output'
@@ -482,7 +483,8 @@ async function downloadAgent(
   config: ResolvedConfig,
   org: string,
   agent: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<AgentDownload> {
   // Try public endpoint first
   try {
@@ -499,7 +501,7 @@ async function downloadAgent(
         // Try owner path if authenticated
         if (config.apiKey) {
           try {
-            const myAgents = await listMyAgents(config)
+            const myAgents = await listMyAgents(config, workspaceId)
             const matchingAgent = myAgents.find(
               a => a.name === agent && a.version === version && a.org_slug === org
             )
@@ -554,13 +556,13 @@ async function downloadAgent(
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
 
-  const userOrg = await getOrg(config)
+  const userOrg = await getOrg(config, workspaceId)
   if (userOrg.slug !== org) {
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
 
   // Find agent in user's list
-  const agents = await listMyAgents(config)
+  const agents = await listMyAgents(config, workspaceId)
   const matching = agents.filter(a => a.name === agent)
   if (matching.length === 0) {
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
@@ -1988,11 +1990,15 @@ async function executeCloud(
     throw new CliError('Missing org. Use org/agent or set default org.')
   }
 
+  // Resolve workspace context for the target org
+  const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
+
   const agentMeta = await getAgentWithFallback(
     resolved,
     org,
     parsed.agent,
-    parsed.version
+    parsed.version,
+    workspaceId
   )
   const cloudType = canonicalAgentType(agentMeta.type as string | undefined)
   const cloudEngine = resolveExecutionEngine({
@@ -2008,28 +2014,23 @@ async function executeCloud(
     const agentRequiredSecrets = (agentMeta as Agent).required_secrets
     if (agentRequiredSecrets?.length) {
       try {
-        const wsSlug = configFile.workspace
-        if (wsSlug) {
-          const { workspaces } = await request<{ workspaces: Array<{ id: string; slug: string }> }>(
-            resolved, 'GET', '/workspaces'
+        // Use already-resolved workspaceId (or fall back to config workspace slug)
+        const wsId = workspaceId ?? (configFile.workspace ? (await resolveWorkspaceIdForOrg(resolved, configFile.workspace)) : undefined)
+        if (wsId) {
+          const secretsResult = await request<{ secrets: Array<{ name: string }> }>(
+            resolved, 'GET', `/workspaces/${wsId}/secrets`
           )
-          const ws = workspaces.find((w: { slug: string }) => w.slug === wsSlug)
-          if (ws) {
-            const secretsResult = await request<{ secrets: Array<{ name: string }> }>(
-              resolved, 'GET', `/workspaces/${ws.id}/secrets`
+          const existingNames = new Set(secretsResult.secrets.map((s: { name: string }) => s.name))
+          const missing = agentRequiredSecrets.filter((s: string) => !existingNames.has(s))
+          if (missing.length > 0) {
+            throw new CliError(
+              `Agent requires secrets not found in workspace '${org}':\n` +
+              missing.map((s: string) => `  - ${s}`).join('\n') + '\n\n' +
+              `Set them before running:\n` +
+              missing.map((s: string) => `  orch secrets set ${s} <value>`).join('\n') + '\n\n' +
+              `Secrets are injected as environment variables into the agent sandbox.\n` +
+              `View existing secrets: orch secrets list`
             )
-            const existingNames = new Set(secretsResult.secrets.map((s: { name: string }) => s.name))
-            const missing = agentRequiredSecrets.filter((s: string) => !existingNames.has(s))
-            if (missing.length > 0) {
-              throw new CliError(
-                `Agent requires secrets not found in workspace '${wsSlug}':\n` +
-                missing.map((s: string) => `  - ${s}`).join('\n') + '\n\n' +
-                `Set them before running:\n` +
-                missing.map((s: string) => `  orch secrets set ${s} <value>`).join('\n') + '\n\n' +
-                `Secrets are injected as environment variables into the agent sandbox.\n` +
-                `View existing secrets: orch secrets list`
-              )
-            }
           }
         }
       } catch (err) {
@@ -2044,7 +2045,7 @@ async function executeCloud(
   if (isPaidAgent(agentMeta)) {
     let isOwner = false
     try {
-      const callerOrg = await getOrg(resolved)
+      const callerOrg = await getOrg(resolved, workspaceId)
       const agentOrgId = agentMeta.org_id
       const agentOrgSlug = agentMeta.org_slug
       if (agentOrgId && callerOrg.id === agentOrgId) {
@@ -2096,6 +2097,9 @@ async function executeCloud(
     Authorization: `Bearer ${resolved.apiKey}`,
     'X-CLI-Version': packageJson.version,
     'X-OrchAgent-Client': 'cli',
+  }
+  if (workspaceId) {
+    headers['X-Workspace-Id'] = workspaceId
   }
   if (options.tenant) {
     headers['X-OrchAgent-Tenant'] = options.tenant
@@ -2759,12 +2763,15 @@ async function executeLocal(
     throw new CliError('Missing org. Use org/agent format.')
   }
 
+  // Resolve workspace context for the target org
+  const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
+
   // Download agent definition with spinner
   const agentData = await withSpinner(
     `Downloading ${org}/${parsed.agent}@${parsed.version}...`,
     async () => {
       try {
-        return await downloadAgent(resolved, org, parsed.agent, parsed.version)
+        return await downloadAgent(resolved, org, parsed.agent, parsed.version, workspaceId)
       } catch (err) {
         const agentMeta = await getPublicAgent(resolved, org, parsed.agent, parsed.version)
         return {

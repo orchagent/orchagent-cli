@@ -275,8 +275,10 @@ export async function getPublicAgent(
   )
 }
 
-export async function listMyAgents(config: ResolvedConfig): Promise<Agent[]> {
-  return request<Agent[]>(config, 'GET', '/agents')
+export async function listMyAgents(config: ResolvedConfig, workspaceId?: string): Promise<Agent[]> {
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request<Agent[]>(config, 'GET', '/agents', { headers })
 }
 
 export async function createAgent(
@@ -431,9 +433,10 @@ export async function uploadCodeBundle(
 export async function getMyAgent(
   config: ResolvedConfig,
   agentName: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<Agent | null> {
-  const agents = await listMyAgents(config)
+  const agents = await listMyAgents(config, workspaceId)
   const matching = agents.filter(a => a.name === agentName)
   if (matching.length === 0) return null
 
@@ -452,7 +455,8 @@ export async function getAgentWithFallback(
   config: ResolvedConfig,
   org: string,
   agentName: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<PublicAgent | Agent> {
   try {
     return await getPublicAgent(config, org, agentName, version)
@@ -464,16 +468,35 @@ export async function getAgentWithFallback(
     throw new ApiError(`Agent '${org}/${agentName}@${version}' not found`, 404)
   }
 
-  const userOrg = await getOrg(config)
+  const userOrg = await getOrg(config, workspaceId)
   if (userOrg.slug !== org) {
     throw new ApiError(`Agent '${org}/${agentName}@${version}' not found`, 404)
   }
 
-  const myAgent = await getMyAgent(config, agentName, version)
+  const myAgent = await getMyAgent(config, agentName, version, workspaceId)
   if (!myAgent) {
     throw new ApiError(`Agent '${org}/${agentName}@${version}' not found`, 404)
   }
   return myAgent
+}
+
+/**
+ * Resolve a workspace ID from an org slug.
+ * Returns undefined for personal orgs or if unauthenticated.
+ */
+export async function resolveWorkspaceIdForOrg(
+  config: ResolvedConfig,
+  orgSlug: string
+): Promise<string | undefined> {
+  if (!config.apiKey) return undefined
+  try {
+    const { workspaces } = await request<{ workspaces: Array<{ id: string; slug: string }> }>(
+      config, 'GET', '/workspaces'
+    )
+    return workspaces.find(w => w.slug === orgSlug)?.id
+  } catch {
+    return undefined
+  }
 }
 
 /**

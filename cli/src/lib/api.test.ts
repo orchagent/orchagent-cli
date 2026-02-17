@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { request, publicRequest, ApiError, getOrg, safeFetchWithRetryForCalls } from './api'
+import { request, publicRequest, ApiError, getOrg, safeFetchWithRetryForCalls, getAgentWithFallback, listMyAgents, resolveWorkspaceIdForOrg } from './api'
 import type { ResolvedConfig } from '../types'
 
 // Mock fetch globally
@@ -353,3 +353,157 @@ describe('safeFetchWithRetryForCalls', () => {
   })
 })
 
+describe('resolveWorkspaceIdForOrg', () => {
+  const config: ResolvedConfig = {
+    apiKey: 'sk_test_123',
+    apiUrl: 'https://api.test.com',
+  }
+
+  beforeEach(() => {
+    mockFetch.mockReset()
+  })
+
+  it('returns workspace ID when org slug matches', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({
+        workspaces: [
+          { id: 'ws-123', slug: 'team-org' },
+          { id: 'ws-456', slug: 'other-org' },
+        ],
+      }),
+    })
+
+    const result = await resolveWorkspaceIdForOrg(config, 'team-org')
+    expect(result).toBe('ws-123')
+  })
+
+  it('returns undefined when org slug not found in workspaces', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({
+        workspaces: [{ id: 'ws-123', slug: 'other-org' }],
+      }),
+    })
+
+    const result = await resolveWorkspaceIdForOrg(config, 'personal-org')
+    expect(result).toBeUndefined()
+  })
+
+  it('returns undefined when not authenticated', async () => {
+    const noKeyConfig: ResolvedConfig = {
+      apiUrl: 'https://api.test.com',
+    }
+
+    const result = await resolveWorkspaceIdForOrg(noKeyConfig, 'team-org')
+    expect(result).toBeUndefined()
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
+  it('returns undefined on network error', async () => {
+    mockFetch.mockRejectedValueOnce(new Error('Network error'))
+
+    const result = await resolveWorkspaceIdForOrg(config, 'team-org')
+    expect(result).toBeUndefined()
+  })
+})
+
+describe('listMyAgents with workspaceId', () => {
+  const config: ResolvedConfig = {
+    apiKey: 'sk_test_123',
+    apiUrl: 'https://api.test.com',
+  }
+
+  beforeEach(() => {
+    mockFetch.mockReset()
+  })
+
+  it('sends X-Workspace-Id header when workspaceId provided', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([]),
+    })
+
+    await listMyAgents(config, 'ws-123')
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://api.test.com/agents',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'X-Workspace-Id': 'ws-123',
+        }),
+      })
+    )
+  })
+
+  it('does not send X-Workspace-Id when workspaceId not provided', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([]),
+    })
+
+    await listMyAgents(config)
+
+    const callHeaders = mockFetch.mock.calls[0][1].headers
+    expect(callHeaders['X-Workspace-Id']).toBeUndefined()
+  })
+})
+
+describe('getAgentWithFallback with workspaceId', () => {
+  const config: ResolvedConfig = {
+    apiKey: 'sk_test_123',
+    apiUrl: 'https://api.test.com',
+  }
+
+  beforeEach(() => {
+    mockFetch.mockReset()
+  })
+
+  it('passes workspaceId to getOrg and getMyAgent on fallback', async () => {
+    // First call: getPublicAgent returns 404
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      text: () => Promise.resolve('{}'),
+    })
+    // Second call: getOrg with workspace header
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ id: 'org-123', slug: 'team-org' }),
+    })
+    // Third call: listMyAgents with workspace header
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([
+        { id: 'agent-1', name: 'my-agent', version: 'v1', created_at: '2026-01-01' },
+      ]),
+    })
+
+    const result = await getAgentWithFallback(config, 'team-org', 'my-agent', 'v1', 'ws-123')
+
+    expect(result).toEqual(expect.objectContaining({ name: 'my-agent' }))
+
+    // Verify getOrg was called with X-Workspace-Id
+    const getOrgCall = mockFetch.mock.calls[1]
+    expect(getOrgCall[1].headers['X-Workspace-Id']).toBe('ws-123')
+
+    // Verify listMyAgents was called with X-Workspace-Id
+    const listAgentsCall = mockFetch.mock.calls[2]
+    expect(listAgentsCall[1].headers['X-Workspace-Id']).toBe('ws-123')
+  })
+
+  it('returns public agent when available (no workspace needed)', async () => {
+    const publicAgent = { id: 'pub-1', name: 'public-agent', version: 'v1', is_public: true }
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(publicAgent),
+    })
+
+    const result = await getAgentWithFallback(config, 'any-org', 'public-agent', 'v1', 'ws-123')
+
+    expect(result).toEqual(publicAgent)
+    // Only one fetch call (public endpoint)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+})
