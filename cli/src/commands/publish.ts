@@ -1005,7 +1005,7 @@ export function registerPublishCommand(program: Command): void {
 
           // Upload the bundle with entrypoint
           process.stdout.write(`  Uploading bundle...\n`)
-          const uploadResult = await uploadCodeBundle(config, agentId, bundlePath, bundleEntrypoint)
+          const uploadResult = await uploadCodeBundle(config, agentId, bundlePath, bundleEntrypoint, workspaceId)
           process.stdout.write(`  Uploaded: ${uploadResult.code_hash.substring(0, 12)}...\n`)
 
           // Show environment info if applicable

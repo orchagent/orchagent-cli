@@ -17,6 +17,18 @@ import {
   TEMPLATE_ENV_EXAMPLE,
   TEMPLATE_README,
 } from './templates/github-weekly-summary'
+import {
+  SA_CONFIG_PY,
+  SA_BRAIN_PY,
+  SA_DISCORD_CONNECTOR_PY,
+  SA_TELEGRAM_CONNECTOR_PY,
+  SA_SLACK_CONNECTOR_PY,
+  SA_MAIN_PY,
+  SA_REQUIREMENTS,
+  SA_OVERVIEW_MD,
+  SA_FAQ_MD,
+  SA_ENV_EXAMPLE,
+} from './templates/support-agent'
 
 const MANIFEST_TEMPLATE = `{
   "name": "my-agent",
@@ -100,9 +112,55 @@ if __name__ == "__main__":
     main()
 `
 
-type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'github_weekly_summary'
+type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'support_agent' | 'github_weekly_summary'
 
 function readmeTemplate(agentName: string, flavor: InitFlavor): string {
+  if (flavor === 'support_agent') {
+    return `# ${agentName}
+
+A multi-platform support agent powered by Claude. Connects to Discord, Telegram, and/or Slack.
+
+## Setup
+
+### 1. Customize
+
+Edit \`config.py\` — set your product name, description, and bot name.
+
+### 2. Add Knowledge
+
+Replace the example files in \`knowledge/\` with your own docs.
+Files named \`NN-topic-name.md\` auto-discover as topics.
+
+### 3. Set Platform Tokens
+
+Copy \`.env.example\` to \`.env\` and fill in tokens for the platforms you want.
+At least one platform token is required.
+
+### 4. Run Locally
+
+\`\`\`sh
+pip install -r requirements.txt
+python main.py
+\`\`\`
+
+### 5. Deploy
+
+\`\`\`sh
+orch publish
+# Add secrets in your workspace (web dashboard > Settings > Secrets)
+orch service deploy
+\`\`\`
+
+## Platforms
+
+| Platform | Token Required | Extra Config |
+|----------|---------------|--------------|
+| Discord | \`DISCORD_BOT_TOKEN\` | \`DISCORD_CHANNEL_IDS\` |
+| Telegram | \`TELEGRAM_BOT_TOKEN\` | — |
+| Slack | \`SLACK_BOT_TOKEN\` | \`SLACK_APP_TOKEN\` |
+`
+  }
+
   if (flavor === 'discord') {
     return `# ${agentName}
 
@@ -514,7 +572,7 @@ export function registerInitCommand(program: Command): void {
     .option('--type <type>', 'Type: prompt, tool, agent, or skill (legacy aliases: agentic, code)', 'prompt')
     .option('--orchestrator', 'Create an orchestrator agent with dependency scaffolding and SDK boilerplate')
     .option('--run-mode <mode>', 'Run mode for agents: on_demand or always_on', 'on_demand')
-    .option('--template <name>', 'Start from a template (available: github-weekly-summary, discord)')
+    .option('--template <name>', 'Start from a template (available: support-agent, discord, github-weekly-summary)')
     .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; runMode: string; template?: string }) => {
       const cwd = process.cwd()
       let runMode = (options.runMode || 'on_demand').trim().toLowerCase()
@@ -532,7 +590,7 @@ export function registerInitCommand(program: Command): void {
 
       if (options.template) {
         const template = options.template.trim().toLowerCase()
-        const validTemplates = ['discord', 'github-weekly-summary']
+        const validTemplates = ['support-agent', 'discord', 'github-weekly-summary']
         if (!validTemplates.includes(template)) {
           throw new CliError(`Unknown --template '${template}'. Available templates: ${validTemplates.join(', ')}`)
         }
@@ -542,7 +600,10 @@ export function registerInitCommand(program: Command): void {
         if (initMode.type === 'skill') {
           throw new CliError('Cannot use --template with --type skill.')
         }
-        if (template === 'discord') {
+        if (template === 'support-agent') {
+          initMode = { type: 'agent', flavor: 'support_agent' }
+          runMode = 'always_on'
+        } else if (template === 'discord') {
           initMode = { type: 'agent', flavor: 'discord' }
           runMode = 'always_on'
         } else if (template === 'github-weekly-summary') {
@@ -588,6 +649,86 @@ export function registerInitCommand(program: Command): void {
           process.stdout.write(`  1. Edit SKILL.md with your skill content\n`)
           process.stdout.write(`  2. Run: orchagent publish\n`)
         }
+        return
+      }
+
+      // Handle support-agent template separately (multi-file structure)
+      if (initMode.flavor === 'support_agent') {
+        const manifestPath = path.join(targetDir, 'orchagent.json')
+
+        try {
+          await fs.access(manifestPath)
+          throw new CliError(`Already initialized (orchagent.json exists in ${name ? name + '/' : 'current directory'})`)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw err
+          }
+        }
+
+        // Create subdirectories
+        await fs.mkdir(path.join(targetDir, 'connectors'), { recursive: true })
+        await fs.mkdir(path.join(targetDir, 'knowledge'), { recursive: true })
+
+        // Write manifest
+        const manifest = {
+          name: agentName,
+          type: 'agent',
+          description: 'Multi-platform support agent powered by Claude. Connects to Discord, Telegram, and/or Slack.',
+          run_mode: 'always_on',
+          runtime: { command: 'python main.py' },
+          entrypoint: 'main.py',
+          supported_providers: ['anthropic'],
+          default_models: { anthropic: 'claude-sonnet-4-5-20250929' },
+          required_secrets: [] as string[],
+          optional_secrets: ['DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS', 'TELEGRAM_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
+          tags: ['support', 'discord', 'telegram', 'slack', 'always-on', 'multi-platform'],
+          bundle: {
+            include: ['*.py', 'connectors/*.py', 'knowledge/*.md', 'requirements.txt'],
+            exclude: ['tests/', '__pycache__', '*.pyc', '.pytest_cache'],
+          },
+        }
+        await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+
+        // Write all source files
+        await fs.writeFile(path.join(targetDir, 'config.py'), SA_CONFIG_PY)
+        await fs.writeFile(path.join(targetDir, 'brain.py'), SA_BRAIN_PY)
+        await fs.writeFile(path.join(targetDir, 'main.py'), SA_MAIN_PY)
+        await fs.writeFile(path.join(targetDir, 'connectors', '__init__.py'), '')
+        await fs.writeFile(path.join(targetDir, 'connectors', 'discord_connector.py'), SA_DISCORD_CONNECTOR_PY)
+        await fs.writeFile(path.join(targetDir, 'connectors', 'telegram_connector.py'), SA_TELEGRAM_CONNECTOR_PY)
+        await fs.writeFile(path.join(targetDir, 'connectors', 'slack_connector.py'), SA_SLACK_CONNECTOR_PY)
+        await fs.writeFile(path.join(targetDir, 'requirements.txt'), SA_REQUIREMENTS)
+        await fs.writeFile(path.join(targetDir, 'knowledge', '00-overview.md'), SA_OVERVIEW_MD)
+        await fs.writeFile(path.join(targetDir, 'knowledge', '99-faq.md'), SA_FAQ_MD)
+        await fs.writeFile(path.join(targetDir, '.env.example'), SA_ENV_EXAMPLE)
+        await fs.writeFile(path.join(targetDir, 'README.md'), readmeTemplate(agentName, 'support_agent'))
+
+        const prefix = name ? name + '/' : ''
+        process.stdout.write(`\nInitialized support-agent "${agentName}" in ${targetDir}\n`)
+        process.stdout.write(`\nFiles created:\n`)
+        process.stdout.write(`  ${prefix}orchagent.json                       Agent manifest\n`)
+        process.stdout.write(`  ${prefix}config.py                            Customize here (4 fields)\n`)
+        process.stdout.write(`  ${prefix}brain.py                             Three-tier classifier + responder\n`)
+        process.stdout.write(`  ${prefix}main.py                              Startup orchestrator\n`)
+        process.stdout.write(`  ${prefix}connectors/discord_connector.py      Discord connector\n`)
+        process.stdout.write(`  ${prefix}connectors/telegram_connector.py     Telegram connector\n`)
+        process.stdout.write(`  ${prefix}connectors/slack_connector.py        Slack connector\n`)
+        process.stdout.write(`  ${prefix}knowledge/00-overview.md             Example FAQ knowledge\n`)
+        process.stdout.write(`  ${prefix}knowledge/99-faq.md                  Example FAQ knowledge\n`)
+        process.stdout.write(`  ${prefix}requirements.txt                     Python dependencies\n`)
+        process.stdout.write(`  ${prefix}.env.example                         Environment variables\n`)
+        process.stdout.write(`  ${prefix}README.md                            Setup guide\n`)
+
+        process.stdout.write(`\nNext steps:\n`)
+        const s = name ? 2 : 1
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+        }
+        process.stdout.write(`  ${s}. Edit config.py with your product name and description\n`)
+        process.stdout.write(`  ${s + 1}. Replace knowledge/ files with your own docs\n`)
+        process.stdout.write(`  ${s + 2}. Copy .env.example to .env and add platform tokens\n`)
+        process.stdout.write(`  ${s + 3}. Test locally: pip install -r requirements.txt && python main.py\n`)
+        process.stdout.write(`  ${s + 4}. Deploy: orch publish && orch service deploy\n`)
         return
       }
 

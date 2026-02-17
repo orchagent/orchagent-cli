@@ -182,6 +182,7 @@ export function registerServiceCommand(program: Command): void {
     .option('--command <cmd>', 'Override entrypoint command')
     .option('--arg <value>', 'Command argument (repeatable)', collectArray, [])
     .option('--pin', 'Pin to deployed version (disable auto-update on publish)')
+    .option('--profile <name>', 'Use API key from named profile')
     .option('--json', 'Output as JSON')
     .action(async (agentArg: string, options: {
       workspace?: string
@@ -193,9 +194,10 @@ export function registerServiceCommand(program: Command): void {
       command?: string
       arg: string[]
       pin?: boolean
+      profile?: string
       json?: boolean
     }) => {
-      const config = await getResolvedConfig()
+      const config = await getResolvedConfig({}, options.profile)
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
       }

@@ -932,6 +932,65 @@ Skill content.`
       expect(allOutput).toContain('Workspace: team-ws')
       expect(allOutput).toContain('team-ws/team-skill')
     })
+
+    it('passes workspace ID to uploadCodeBundle for tool-type agents', async () => {
+      const manifest = {
+        name: 'team-tool',
+        type: 'tool',
+        description: 'Team tool agent',
+      }
+
+      mockLoadConfig.mockResolvedValue({ workspace: 'team-ws' })
+      mockRequest.mockResolvedValue({
+        workspaces: [{ id: 'ws-123', slug: 'team-ws', name: 'Team Workspace' }],
+      } as any)
+      mockGetOrg.mockResolvedValue({ id: 'ws-123', slug: 'team-ws', name: 'Team Workspace' })
+      mockCreateAgent.mockResolvedValue({
+        agent: { id: 'agent-1', version: 'v1' },
+      } as any)
+
+      mockDetectEntrypoint.mockResolvedValue('main.py')
+      mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+      mockFs.rm.mockResolvedValue(undefined)
+      mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+      mockValidateBundle.mockResolvedValue({ valid: true } as any)
+      mockUploadCodeBundle.mockResolvedValue({
+        success: true,
+        code_hash: 'abc123def456',
+        bundle_size_bytes: 100,
+      } as any)
+      mockPreviewBundle.mockResolvedValue({
+        fileCount: 1,
+        totalSizeBytes: 100,
+        entrypoint: 'main.py',
+      } as any)
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const p = String(filePath)
+        if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+        if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        return ''
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      // Should pass workspace ID to createAgent
+      expect(mockCreateAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ name: 'team-tool', type: 'tool' }),
+        'ws-123'
+      )
+
+      // Should pass workspace ID to uploadCodeBundle
+      expect(mockUploadCodeBundle).toHaveBeenCalledWith(
+        expect.any(Object),
+        'agent-1',
+        expect.stringContaining('orchagent-bundle'),
+        'main.py',
+        'ws-123'
+      )
+    })
   })
 })
 

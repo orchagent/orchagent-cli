@@ -368,7 +368,8 @@ export async function uploadCodeBundle(
   config: ResolvedConfig,
   agentId: string,
   bundlePath: string,
-  entrypoint?: string
+  entrypoint?: string,
+  workspaceId?: string
 ): Promise<{
   success: boolean
   code_hash: string
@@ -396,6 +397,9 @@ export async function uploadCodeBundle(
   }
   if (entrypoint) {
     headers['x-entrypoint'] = entrypoint
+  }
+  if (workspaceId) {
+    headers['X-Workspace-Id'] = workspaceId
   }
 
   const response = await safeFetch(
