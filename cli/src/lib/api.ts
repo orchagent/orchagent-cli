@@ -328,18 +328,16 @@ export async function createAgent(
   })
 }
 
-// LLM Keys (for CLI to fetch server-stored keys)
+// LLM Keys (metadata only — keys are never returned from server)
 
-export interface LlmKey {
+export interface LlmKeyInfo {
   provider: string
-  api_key: string
-  endpoint_url?: string
   model?: string
+  has_custom_endpoint: boolean
 }
 
-export async function fetchLlmKeys(config: ResolvedConfig): Promise<LlmKey[]> {
-  const result = await request<{ keys: LlmKey[] }>(config, 'GET', '/llm-keys/export')
-  return result.keys
+export async function listLlmKeys(config: ResolvedConfig): Promise<LlmKeyInfo[]> {
+  return request<LlmKeyInfo[]>(config, 'GET', '/llm-keys')
 }
 
 /**

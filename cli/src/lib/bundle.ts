@@ -56,7 +56,7 @@ const DEFAULT_EXCLUDES = [
   'npm-debug.log',
   'yarn-error.log',
   'package.json',
-  'package-lock.json',
+  // package-lock.json intentionally NOT excluded — included explicitly for JS agents
   'yarn.lock',
   'bun.lockb',
   'tsconfig.json',

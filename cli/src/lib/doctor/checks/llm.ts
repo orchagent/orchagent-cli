@@ -1,5 +1,5 @@
 import { getResolvedConfig } from '../../config'
-import { fetchLlmKeys, ApiError } from '../../api'
+import { listLlmKeys, ApiError } from '../../api'
 
 import type { CheckResult } from '../types'
 
@@ -100,7 +100,7 @@ export async function runLlmChecks(options?: { skipServer?: boolean }): Promise<
     try {
       const config = await getResolvedConfig()
       if (config.apiKey) {
-        const keys = await fetchLlmKeys(config)
+        const keys = await listLlmKeys(config)
         serverProviders = keys.map((k) => k.provider)
       }
     } catch (err) {

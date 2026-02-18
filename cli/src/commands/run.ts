@@ -63,6 +63,17 @@ type AgentRef = {
   version: string
 }
 
+/**
+ * Return the correct local command for a given entrypoint file extension.
+ * Uses `python3` (not `python`) to match existing behavior on macOS/Linux.
+ */
+function localCommandForEntrypoint(entrypoint: string): string {
+  if (entrypoint.endsWith('.js') || entrypoint.endsWith('.mjs') || entrypoint.endsWith('.cjs')) {
+    return 'node'
+  }
+  return 'python3'
+}
+
 function parseAgentRef(value: string): AgentRef {
   const [ref, versionPart] = value.split('@')
   const version = versionPart?.trim() || DEFAULT_VERSION
@@ -792,25 +803,6 @@ async function detectAllLlmKeys(
     }
   }
 
-  if (config?.apiKey) {
-    try {
-      const { fetchLlmKeys } = await import('../lib/api')
-      const serverKeys = await fetchLlmKeys(config)
-      for (const serverKey of serverKeys) {
-        if (!seen.has(serverKey.provider)) {
-          seen.add(serverKey.provider)
-          providers.push({
-            provider: serverKey.provider,
-            apiKey: serverKey.api_key,
-            model: serverKey.model || getDefaultModel(serverKey.provider),
-          })
-        }
-      }
-    } catch {
-      // Server fetch failed, continue with what we have
-    }
-  }
-
   return providers
 }
 
@@ -1355,6 +1347,32 @@ async function executeBundleAgent(
       }
     }
 
+    // Install npm dependencies if package.json exists (JS agents)
+    const pkgJsonPath = path.join(extractDir, 'package.json')
+    try {
+      await fs.access(pkgJsonPath)
+      await withSpinner(
+        'Installing npm dependencies...',
+        async () => {
+          const lockfilePath = path.join(extractDir, 'package-lock.json')
+          let useNpmCi = false
+          try { await fs.access(lockfilePath); useNpmCi = true } catch { /* no lockfile */ }
+          const npmArgs = useNpmCi
+            ? ['ci', '--no-audit', '--no-fund']
+            : ['install', '--production', '--no-audit', '--no-fund']
+          const { code } = await runCommand('npm', npmArgs)
+          if (code !== 0) {
+            throw new CliError('Failed to install npm dependencies')
+          }
+        },
+        { successText: 'npm dependencies installed' }
+      )
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err
+      }
+    }
+
     const entrypoint = agentData.entrypoint || 'sandbox_main.py'
     const entrypointPath = path.join(extractDir, entrypoint)
 
@@ -1405,7 +1423,8 @@ async function executeBundleAgent(
       }
     }
 
-    process.stderr.write(`\nRunning: python3 ${entrypoint}\n\n`)
+    const execCmd = localCommandForEntrypoint(entrypoint)
+    process.stderr.write(`\nRunning: ${execCmd} ${entrypoint}\n\n`)
 
     const subprocessEnv: Record<string, string | undefined> = { ...process.env }
     if (config.apiKey) {
@@ -1428,7 +1447,7 @@ async function executeBundleAgent(
       subprocessEnv[DOWNSTREAM_REMAINING_ENV] = String(manifest.manifest?.per_call_downstream_cap || 100)
     }
 
-    const proc = spawn('python3', [entrypointPath], {
+    const proc = spawn(execCmd, [entrypointPath], {
       cwd: extractDir,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: subprocessEnv,
@@ -1795,7 +1814,11 @@ async function executeLocalFromDir(
   }
 
   // Code runtime agents with bundle
-  const entrypoint = (manifest.entrypoint as string) || 'sandbox_main.py'
+  const runtimeObj = manifest.runtime as Record<string, unknown> | undefined
+  const runtimeCommand = runtimeObj?.command as string | undefined
+  const entrypoint = (manifest.entrypoint as string)
+    || (runtimeCommand ? runtimeCommand.split(' ').pop() || 'sandbox_main.py' : null)
+    || 'sandbox_main.py'
   const entrypointPath = path.join(resolved, entrypoint)
 
   try {
@@ -1850,6 +1873,25 @@ async function executeLocalFromDir(
     // No requirements.txt
   }
 
+  // Install npm dependencies if package.json exists (JS agents)
+  const localPkgJsonPath = path.join(resolved, 'package.json')
+  try {
+    await fs.access(localPkgJsonPath)
+    const lockfilePath = path.join(resolved, 'package-lock.json')
+    let useNpmCi = false
+    try { await fs.access(lockfilePath); useNpmCi = true } catch { /* no lockfile */ }
+    const npmArgs = useNpmCi
+      ? ['ci', '--no-audit', '--no-fund']
+      : ['install', '--production', '--no-audit', '--no-fund']
+    process.stderr.write('Installing npm dependencies...\n')
+    const { code } = await runCommand('npm', npmArgs)
+    if (code !== 0) {
+      process.stderr.write('Warning: Failed to install npm dependencies\n')
+    }
+  } catch {
+    // No package.json
+  }
+
   // Check for keyed file/mount injection (tool path)
   const toolFileArgs = options.file ?? []
   const toolKeyedFiles = toolFileArgs.filter(a => isKeyedFileArg(a) !== null)
@@ -1874,7 +1916,8 @@ async function executeLocalFromDir(
     inputJson = JSON.stringify({ input: args[0] })
   }
 
-  process.stderr.write(`\nRunning: python3 ${entrypoint}\n\n`)
+  const localExecCmd = localCommandForEntrypoint(entrypoint)
+  process.stderr.write(`\nRunning: ${localExecCmd} ${entrypoint}\n\n`)
 
   const subprocessEnv: Record<string, string | undefined> = { ...process.env }
   if (config.apiKey) {
@@ -1882,7 +1925,7 @@ async function executeLocalFromDir(
     subprocessEnv.ORCHAGENT_API_URL = config.apiUrl
   }
 
-  const proc = spawn('python3', [entrypointPath], {
+  const proc = spawn(localExecCmd, [entrypointPath], {
     cwd: resolved,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: subprocessEnv,

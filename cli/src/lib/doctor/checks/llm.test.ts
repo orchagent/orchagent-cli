@@ -13,7 +13,7 @@ vi.mock('../../config', () => ({
 }))
 
 vi.mock('../../api', () => ({
-  fetchLlmKeys: vi.fn(),
+  listLlmKeys: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
     constructor(message: string, status: number) {
@@ -25,7 +25,7 @@ vi.mock('../../api', () => ({
 
 import { runLlmChecks } from './llm'
 import { getResolvedConfig } from '../../config'
-import { fetchLlmKeys } from '../../api'
+import { listLlmKeys } from '../../api'
 
 // Helper: set up server keys mock
 function mockServerKeys(providers: string[]) {
@@ -33,8 +33,8 @@ function mockServerKeys(providers: string[]) {
     apiKey: 'sk_test',
     apiUrl: 'https://api.test.com',
   })
-  vi.mocked(fetchLlmKeys).mockResolvedValue(
-    providers.map((p) => ({ provider: p, api_key: 'test' }))
+  vi.mocked(listLlmKeys).mockResolvedValue(
+    providers.map((p) => ({ provider: p, has_custom_endpoint: false }))
   )
 }
 
@@ -296,10 +296,10 @@ describe('runLlmChecks', () => {
       }
     })
 
-    it('does not call getResolvedConfig or fetchLlmKeys', async () => {
+    it('does not call getResolvedConfig or listLlmKeys', async () => {
       await runLlmChecks({ skipServer: true })
       expect(getResolvedConfig).not.toHaveBeenCalled()
-      expect(fetchLlmKeys).not.toHaveBeenCalled()
+      expect(listLlmKeys).not.toHaveBeenCalled()
     })
 
     it('local checks still work', async () => {

@@ -79,7 +79,10 @@ export async function scanUndeclaredEnvVars(agentDir: string, requiredSecrets: s
 
   const found = new Set<string>()
 
-  // Scan .py files in the agent directory (up to 2 levels deep)
+  // JS/TS env var access pattern
+  const jsEnvPattern = /process\.env\.([A-Z_][A-Z0-9_]*)/g
+
+  // Scan .py/.js/.ts files in the agent directory (up to 2 levels deep)
   async function scanDir(dir: string, depth: number) {
     let entries: import('fs').Dirent[]
     try {
@@ -102,6 +105,17 @@ export async function scanUndeclaredEnvVars(agentDir: string, requiredSecrets: s
             while ((m = re.exec(content)) !== null) { // eslint-disable-line no-cond-assign
               found.add(m[1])
             }
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      } else if (entry.isFile() && (name.endsWith('.js') || name.endsWith('.ts'))) {
+        try {
+          const content = await fs.readFile(fullPath, 'utf-8')
+          jsEnvPattern.lastIndex = 0
+          let m: RegExpExecArray | null
+          while ((m = jsEnvPattern.exec(content)) !== null) { // eslint-disable-line no-cond-assign
+            found.add(m[1])
           }
         } catch {
           // Skip unreadable files
@@ -150,6 +164,19 @@ async function detectSdkCompatible(agentDir: string): Promise<boolean> {
     }
   } catch {
     // File doesn't exist
+  }
+
+  // Check package.json (JS/TS agents)
+  const pkgJsonPath = path.join(agentDir, 'package.json')
+  try {
+    const content = await fs.readFile(pkgJsonPath, 'utf-8')
+    const pkgJson = JSON.parse(content)
+    const deps = { ...pkgJson.dependencies, ...pkgJson.devDependencies }
+    if (deps['orchagent-sdk'] || deps['@orchagent/sdk']) {
+      return true
+    }
+  } catch {
+    // File doesn't exist or invalid JSON
   }
 
   return false
@@ -985,6 +1012,25 @@ export function registerPublishCommand(program: Command): void {
               process.stdout.write(`  Including requirements.txt for sandbox dependencies\n`)
             } catch {
               // Optional
+            }
+
+            // Include package.json + lockfile for JS agents (overrides DEFAULT_EXCLUDES)
+            const pkgPath = path.join(cwd, 'package.json')
+            try {
+              await fs.access(pkgPath)
+              includePatterns.push('package.json')
+              process.stdout.write(`  Including package.json for sandbox dependencies\n`)
+              // Include lockfile for deterministic installs (npm ci)
+              const lockPath = path.join(cwd, 'package-lock.json')
+              try {
+                await fs.access(lockPath)
+                includePatterns.push('package-lock.json')
+                process.stdout.write(`  Including package-lock.json for deterministic installs\n`)
+              } catch {
+                // No lockfile — npm install will be used instead of npm ci
+              }
+            } catch {
+              // No package.json — not a JS agent
             }
           }
 

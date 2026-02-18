@@ -112,7 +112,190 @@ if __name__ == "__main__":
     main()
 `
 
-type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'support_agent' | 'github_weekly_summary'
+const CODE_TEMPLATE_JS = `/**
+ * orchagent tool entrypoint.
+ *
+ * Reads JSON input from stdin, processes it, and writes JSON output to stdout.
+ * This is the standard orchagent tool protocol.
+ *
+ * Usage:
+ *   echo '{"input": "hello"}' | node main.js
+ */
+
+const fs = require('fs');
+
+function main() {
+  const raw = fs.readFileSync('/dev/stdin', 'utf-8');
+  let data;
+  try {
+    data = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    console.log(JSON.stringify({ error: 'Invalid JSON input' }));
+    process.exit(1);
+  }
+
+  const input = data.input || '';
+
+  // --- Your logic here ---
+  // To use workspace secrets, add them to "required_secrets" in orchagent.json:
+  //   "required_secrets": ["MY_API_KEY"]
+  // Then access via: process.env.MY_API_KEY
+  const result = \`Received: \${input}\`;
+  // --- End your logic ---
+
+  console.log(JSON.stringify({ result }));
+}
+
+main();
+`
+
+const DISCORD_MAIN_JS = `/**
+ * Discord bot agent — powered by Claude.
+ *
+ * Listens for messages in configured channels and responds using the Anthropic API.
+ *
+ * Local development:
+ *   1. Copy .env.example to .env and fill in your tokens
+ *   2. npm install
+ *   3. node main.js
+ */
+
+const { Client, GatewayIntentBits } = require('discord.js');
+const Anthropic = require('@anthropic-ai/sdk');
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const DISCORD_CHANNEL_IDS = process.env.DISCORD_CHANNEL_IDS || '';
+
+const MODEL = process.env.MODEL || 'claude-sonnet-4-5-20250929';
+const MAX_TOKENS = parseInt(process.env.MAX_TOKENS || '1024', 10);
+
+const SYSTEM_PROMPT = \`\\
+You are a helpful assistant in a Discord server.
+
+Be concise and friendly. Use code blocks for code examples.
+Keep responses under 1800 characters (Discord limit is 2000).\`;
+
+
+// ---------------------------------------------------------------------------
+// Anthropic API
+// ---------------------------------------------------------------------------
+
+async function askClaude(client, userMessage) {
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userMessage }],
+  });
+  return response.content[0].text;
+}
+
+
+// ---------------------------------------------------------------------------
+// Discord bot
+// ---------------------------------------------------------------------------
+
+function parseChannelIds(raw) {
+  return new Set(
+    raw.split(',')
+      .map(s => s.trim())
+      .filter(s => /^\\d+$/.test(s))
+  );
+}
+
+function main() {
+  if (!DISCORD_BOT_TOKEN) {
+    console.error('DISCORD_BOT_TOKEN not set');
+    process.exit(1);
+  }
+  if (!ANTHROPIC_API_KEY) {
+    console.error('ANTHROPIC_API_KEY not set');
+    process.exit(1);
+  }
+  if (!DISCORD_CHANNEL_IDS) {
+    console.error('DISCORD_CHANNEL_IDS not set — add comma-separated channel IDs');
+    process.exit(1);
+  }
+
+  const allowedChannels = parseChannelIds(DISCORD_CHANNEL_IDS);
+  if (allowedChannels.size === 0) {
+    console.error('No valid channel IDs in DISCORD_CHANNEL_IDS:', DISCORD_CHANNEL_IDS);
+    process.exit(1);
+  }
+
+  console.log(\`Starting bot — model: \${MODEL}, channels: \${[...allowedChannels].join(', ')}\`);
+
+  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+
+  const bot = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+  });
+
+  bot.on('ready', () => {
+    console.log(\`Bot connected as \${bot.user.tag}\`);
+  });
+
+  bot.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.content.trim()) return;
+
+    const channelId = message.channelId;
+    const parentId = message.channel.parentId;
+    if (!allowedChannels.has(channelId) && !allowedChannels.has(parentId)) return;
+
+    console.log(\`Message from \${message.author.tag}: \${message.content.slice(0, 100)}\`);
+
+    try {
+      await message.channel.sendTyping();
+      const answer = await askClaude(anthropic, message.content);
+      const trimmed = answer.length > 1900 ? answer.slice(0, 1897) + '...' : answer;
+      await message.reply(trimmed);
+    } catch (err) {
+      console.error('Anthropic API error:', err.message || err);
+      await message.reply('Sorry, I ran into an issue. Please try again.');
+    }
+  });
+
+  bot.login(DISCORD_BOT_TOKEN);
+}
+
+main();
+`
+
+const DISCORD_PACKAGE_JSON = `{
+  "name": "discord-bot",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "discord.js": "^14.16.0",
+    "@anthropic-ai/sdk": "^0.30.0"
+  }
+}
+`
+
+const DISCORD_JS_ENV_EXAMPLE = `# Required — get your bot token from https://discord.com/developers/applications
+DISCORD_BOT_TOKEN=
+
+# Required for local dev — auto-injected in production via supported_providers
+ANTHROPIC_API_KEY=
+
+# Required — comma-separated Discord channel IDs where the bot should respond
+DISCORD_CHANNEL_IDS=
+
+# Optional — customize the model and response length
+# MODEL=claude-sonnet-4-5-20250929
+# MAX_TOKENS=1024
+`
+
+type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'discord_js' | 'support_agent' | 'github_weekly_summary'
 
 function readmeTemplate(agentName: string, flavor: InitFlavor): string {
   if (flavor === 'support_agent') {
@@ -572,14 +755,15 @@ export function registerInitCommand(program: Command): void {
     .option('--type <type>', 'Type: prompt, tool, agent, or skill (legacy aliases: agentic, code)', 'prompt')
     .option('--orchestrator', 'Create an orchestrator agent with dependency scaffolding and SDK boilerplate')
     .option('--run-mode <mode>', 'Run mode for agents: on_demand or always_on', 'on_demand')
-    .option('--template <name>', 'Start from a template (available: support-agent, discord, github-weekly-summary)')
-    .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; runMode: string; template?: string }) => {
+    .option('--language <lang>', 'Language: python or javascript (default: python)', 'python')
+    .option('--template <name>', 'Start from a template (available: support-agent, discord, discord-js, github-weekly-summary)')
+    .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; runMode: string; language: string; template?: string }) => {
       const cwd = process.cwd()
       let runMode = (options.runMode || 'on_demand').trim().toLowerCase()
       if (!['on_demand', 'always_on'].includes(runMode)) {
         throw new CliError("Invalid --run-mode. Use 'on_demand' or 'always_on'.")
       }
-      let initMode = resolveInitFlavor(options.type)
+      let initMode: { type: 'prompt' | 'tool' | 'agent' | 'skill'; flavor?: InitFlavor } = resolveInitFlavor(options.type)
 
       if (options.orchestrator) {
         if (initMode.type === 'skill') {
@@ -588,9 +772,24 @@ export function registerInitCommand(program: Command): void {
         initMode = { type: 'agent', flavor: 'orchestrator' }
       }
 
+      // Validate --language option
+      const language = (options.language || 'python').trim().toLowerCase()
+      if (!['python', 'javascript', 'js', 'typescript', 'ts'].includes(language)) {
+        throw new CliError(`Invalid --language '${options.language}'. Use 'python' or 'javascript'.`)
+      }
+      const isJavaScript = ['javascript', 'js', 'typescript', 'ts'].includes(language)
+
+      // Block unsupported JS flavors
+      if (isJavaScript && initMode.flavor === 'managed_loop') {
+        throw new CliError('JavaScript agent-type agents are not yet supported. Use --type tool for JavaScript agents.')
+      }
+      if (isJavaScript && options.orchestrator) {
+        throw new CliError('JavaScript orchestrators are not yet supported. Use Python for orchestrator agents.')
+      }
+
       if (options.template) {
         const template = options.template.trim().toLowerCase()
-        const validTemplates = ['support-agent', 'discord', 'github-weekly-summary']
+        const validTemplates = ['support-agent', 'discord', 'discord-js', 'github-weekly-summary']
         if (!validTemplates.includes(template)) {
           throw new CliError(`Unknown --template '${template}'. Available templates: ${validTemplates.join(', ')}`)
         }
@@ -605,6 +804,9 @@ export function registerInitCommand(program: Command): void {
           runMode = 'always_on'
         } else if (template === 'discord') {
           initMode = { type: 'agent', flavor: 'discord' }
+          runMode = 'always_on'
+        } else if (template === 'discord-js') {
+          initMode = { type: 'agent', flavor: 'discord_js' }
           runMode = 'always_on'
         } else if (template === 'github-weekly-summary') {
           initMode = { type: 'agent', flavor: 'github_weekly_summary' }
@@ -793,6 +995,59 @@ export function registerInitCommand(program: Command): void {
         return
       }
 
+      // Handle discord-js template separately (JS Discord bot)
+      if (initMode.flavor === 'discord_js') {
+        const manifestPath = path.join(targetDir, 'orchagent.json')
+
+        // Check if already initialized
+        try {
+          await fs.access(manifestPath)
+          throw new CliError(`Already initialized (orchagent.json exists in ${name ? name + '/' : 'current directory'})`)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw err
+          }
+        }
+
+        const manifest = {
+          name: agentName,
+          type: 'agent',
+          description: 'An always-on Discord bot powered by Claude (JavaScript)',
+          run_mode: 'always_on',
+          runtime: { command: 'node main.js' },
+          entrypoint: 'main.js',
+          supported_providers: ['anthropic'],
+          required_secrets: ['DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS'],
+          tags: ['discord', 'always-on', 'javascript'],
+        }
+        await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+        await fs.writeFile(path.join(targetDir, 'main.js'), DISCORD_MAIN_JS)
+        await fs.writeFile(path.join(targetDir, 'package.json'), DISCORD_PACKAGE_JSON)
+        await fs.writeFile(path.join(targetDir, '.env.example'), DISCORD_JS_ENV_EXAMPLE)
+        await fs.writeFile(path.join(targetDir, 'README.md'), readmeTemplate(agentName, 'discord'))
+
+        const prefix = name ? name + '/' : ''
+        process.stdout.write(`\nInitialized JS Discord bot "${agentName}" in ${targetDir}\n`)
+        process.stdout.write(`\nFiles created:\n`)
+        process.stdout.write(`  ${prefix}orchagent.json    - Agent configuration\n`)
+        process.stdout.write(`  ${prefix}main.js           - Discord bot (discord.js + Anthropic)\n`)
+        process.stdout.write(`  ${prefix}package.json      - npm dependencies\n`)
+        process.stdout.write(`  ${prefix}.env.example      - Environment variables template\n`)
+        process.stdout.write(`  ${prefix}README.md         - Setup guide\n`)
+
+        process.stdout.write(`\nNext steps:\n`)
+        const stepNum = name ? 2 : 1
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+        }
+        process.stdout.write(`  ${stepNum}. Create a Discord bot at https://discord.com/developers/applications\n`)
+        process.stdout.write(`  ${stepNum + 1}. Enable Message Content Intent in bot settings\n`)
+        process.stdout.write(`  ${stepNum + 2}. Copy .env.example to .env and fill in your tokens\n`)
+        process.stdout.write(`  ${stepNum + 3}. Test locally: npm install && node main.js\n`)
+        process.stdout.write(`  ${stepNum + 4}. Deploy: orch publish\n`)
+        return
+      }
+
       const manifestPath = path.join(targetDir, 'orchagent.json')
       const promptPath = path.join(targetDir, 'prompt.md')
       const schemaPath = path.join(targetDir, 'schema.json')
@@ -843,7 +1098,12 @@ export function registerInitCommand(program: Command): void {
         manifest.tags = ['discord', 'always-on']
       } else if (initMode.flavor === 'code_runtime') {
         manifest.description = 'A code-runtime agent'
-        manifest.runtime = { command: 'python main.py' }
+        if (isJavaScript) {
+          manifest.runtime = { command: 'node main.js' }
+          manifest.entrypoint = 'main.js'
+        } else {
+          manifest.runtime = { command: 'python main.py' }
+        }
         manifest.required_secrets = []
       }
 
@@ -863,8 +1123,17 @@ export function registerInitCommand(program: Command): void {
         await fs.writeFile(requirementsPath, DISCORD_REQUIREMENTS)
         await fs.writeFile(envExamplePath, DISCORD_ENV_EXAMPLE)
       } else if (initMode.flavor === 'code_runtime') {
-        const entrypointPath = path.join(targetDir, 'main.py')
-        await fs.writeFile(entrypointPath, CODE_TEMPLATE_PY)
+        if (isJavaScript) {
+          await fs.writeFile(path.join(targetDir, 'main.js'), CODE_TEMPLATE_JS)
+          await fs.writeFile(path.join(targetDir, 'package.json'), JSON.stringify({
+            name: agentName,
+            private: true,
+            type: 'commonjs',
+            dependencies: {},
+          }, null, 2) + '\n')
+        } else {
+          await fs.writeFile(path.join(targetDir, 'main.py'), CODE_TEMPLATE_PY)
+        }
         await fs.writeFile(schemaPath, SCHEMA_TEMPLATE)
       } else if (initMode.flavor === 'managed_loop') {
         await fs.writeFile(promptPath, AGENT_PROMPT_TEMPLATE)
@@ -890,7 +1159,12 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${prefix}requirements.txt  - Python dependencies\n`)
         process.stdout.write(`  ${prefix}.env.example      - Environment variables template\n`)
       } else if (initMode.flavor === 'code_runtime') {
-        process.stdout.write(`  ${prefix}main.py           - Agent entrypoint (stdin/stdout JSON)\n`)
+        if (isJavaScript) {
+          process.stdout.write(`  ${prefix}main.js           - Agent entrypoint (stdin/stdout JSON)\n`)
+          process.stdout.write(`  ${prefix}package.json      - npm dependencies\n`)
+        } else {
+          process.stdout.write(`  ${prefix}main.py           - Agent entrypoint (stdin/stdout JSON)\n`)
+        }
       } else {
         process.stdout.write(`  ${prefix}prompt.md         - Prompt template\n`)
       }
@@ -924,10 +1198,17 @@ export function registerInitCommand(program: Command): void {
         if (name) {
           process.stdout.write(`  1. cd ${name}\n`)
         }
-        process.stdout.write(`  ${stepNum}. Edit main.py with your agent logic\n`)
-        process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
-        process.stdout.write(`  ${stepNum + 2}. Test: echo '{"input": "test"}' | python main.py\n`)
-        process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
+        if (isJavaScript) {
+          process.stdout.write(`  ${stepNum}. Edit main.js with your agent logic\n`)
+          process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
+          process.stdout.write(`  ${stepNum + 2}. Test: echo '{"input": "test"}' | node main.js\n`)
+          process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
+        } else {
+          process.stdout.write(`  ${stepNum}. Edit main.py with your agent logic\n`)
+          process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
+          process.stdout.write(`  ${stepNum + 2}. Test: echo '{"input": "test"}' | python main.py\n`)
+          process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
+        }
       } else {
         const stepNum = name ? 2 : 1
         if (name) {

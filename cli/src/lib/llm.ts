@@ -76,38 +76,11 @@ export function detectLlmKeyFromEnv(
  */
 export async function detectLlmKey(
   supportedProviders: LlmProvider[],
-  config?: ResolvedConfig
+  _config?: ResolvedConfig
 ): Promise<{ provider: string; key: string; model?: string } | null> {
-  // 1. Check local env vars first (fast path)
-  const envKey = detectLlmKeyFromEnv(supportedProviders)
-  if (envKey) return envKey
-
-  // 2. If no env var, try server
-  if (config?.apiKey) {
-    try {
-      const { fetchLlmKeys } = await import('./api')
-      const serverKeys = await fetchLlmKeys(config)
-
-      for (const provider of supportedProviders) {
-        if (provider === 'any') {
-          // Return first available key
-          if (serverKeys.length > 0) {
-            const first = serverKeys[0]
-            return { provider: first.provider, key: first.api_key, model: first.model }
-          }
-        } else {
-          const match = serverKeys.find((k) => k.provider === provider)
-          if (match) {
-            return { provider: match.provider, key: match.api_key, model: match.model }
-          }
-        }
-      }
-    } catch {
-      // Server fetch failed, continue without
-    }
-  }
-
-  return null
+  // LLM keys are only available from local env vars.
+  // Server-stored keys are never exported (security best practice).
+  return detectLlmKeyFromEnv(supportedProviders)
 }
 
 /**
