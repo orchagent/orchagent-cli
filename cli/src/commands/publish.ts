@@ -1147,5 +1147,6 @@ export function registerPublishCommand(program: Command): void {
       }
 
       process.stdout.write(`\nView analytics and usage: https://orchagent.io/dashboard\n`)
+      process.stdout.write(`\nSkill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
     })
 }

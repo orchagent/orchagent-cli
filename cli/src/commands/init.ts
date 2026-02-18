@@ -557,6 +557,72 @@ if __name__ == "__main__":
 const ORCHESTRATOR_REQUIREMENTS = `orchagent-sdk>=0.1.0
 `
 
+const ORCHESTRATOR_MAIN_JS = `/**
+ * orchagent orchestrator entrypoint.
+ *
+ * Reads JSON input from stdin, calls dependency agents via the orchagent SDK,
+ * and writes JSON output to stdout.
+ *
+ * Usage:
+ *   echo '{"task": "do something"}' | node main.js
+ */
+
+const fs = require('fs');
+const { AgentClient } = require('orchagent-sdk');
+
+async function main() {
+  // Read JSON input from stdin
+  const raw = fs.readFileSync('/dev/stdin', 'utf-8');
+  let data;
+  try {
+    data = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    console.log(JSON.stringify({ error: 'Invalid JSON input' }));
+    process.exit(1);
+  }
+
+  const task = data.task || '';
+
+  // --- Your orchestration logic here ---
+  // The AgentClient reads ORCHAGENT_SERVICE_KEY from the environment automatically.
+  // Do NOT add ORCHAGENT_SERVICE_KEY to required_secrets — the gateway injects it.
+  const client = new AgentClient();
+
+  // Call a dependency agent (must be listed in manifest.dependencies)
+  const result = await client.call('org/agent-name@v1', { input: task });
+
+  // You can chain multiple calls, run them in parallel, or add conditional logic:
+  //
+  // Sequential:
+  //   const result2 = await client.call('org/another-agent@v1', { input: result });
+  //
+  // Parallel:
+  //   const [r1, r2] = await Promise.all([
+  //     client.call('org/agent-a@v1', { input: task }),
+  //     client.call('org/agent-b@v1', { input: task }),
+  //   ]);
+  // --- End orchestration logic ---
+
+  // Write JSON output to stdout
+  console.log(JSON.stringify({ result, success: true }));
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+`
+
+const ORCHESTRATOR_PACKAGE_JSON = `{
+  "name": "orchestrator",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "orchagent-sdk": "^0.1.0"
+  }
+}
+`
+
 const DISCORD_MAIN_PY = `"""
 Discord bot agent — powered by Claude.
 
@@ -783,9 +849,7 @@ export function registerInitCommand(program: Command): void {
       if (isJavaScript && initMode.flavor === 'managed_loop') {
         throw new CliError('JavaScript agent-type agents are not yet supported. Use --type tool for JavaScript agents.')
       }
-      if (isJavaScript && options.orchestrator) {
-        throw new CliError('JavaScript orchestrators are not yet supported. Use Python for orchestrator agents.')
-      }
+      // JS orchestrators are now supported via the orchagent-sdk npm package
 
       if (options.template) {
         const template = options.template.trim().toLowerCase()
@@ -931,6 +995,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${s + 2}. Copy .env.example to .env and add platform tokens\n`)
         process.stdout.write(`  ${s + 3}. Test locally: pip install -r requirements.txt && python main.py\n`)
         process.stdout.write(`  ${s + 4}. Deploy: orch publish && orch service deploy\n`)
+        process.stdout.write(`\n  Skill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
         return
       }
 
@@ -992,6 +1057,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${s + 3}. orch run <org>/${agentName}            Test it\n`)
         process.stdout.write(`  ${s + 4}. orch schedule create <org>/${agentName} --cron "0 9 * * 1"   Schedule weekly\n`)
         process.stdout.write(`\n  See README.md for full setup guide.\n`)
+        process.stdout.write(`\n  Skill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
         return
       }
 
@@ -1045,6 +1111,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum + 2}. Copy .env.example to .env and fill in your tokens\n`)
         process.stdout.write(`  ${stepNum + 3}. Test locally: npm install && node main.js\n`)
         process.stdout.write(`  ${stepNum + 4}. Deploy: orch publish\n`)
+        process.stdout.write(`\n  Skill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
         return
       }
 
@@ -1076,7 +1143,12 @@ export function registerInitCommand(program: Command): void {
 
       if (initMode.flavor === 'orchestrator') {
         manifest.description = 'An orchestrator agent that coordinates other agents'
-        manifest.runtime = { command: 'python main.py' }
+        if (isJavaScript) {
+          manifest.runtime = { command: 'node main.js' }
+          manifest.entrypoint = 'main.js'
+        } else {
+          manifest.runtime = { command: 'python main.py' }
+        }
         manifest.manifest = {
           manifest_version: 1,
           dependencies: [{ id: 'org/agent-name', version: 'v1' }],
@@ -1110,10 +1182,13 @@ export function registerInitCommand(program: Command): void {
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
 
       if (initMode.flavor === 'orchestrator') {
-        const entrypointPath = path.join(targetDir, 'main.py')
-        const requirementsPath = path.join(targetDir, 'requirements.txt')
-        await fs.writeFile(entrypointPath, ORCHESTRATOR_MAIN_PY)
-        await fs.writeFile(requirementsPath, ORCHESTRATOR_REQUIREMENTS)
+        if (isJavaScript) {
+          await fs.writeFile(path.join(targetDir, 'main.js'), ORCHESTRATOR_MAIN_JS)
+          await fs.writeFile(path.join(targetDir, 'package.json'), ORCHESTRATOR_PACKAGE_JSON)
+        } else {
+          await fs.writeFile(path.join(targetDir, 'main.py'), ORCHESTRATOR_MAIN_PY)
+          await fs.writeFile(path.join(targetDir, 'requirements.txt'), ORCHESTRATOR_REQUIREMENTS)
+        }
         await fs.writeFile(schemaPath, AGENT_SCHEMA_TEMPLATE)
       } else if (initMode.flavor === 'discord') {
         const entrypointPath = path.join(targetDir, 'main.py')
@@ -1152,8 +1227,13 @@ export function registerInitCommand(program: Command): void {
       const prefix = name ? name + '/' : ''
       process.stdout.write(`  ${prefix}orchagent.json    - Agent configuration\n`)
       if (initMode.flavor === 'orchestrator') {
-        process.stdout.write(`  ${prefix}main.py           - Orchestrator entrypoint (SDK calls)\n`)
-        process.stdout.write(`  ${prefix}requirements.txt  - Python dependencies (orchagent-sdk)\n`)
+        if (isJavaScript) {
+          process.stdout.write(`  ${prefix}main.js           - Orchestrator entrypoint (SDK calls)\n`)
+          process.stdout.write(`  ${prefix}package.json      - npm dependencies (orchagent-sdk)\n`)
+        } else {
+          process.stdout.write(`  ${prefix}main.py           - Orchestrator entrypoint (SDK calls)\n`)
+          process.stdout.write(`  ${prefix}requirements.txt  - Python dependencies (orchagent-sdk)\n`)
+        }
       } else if (initMode.flavor === 'discord') {
         process.stdout.write(`  ${prefix}main.py           - Discord bot (discord.py + Anthropic)\n`)
         process.stdout.write(`  ${prefix}requirements.txt  - Python dependencies\n`)
@@ -1181,7 +1261,11 @@ export function registerInitCommand(program: Command): void {
           process.stdout.write(`  1. cd ${name}\n`)
         }
         process.stdout.write(`  ${stepNum}. Update manifest.dependencies in orchagent.json with your actual agents\n`)
-        process.stdout.write(`  ${stepNum + 1}. Edit main.py with your orchestration logic\n`)
+        if (isJavaScript) {
+          process.stdout.write(`  ${stepNum + 1}. Edit main.js with your orchestration logic\n`)
+        } else {
+          process.stdout.write(`  ${stepNum + 1}. Edit main.py with your orchestration logic\n`)
+        }
         process.stdout.write(`  ${stepNum + 2}. Publish dependency agents first, then: orchagent publish\n`)
       } else if (initMode.flavor === 'discord') {
         const stepNum = name ? 2 : 1
@@ -1218,5 +1302,6 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
         process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish\n`)
       }
+      process.stdout.write(`\n  Skill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
     })
 }

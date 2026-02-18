@@ -928,6 +928,135 @@ describe('init command', () => {
     })
   })
 
+  describe('JS orchestrator (--orchestrator --language javascript)', () => {
+    it('creates main.js with AgentClient SDK usage', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'javascript'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.js')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain("require('orchagent-sdk')")
+      expect(content).toContain('client.call(')
+      expect(content).toContain('AgentClient')
+    })
+
+    it('creates package.json with orchagent-sdk dependency', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'javascript'])
+
+      const pkgCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('package.json')
+      )
+      expect(pkgCall).toBeDefined()
+      const content = pkgCall![1] as string
+      expect(content).toContain('orchagent-sdk')
+    })
+
+    it('does not create main.py or requirements.txt', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'javascript'])
+
+      const mainPyCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      const reqCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('requirements.txt')
+      )
+      expect(mainPyCall).toBeUndefined()
+      expect(reqCall).toBeUndefined()
+    })
+
+    it('sets runtime.command to node main.js in manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'javascript'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.runtime).toEqual({ command: 'node main.js' })
+      expect(manifest.entrypoint).toBe('main.js')
+    })
+
+    it('includes manifest.dependencies with placeholder', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'javascript'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.manifest).toBeDefined()
+      expect(manifest.manifest.dependencies).toEqual([{ id: 'org/agent-name', version: 'v1' }])
+      expect(manifest.manifest.max_hops).toBe(3)
+    })
+
+    it('creates schema.json with task input field', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'javascript'])
+
+      const schemaCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('schema.json')
+      )
+      expect(schemaCall).toBeDefined()
+      const schema = JSON.parse(schemaCall![1] as string)
+      expect(schema.input.properties).toHaveProperty('task')
+    })
+
+    it('shows main.js in file list output', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'javascript'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('main.js'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('package.json'))
+    })
+
+    it('shows JS-specific next steps', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'javascript'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('main.js'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('manifest.dependencies'))
+    })
+
+    it('accepts --language js alias', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'js'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.js')
+      )
+      expect(mainCall).toBeDefined()
+    })
+
+    it('accepts --language typescript alias', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator', '--language', 'typescript'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.js')
+      )
+      expect(mainCall).toBeDefined()
+    })
+
+    it('Python orchestrator is unchanged (default)', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const mainPyCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainPyCall).toBeDefined()
+      const content = mainPyCall![1] as string
+      expect(content).toContain('from orchagent import AgentClient')
+
+      const reqCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('requirements.txt')
+      )
+      expect(reqCall).toBeDefined()
+    })
+  })
+
+  describe('JS managed_loop blocked', () => {
+    it('throws for --type agent --language javascript', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--language', 'javascript'])
+      ).rejects.toThrow('JavaScript agent-type agents are not yet supported')
+    })
+  })
+
   describe('multiple inits in same parent directory', () => {
     it('can create two different agent subdirectories', async () => {
       // First init
