@@ -403,6 +403,65 @@ Edit \`main.py\` to customize:
 `
   }
 
+  if (flavor === 'discord_js') {
+    return `# ${agentName}
+
+An always-on Discord bot powered by Claude (JavaScript).
+
+## Setup
+
+### 1. Create a Discord bot
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+2. Create a new application, then go to **Bot** and copy the bot token
+3. Under **Privileged Gateway Intents**, enable **Message Content Intent**
+4. Go to **OAuth2 > URL Generator**, select \`bot\` scope, then invite to your server
+
+### 2. Get channel IDs
+
+Enable Developer Mode in Discord (Settings > Advanced), then right-click a channel and copy its ID.
+
+### 3. Local development
+
+\`\`\`sh
+cp .env.example .env
+# Fill in DISCORD_BOT_TOKEN, ANTHROPIC_API_KEY, DISCORD_CHANNEL_IDS
+
+npm install
+node main.js
+\`\`\`
+
+### 4. Deploy
+
+\`\`\`sh
+orch publish
+
+# Add secrets in your workspace (web dashboard > Settings > Secrets):
+#   DISCORD_BOT_TOKEN — your bot token
+#   DISCORD_CHANNEL_IDS — comma-separated channel IDs
+
+orch service deploy
+\`\`\`
+
+## Customization
+
+Edit \`main.js\` to customize:
+
+- **SYSTEM_PROMPT** — controls how the bot responds
+- **MODEL** / **MAX_TOKENS** — override via env vars
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| \`DISCORD_BOT_TOKEN\` | Yes | Discord bot token (workspace secret) |
+| \`ANTHROPIC_API_KEY\` | Auto | Injected by orchagent via \`supported_providers\` |
+| \`DISCORD_CHANNEL_IDS\` | Yes | Comma-separated channel IDs (workspace secret) |
+| \`MODEL\` | No | Claude model (default: claude-sonnet-4-5-20250929) |
+| \`MAX_TOKENS\` | No | Max response tokens (default: 1024) |
+`
+  }
+
   const inputField = flavor === 'managed_loop' || flavor === 'orchestrator' ? 'task' : 'input'
   const inputDescription = flavor === 'managed_loop' || flavor === 'orchestrator' ? 'The task to perform' : 'The input to process'
   const cloudExample =
@@ -1090,7 +1149,7 @@ export function registerInitCommand(program: Command): void {
         await fs.writeFile(path.join(targetDir, 'main.js'), DISCORD_MAIN_JS)
         await fs.writeFile(path.join(targetDir, 'package.json'), DISCORD_PACKAGE_JSON)
         await fs.writeFile(path.join(targetDir, '.env.example'), DISCORD_JS_ENV_EXAMPLE)
-        await fs.writeFile(path.join(targetDir, 'README.md'), readmeTemplate(agentName, 'discord'))
+        await fs.writeFile(path.join(targetDir, 'README.md'), readmeTemplate(agentName, 'discord_js'))
 
         const prefix = name ? name + '/' : ''
         process.stdout.write(`\nInitialized JS Discord bot "${agentName}" in ${targetDir}\n`)

@@ -24,7 +24,7 @@ vi.mock('../lib/pricing', () => ({
 }))
 
 import fs from 'fs/promises'
-import { registerRunCommand, isKeyedFileArg, mountDirectory, buildInjectedPayload } from './run'
+import { registerRunCommand, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import {
@@ -2060,5 +2060,30 @@ describe('Workspace-aware cloud execution', () => {
 
     // Should proceed to actual run
     expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+  })
+})
+
+describe('localCommandForEntrypoint', () => {
+  it('returns python3 for .py files', () => {
+    expect(localCommandForEntrypoint('main.py')).toBe('python3')
+    expect(localCommandForEntrypoint('sandbox_main.py')).toBe('python3')
+  })
+
+  it('returns node for .js files', () => {
+    expect(localCommandForEntrypoint('main.js')).toBe('node')
+    expect(localCommandForEntrypoint('index.js')).toBe('node')
+  })
+
+  it('returns node for .mjs files', () => {
+    expect(localCommandForEntrypoint('main.mjs')).toBe('node')
+  })
+
+  it('returns node for .cjs files', () => {
+    expect(localCommandForEntrypoint('main.cjs')).toBe('node')
+  })
+
+  it('defaults to python3 for unknown extensions', () => {
+    expect(localCommandForEntrypoint('main.rb')).toBe('python3')
+    expect(localCommandForEntrypoint('main.ts')).toBe('python3')
   })
 })

@@ -140,7 +140,7 @@ interface SkillFrontmatter {
 /**
  * Check if orchagent-sdk is listed in requirements.txt or pyproject.toml
  */
-async function detectSdkCompatible(agentDir: string): Promise<boolean> {
+export async function detectSdkCompatible(agentDir: string): Promise<boolean> {
   // Check requirements.txt
   const requirementsPath = path.join(agentDir, 'requirements.txt')
   try {
@@ -1014,23 +1014,27 @@ export function registerPublishCommand(program: Command): void {
               // Optional
             }
 
-            // Include package.json + lockfile for JS agents (overrides DEFAULT_EXCLUDES)
-            const pkgPath = path.join(cwd, 'package.json')
-            try {
-              await fs.access(pkgPath)
-              includePatterns.push('package.json')
-              process.stdout.write(`  Including package.json for sandbox dependencies\n`)
-              // Include lockfile for deterministic installs (npm ci)
-              const lockPath = path.join(cwd, 'package-lock.json')
+            // Include package.json + lockfile for JS agents only (overrides DEFAULT_EXCLUDES)
+            // Guard on JS entrypoint to avoid bundling package.json for Python agents
+            // in mixed repos — the sandbox Python template lacks npm and would fail
+            if (bundleEntrypoint && bundleEntrypoint.endsWith('.js')) {
+              const pkgPath = path.join(cwd, 'package.json')
               try {
-                await fs.access(lockPath)
-                includePatterns.push('package-lock.json')
-                process.stdout.write(`  Including package-lock.json for deterministic installs\n`)
+                await fs.access(pkgPath)
+                includePatterns.push('package.json')
+                process.stdout.write(`  Including package.json for sandbox dependencies\n`)
+                // Include lockfile for deterministic installs (npm ci)
+                const lockPath = path.join(cwd, 'package-lock.json')
+                try {
+                  await fs.access(lockPath)
+                  includePatterns.push('package-lock.json')
+                  process.stdout.write(`  Including package-lock.json for deterministic installs\n`)
+                } catch {
+                  // No lockfile — npm install will be used instead of npm ci
+                }
               } catch {
-                // No lockfile — npm install will be used instead of npm ci
+                // No package.json
               }
-            } catch {
-              // No package.json — not a JS agent
             }
           }
 

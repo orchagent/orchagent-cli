@@ -67,7 +67,7 @@ type AgentRef = {
  * Return the correct local command for a given entrypoint file extension.
  * Uses `python3` (not `python`) to match existing behavior on macOS/Linux.
  */
-function localCommandForEntrypoint(entrypoint: string): string {
+export function localCommandForEntrypoint(entrypoint: string): string {
   if (entrypoint.endsWith('.js') || entrypoint.endsWith('.mjs') || entrypoint.endsWith('.cjs')) {
     return 'node'
   }
@@ -1163,11 +1163,12 @@ async function loadSkillPrompts(
   return prompts
 }
 
-function runCommand(command: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const proc = spawn(command, args, {
       stdio: ['inherit', 'pipe', 'pipe'],
       shell: true,
+      cwd: options?.cwd,
     })
 
     let stdout = ''
@@ -1360,7 +1361,7 @@ async function executeBundleAgent(
           const npmArgs = useNpmCi
             ? ['ci', '--no-audit', '--no-fund']
             : ['install', '--production', '--no-audit', '--no-fund']
-          const { code } = await runCommand('npm', npmArgs)
+          const { code } = await runCommand('npm', npmArgs, { cwd: extractDir })
           if (code !== 0) {
             throw new CliError('Failed to install npm dependencies')
           }
@@ -1884,7 +1885,7 @@ async function executeLocalFromDir(
       ? ['ci', '--no-audit', '--no-fund']
       : ['install', '--production', '--no-audit', '--no-fund']
     process.stderr.write('Installing npm dependencies...\n')
-    const { code } = await runCommand('npm', npmArgs)
+    const { code } = await runCommand('npm', npmArgs, { cwd: resolved })
     if (code !== 0) {
       process.stderr.write('Warning: Failed to install npm dependencies\n')
     }

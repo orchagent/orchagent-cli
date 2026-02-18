@@ -19,7 +19,7 @@ vi.mock('../lib/api')
 vi.mock('../lib/bundle')
 
 import fs from 'fs/promises'
-import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, checkDependencies } from './publish'
+import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, checkDependencies, detectSdkCompatible } from './publish'
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { createAgent, getOrg, previewAgentVersion, uploadCodeBundle, request, getPublicAgent } from '../lib/api'
 import { detectEntrypoint, createCodeBundle, validateBundle, previewBundle } from '../lib/bundle'
@@ -1335,6 +1335,96 @@ describe('scanUndeclaredEnvVars', () => {
 
     const result = await scanUndeclaredEnvVars('/test', [])
     expect(result).toEqual([])
+  })
+
+  it('detects process.env.VAR in .js files', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.js', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('const token = process.env.DISCORD_TOKEN\nconst key = process.env.API_KEY')
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual(['API_KEY', 'DISCORD_TOKEN'])
+  })
+
+  it('detects process.env.VAR in .ts files', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.ts', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('const url: string = process.env.DATABASE_URL!')
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual(['DATABASE_URL'])
+  })
+
+  it('detects env vars from both .py and .js files', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+      { name: 'helper.js', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockImplementation(async (p: any) => {
+      if (String(p).endsWith('main.py')) return 'os.environ["PY_VAR"]'
+      if (String(p).endsWith('helper.js')) return 'process.env.JS_VAR'
+      return ''
+    })
+
+    const result = await scanUndeclaredEnvVars('/test', [])
+    expect(result).toEqual(['JS_VAR', 'PY_VAR'])
+  })
+})
+
+describe('detectSdkCompatible', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns true when package.json has orchagent-sdk in dependencies', async () => {
+    mockFs.readFile.mockImplementation(async (p: any) => {
+      if (String(p).includes('requirements.txt')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(p).includes('pyproject.toml')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(p).includes('package.json')) return JSON.stringify({
+        dependencies: { 'orchagent-sdk': '^0.1.0', 'discord.js': '^14.0.0' }
+      })
+      throw new Error(`Unexpected: ${p}`)
+    })
+
+    const result = await detectSdkCompatible('/test')
+    expect(result).toBe(true)
+  })
+
+  it('returns true when package.json has @orchagent/sdk in dependencies', async () => {
+    mockFs.readFile.mockImplementation(async (p: any) => {
+      if (String(p).includes('requirements.txt')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(p).includes('pyproject.toml')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(p).includes('package.json')) return JSON.stringify({
+        dependencies: { '@orchagent/sdk': '^0.1.0' }
+      })
+      throw new Error(`Unexpected: ${p}`)
+    })
+
+    const result = await detectSdkCompatible('/test')
+    expect(result).toBe(true)
+  })
+
+  it('returns false when package.json has no SDK dependency', async () => {
+    mockFs.readFile.mockImplementation(async (p: any) => {
+      if (String(p).includes('requirements.txt')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(p).includes('pyproject.toml')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (String(p).includes('package.json')) return JSON.stringify({
+        dependencies: { 'discord.js': '^14.0.0' }
+      })
+      throw new Error(`Unexpected: ${p}`)
+    })
+
+    const result = await detectSdkCompatible('/test')
+    expect(result).toBe(false)
+  })
+
+  it('returns false when no dependency files exist', async () => {
+    mockFs.readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+
+    const result = await detectSdkCompatible('/test')
+    expect(result).toBe(false)
   })
 })
 
