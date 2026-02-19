@@ -136,6 +136,35 @@ function statusColor(status: string | null): string {
   }
 }
 
+async function resolveScheduleId(
+  config: ResolvedConfig,
+  partialId: string,
+  workspaceId: string,
+): Promise<string> {
+  // If it looks like a full UUID already, return as-is
+  if (partialId.length >= 32) return partialId
+
+  // Fetch schedules and match by prefix
+  const response = await request<SchedulesListResponse>(
+    config,
+    'GET',
+    `/workspaces/${workspaceId}/schedules?limit=200`,
+  )
+
+  const matches = response.schedules.filter((s) => s.id.startsWith(partialId))
+
+  if (matches.length === 0) {
+    throw new CliError(`No schedule found matching '${partialId}'`)
+  }
+  if (matches.length > 1) {
+    throw new CliError(
+      `Ambiguous schedule ID '${partialId}' matches ${matches.length} schedules. Use a longer prefix.`
+    )
+  }
+
+  return matches[0].id
+}
+
 // ============================================
 // COMMAND REGISTRATION
 // ============================================
@@ -434,13 +463,14 @@ export function registerScheduleCommand(program: Command): void {
     .description('Manually trigger a schedule execution')
     .option('--input <json>', 'Override input data as JSON')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (scheduleId: string, options: { input?: string; workspace?: string }) => {
+    .action(async (partialScheduleId: string, options: { input?: string; workspace?: string }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
       }
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
+      const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
       let body: string | undefined
       if (options.input) {
@@ -487,13 +517,14 @@ export function registerScheduleCommand(program: Command): void {
     .description('Show detailed schedule information with recent runs and events')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .option('--json', 'Output as JSON')
-    .action(async (scheduleId: string, options: { workspace?: string; json?: boolean }) => {
+    .action(async (partialScheduleId: string, options: { workspace?: string; json?: boolean }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
       }
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
+      const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
       const [scheduleRes, runsRes, eventsRes] = await Promise.all([
         request<ScheduleResponse>(config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}`),
