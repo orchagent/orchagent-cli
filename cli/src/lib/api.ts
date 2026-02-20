@@ -328,18 +328,6 @@ export async function createAgent(
   })
 }
 
-// LLM Keys (metadata only — keys are never returned from server)
-
-export interface LlmKeyInfo {
-  provider: string
-  model?: string
-  has_custom_endpoint: boolean
-}
-
-export async function listLlmKeys(config: ResolvedConfig): Promise<LlmKeyInfo[]> {
-  return request<LlmKeyInfo[]>(config, 'GET', '/llm-keys')
-}
-
 /**
  * Download a code-runtime bundle for local execution.
  */
