@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 
 import { registerLoginCommand } from './login'
+import { registerLogoutCommand } from './logout'
 import { registerCallCommand } from './call'
 import { registerAgentsCommand } from './agents'
 import { registerInitCommand } from './init'
@@ -37,6 +38,7 @@ import { registerSecretsCommand } from './secrets'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
+  registerLogoutCommand(program)
   registerWhoamiCommand(program)
   registerInitCommand(program)
   registerPublishCommand(program)
