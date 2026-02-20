@@ -415,7 +415,7 @@ async function downloadBundle(
 
 async function unzipBundle(zipPath: string, destDir: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('unzip', ['-q', zipPath, '-d', destDir], {
+    const proc = spawn('unzip', ['-o', '-q', zipPath, '-d', destDir], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
@@ -518,7 +518,35 @@ Examples:
       const warnings: string[] = []
       let bundleExtracted = false
 
-      // Write orchagent.json
+      // Extract bundle FIRST for code_runtime agents.
+      // Metadata files (orchagent.json, schema.json) are written AFTER so they
+      // always take precedence over anything the bundle may contain.  This also
+      // avoids the interactive overwrite prompt that `unzip` issues when a file
+      // already exists on disk — in non-interactive shells the prompt causes EOF
+      // and exit-code 1.
+      if (engine === 'code_runtime' && data.has_bundle) {
+        write('Downloading code bundle...\n')
+        const bundle = await downloadBundle(config, org, data.name, data.version, data.agentId)
+        if (bundle) {
+          const tempDir = path.join(os.tmpdir(), `orchagent-pull-${Date.now()}`)
+          const zipPath = path.join(tempDir, 'bundle.zip')
+          try {
+            await fs.mkdir(tempDir, { recursive: true })
+            await fs.writeFile(zipPath, bundle)
+            await unzipBundle(zipPath, outputDir)
+            bundleExtracted = true
+            write('Bundle extracted.\n')
+          } finally {
+            await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {})
+          }
+        } else {
+          warnings.push('No downloadable bundle available for this version.')
+        }
+      } else if (engine === 'code_runtime' && !data.has_bundle) {
+        warnings.push('No downloadable bundle available for this version.')
+      }
+
+      // Write orchagent.json (after bundle extraction so it always wins)
       const manifest = buildManifest(data)
       await fs.writeFile(
         path.join(outputDir, 'orchagent.json'),
@@ -542,29 +570,6 @@ Examples:
           JSON.stringify(schema, null, 2) + '\n'
         )
         filesWritten.push('schema.json')
-      }
-
-      // Bundle download for code_runtime agents
-      if (engine === 'code_runtime' && data.has_bundle) {
-        write('Downloading code bundle...\n')
-        const bundle = await downloadBundle(config, org, data.name, data.version, data.agentId)
-        if (bundle) {
-          const tempDir = path.join(os.tmpdir(), `orchagent-pull-${Date.now()}`)
-          const zipPath = path.join(tempDir, 'bundle.zip')
-          try {
-            await fs.mkdir(tempDir, { recursive: true })
-            await fs.writeFile(zipPath, bundle)
-            await unzipBundle(zipPath, outputDir)
-            bundleExtracted = true
-            write('Bundle extracted.\n')
-          } finally {
-            await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {})
-          }
-        } else {
-          warnings.push('No downloadable bundle available for this version.')
-        }
-      } else if (engine === 'code_runtime' && !data.has_bundle) {
-        warnings.push('No downloadable bundle available for this version.')
       }
 
       // Track analytics

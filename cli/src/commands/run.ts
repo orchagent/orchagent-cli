@@ -1266,7 +1266,7 @@ async function executeTool(
 
 async function unzipBundle(zipPath: string, destDir: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('unzip', ['-q', zipPath, '-d', destDir], {
+    const proc = spawn('unzip', ['-o', '-q', zipPath, '-d', destDir], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 

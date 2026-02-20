@@ -635,6 +635,66 @@ describe('pull command', () => {
     await expect(fs.access(path.join(outputDir, 'schema.json'))).rejects.toThrow()
   })
 
+  // ─── Test: code_runtime bundle extraction does not prompt for overwrite ──
+
+  it('extracts bundle without interactive overwrite prompt (schema.json collision)', async () => {
+    // Create a real zip containing schema.json + main.py using archiver.
+    // Before the fix, unzip would prompt "replace schema.json? [y/n]" because
+    // pull wrote schema.json before extraction.  With the fix, bundle is
+    // extracted first and metadata files are written on top.
+    const archiver = await import('archiver')
+    const zipBuffer = await new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = []
+      const archive = archiver.default('zip', { zlib: { level: 0 } })
+      archive.on('data', (chunk: Buffer) => chunks.push(chunk))
+      archive.on('end', () => resolve(Buffer.concat(chunks)))
+      archive.on('error', reject)
+      archive.append('print("hello")', { name: 'main.py' })
+      archive.append('{"input":{"type":"object"}}', { name: 'schema.json' })
+      archive.append('orchagent-sdk>=0.1.0', { name: 'requirements.txt' })
+      archive.finalize()
+    })
+
+    mockPublicRequest.mockResolvedValue(
+      makeDownloadResponse({
+        type: 'tool',
+        execution_engine: 'code_runtime',
+        has_bundle: true,
+        entrypoint: 'main.py',
+        prompt: undefined,
+        input_schema: { type: 'object', properties: { query: { type: 'string' } } },
+        output_schema: { type: 'object', properties: { answer: { type: 'string' } } },
+      })
+    )
+
+    mockDownloadCodeBundle.mockResolvedValue(zipBuffer)
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    // Verify bundle files were extracted
+    const mainPy = await fs.readFile(path.join(outputDir, 'main.py'), 'utf-8')
+    expect(mainPy).toBe('print("hello")')
+
+    const reqTxt = await fs.readFile(path.join(outputDir, 'requirements.txt'), 'utf-8')
+    expect(reqTxt).toBe('orchagent-sdk>=0.1.0')
+
+    // Verify metadata files written AFTER extraction take precedence
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
+    expect(manifest.name).toBe('my-agent')
+    expect(manifest.entrypoint).toBe('main.py')
+
+    // schema.json should be the server-reconstructed version, not the bundle's raw copy
+    const schema = JSON.parse(await fs.readFile(path.join(outputDir, 'schema.json'), 'utf-8'))
+    expect(schema.input).toEqual({ type: 'object', properties: { query: { type: 'string' } } })
+    expect(schema.output).toEqual({ type: 'object', properties: { answer: { type: 'string' } } })
+
+    // Verify output mentions bundle extraction
+    const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
+    expect(output).toContain('Bundle extracted')
+  })
+
   it('omits prompt.md for code_runtime agents', async () => {
     mockPublicRequest.mockResolvedValue(
       makeDownloadResponse({
