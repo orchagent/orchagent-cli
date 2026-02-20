@@ -1,0 +1,33 @@
+{
+  "name": "orchagent-sdk",
+  "version": "0.1.1",
+  "description": "SDK for building orchagent agents — enables agent-to-agent calls with orchestration support",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "orchagent",
+    "agents",
+    "ai",
+    "sdk",
+    "orchestration"
+  ],
+  "author": "orchagent",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "typescript": "^5.3.0",
+    "vitest": "^1.6.0"
+  }
+}
