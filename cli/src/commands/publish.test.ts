@@ -281,6 +281,7 @@ describe('publish command', () => {
         version: 'v1',
         type: 'tool',
         description: 'A tool',
+        required_secrets: ['MY_API_KEY'],
       }
 
       mockFs.readFile.mockImplementation(async (filePath: unknown) => {
@@ -938,6 +939,7 @@ Skill content.`
         name: 'team-tool',
         type: 'tool',
         description: 'Team tool agent',
+        required_secrets: ['MY_API_KEY'],
       }
 
       mockLoadConfig.mockResolvedValue({ workspace: 'team-ws' })
@@ -1054,6 +1056,7 @@ describe('publish command - schema auto-migration', () => {
       name: 'test-agent',
       type: 'tool',
       description: 'Test',
+      required_secrets: ['MY_API_KEY'],
       input_schema: { type: 'object', properties: { query: { type: 'string' } } },
       output_schema: { type: 'object', properties: { result: { type: 'string' } } },
     }
@@ -1091,6 +1094,7 @@ describe('publish command - schema auto-migration', () => {
       name: 'test-agent',
       type: 'tool',
       description: 'Test',
+      required_secrets: ['MY_API_KEY'],
       input_schema: { type: 'object', properties: { query: { type: 'string' } } },
     }
 
@@ -1370,6 +1374,162 @@ describe('scanUndeclaredEnvVars', () => {
 
     const result = await scanUndeclaredEnvVars('/test', [])
     expect(result).toEqual(['JS_VAR', 'PY_VAR'])
+  })
+})
+
+describe('required_secrets enforcement (C-1)', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let originalCwd: () => string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetOrg.mockResolvedValue({
+      id: 'org-123',
+      slug: 'test-org',
+      name: 'Test Org',
+    })
+    mockCreateAgent.mockResolvedValue({ id: 'agent-123' })
+
+    originalCwd = process.cwd
+    process.cwd = () => '/test/project'
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    process.cwd = originalCwd
+    vi.restoreAllMocks()
+  })
+
+  it('blocks tool type without required_secrets', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool agent',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+
+    await expect(program.parseAsync(['node', 'test', 'publish'])).rejects.toThrow()
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('must declare required_secrets')
+  })
+
+  it('blocks agent type without required_secrets', async () => {
+    const manifest = {
+      name: 'my-agent',
+      type: 'agent',
+      description: 'An agent',
+      runtime: { command: 'python main.py' },
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+
+    await expect(program.parseAsync(['node', 'test', 'publish'])).rejects.toThrow()
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('must declare required_secrets')
+  })
+
+  it('allows tool type with --no-required-secrets flag', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool agent',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123', bundle_size_bytes: 100,
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'publish', '--no-required-secrets'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('must declare required_secrets')
+  })
+
+  it('does not block prompt type without required_secrets', async () => {
+    const manifest = {
+      name: 'my-prompt',
+      type: 'prompt',
+      description: 'A prompt agent',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You are helpful.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('must declare required_secrets')
+  })
+
+  it('does not block skill type without required_secrets', async () => {
+    const skillMd = `---
+name: my-skill
+description: A skill
+---
+Do something.`
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) return skillMd
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockFs.readdir.mockResolvedValue([])
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('must declare required_secrets')
   })
 })
 
@@ -1656,6 +1816,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
     const manifest = {
       name: 'orchestrator',
       type: 'agent',
+      required_secrets: ['ANTHROPIC_API_KEY'],
       runtime: { command: 'python main.py' },
       manifest: {
         manifest_version: 1,
@@ -1697,6 +1858,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
     const manifest = {
       name: 'orchestrator',
       type: 'agent',
+      required_secrets: ['ANTHROPIC_API_KEY'],
       runtime: { command: 'python main.py' },
       manifest: {
         manifest_version: 1,
@@ -1740,6 +1902,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
     const manifest = {
       name: 'orchestrator',
       type: 'agent',
+      required_secrets: ['ANTHROPIC_API_KEY'],
       runtime: { command: 'python main.py' },
       manifest: {
         manifest_version: 1,

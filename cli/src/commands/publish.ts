@@ -395,7 +395,8 @@ export function registerPublishCommand(program: Command): void {
     .option('--skills-locked', 'Lock default skills (callers cannot override via headers)')
     .option('--docker', 'Include Dockerfile for custom environment (builds E2B template)')
     .option('--local-download', 'Allow users to download and run locally (default: server-only)')
-    .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean }) => {
+    .option('--no-required-secrets', 'Skip required_secrets check for tool/agent types')
+    .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean }) => {
       const skillsFromFlag = options.skills
         ? options.skills.split(',').map(s => s.trim()).filter(Boolean)
         : undefined
@@ -909,6 +910,24 @@ export function registerPublishCommand(program: Command): void {
             `  (Platform-injected vars like LLM API keys are already excluded.)\n\n`
           )
         }
+      }
+
+      // C-1: Block publish if tool/agent type has no required_secrets declared.
+      // Prompt and skill types are exempt (prompt agents get LLM keys from platform,
+      // skills don't run standalone).
+      if (
+        (canonicalType === 'tool' || canonicalType === 'agent') &&
+        (!manifest.required_secrets || manifest.required_secrets.length === 0) &&
+        options.requiredSecrets !== false
+      ) {
+        process.stderr.write(
+          chalk.red(`\nError: ${canonicalType} agents must declare required_secrets in orchagent.json.\n\n`) +
+          `  Add the env vars your code needs at runtime:\n` +
+          `  ${chalk.cyan('"required_secrets": ["ANTHROPIC_API_KEY", "MY_TOKEN"]')}\n\n` +
+          `  These are matched by name against your workspace secrets vault.\n` +
+          `  Use ${chalk.cyan('--no-required-secrets')} to skip this check.\n`
+        )
+        throw new CliError('Missing required_secrets declaration', ExitCodes.INVALID_INPUT)
       }
 
       // Create the agent (server auto-assigns version)

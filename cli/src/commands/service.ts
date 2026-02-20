@@ -254,6 +254,16 @@ export function registerServiceCommand(program: Command): void {
         throw e
       }
 
+      // C-2: Show deprecation notice when --secret is used
+      if (options.secret.length > 0) {
+        process.stderr.write(
+          chalk.yellow(`\nTip: `) +
+          `Declare secrets in orchagent.json ${chalk.cyan('required_secrets')} instead.\n` +
+          `They'll be auto-injected from your workspace vault at deploy time.\n` +
+          `The ${chalk.cyan('--secret')} flag is for extras not declared on the agent.\n\n`
+        )
+      }
+
       const deploySpinner = createSpinner('Deploying service...')
       deploySpinner.start()
 
