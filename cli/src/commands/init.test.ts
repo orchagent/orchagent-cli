@@ -590,7 +590,7 @@ describe('init command', () => {
       )
       const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.supported_providers).toEqual(['anthropic'])
-      expect(manifest.required_secrets).toEqual(['DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS'])
+      expect(manifest.required_secrets).toEqual(['ANTHROPIC_API_KEY', 'DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS'])
     })
 
     it('includes discord tags in manifest', async () => {

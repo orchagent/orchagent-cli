@@ -284,7 +284,7 @@ const DISCORD_PACKAGE_JSON = `{
 const DISCORD_JS_ENV_EXAMPLE = `# Required — get your bot token from https://discord.com/developers/applications
 DISCORD_BOT_TOKEN=
 
-# Required for local dev — auto-injected in production via supported_providers
+# Required — add to workspace secrets: orch secrets set ANTHROPIC_API_KEY <key>
 ANTHROPIC_API_KEY=
 
 # Required — comma-separated Discord channel IDs where the bot should respond
@@ -396,7 +396,7 @@ Edit \`main.py\` to customize:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | \`DISCORD_BOT_TOKEN\` | Yes | Discord bot token (workspace secret) |
-| \`ANTHROPIC_API_KEY\` | Auto | Injected by orchagent via \`supported_providers\` |
+| \`ANTHROPIC_API_KEY\` | Yes | Anthropic API key (workspace secret via \`required_secrets\`) |
 | \`DISCORD_CHANNEL_IDS\` | Yes | Comma-separated channel IDs (workspace secret) |
 | \`MODEL\` | No | Claude model (default: claude-sonnet-4-5-20250929) |
 | \`MAX_TOKENS\` | No | Max response tokens (default: 1024) |
@@ -455,7 +455,7 @@ Edit \`main.js\` to customize:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | \`DISCORD_BOT_TOKEN\` | Yes | Discord bot token (workspace secret) |
-| \`ANTHROPIC_API_KEY\` | Auto | Injected by orchagent via \`supported_providers\` |
+| \`ANTHROPIC_API_KEY\` | Yes | Anthropic API key (workspace secret via \`required_secrets\`) |
 | \`DISCORD_CHANNEL_IDS\` | Yes | Comma-separated channel IDs (workspace secret) |
 | \`MODEL\` | No | Claude model (default: claude-sonnet-4-5-20250929) |
 | \`MAX_TOKENS\` | No | Max response tokens (default: 1024) |
@@ -830,7 +830,7 @@ anthropic>=0.40.0,<1.0.0
 const DISCORD_ENV_EXAMPLE = `# Required — get your bot token from https://discord.com/developers/applications
 DISCORD_BOT_TOKEN=
 
-# Required for local dev — auto-injected in production via supported_providers
+# Required — add to workspace secrets: orch secrets set ANTHROPIC_API_KEY <key>
 ANTHROPIC_API_KEY=
 
 # Required — comma-separated Discord channel IDs where the bot should respond
@@ -1004,8 +1004,7 @@ export function registerInitCommand(program: Command): void {
           entrypoint: 'main.py',
           supported_providers: ['anthropic'],
           default_models: { anthropic: 'claude-sonnet-4-5-20250929' },
-          required_secrets: [] as string[],
-          optional_secrets: ['DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS', 'TELEGRAM_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
+          required_secrets: ['ANTHROPIC_API_KEY'] as string[],
           tags: ['support', 'discord', 'telegram', 'slack', 'always-on', 'multi-platform'],
           bundle: {
             include: ['*.py', 'connectors/*.py', 'knowledge/*.md', 'requirements.txt'],
@@ -1142,7 +1141,7 @@ export function registerInitCommand(program: Command): void {
           runtime: { command: 'node main.js' },
           entrypoint: 'main.js',
           supported_providers: ['anthropic'],
-          required_secrets: ['DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS'],
+          required_secrets: ['ANTHROPIC_API_KEY', 'DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS'],
           tags: ['discord', 'always-on', 'javascript'],
         }
         await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
@@ -1225,7 +1224,7 @@ export function registerInitCommand(program: Command): void {
         manifest.description = 'An always-on Discord bot powered by Claude'
         manifest.runtime = { command: 'python main.py' }
         manifest.supported_providers = ['anthropic']
-        manifest.required_secrets = ['DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS']
+        manifest.required_secrets = ['ANTHROPIC_API_KEY', 'DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS']
         manifest.tags = ['discord', 'always-on']
       } else if (initMode.flavor === 'code_runtime') {
         manifest.description = 'A code-runtime agent'
