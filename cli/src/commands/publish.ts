@@ -543,6 +543,21 @@ export function registerPublishCommand(program: Command): void {
       if (!manifest.name) {
         throw new CliError('orchagent.json must have name')
       }
+      // Validate agent name format (must match gateway rules)
+      const agentNameRegex = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/
+      const agentName = manifest.name
+      if (agentName.length < 2 || agentName.length > 50) {
+        throw new CliError('Agent name must be 2-50 characters')
+      }
+      if (agentName !== agentName.toLowerCase()) {
+        throw new CliError('Agent name must be lowercase')
+      }
+      if (agentName.length > 1 && !agentNameRegex.test(agentName)) {
+        throw new CliError('Agent name must contain only lowercase letters, numbers, and hyphens, and must start/end with a letter or number')
+      }
+      if (agentName.includes('--')) {
+        throw new CliError('Agent name must not contain consecutive hyphens')
+      }
       const { canonicalType, rawType } = canonicalizeManifestType(manifest.type)
       const runMode = normalizeRunMode(manifest.run_mode)
       const executionEngine = inferExecutionEngineFromManifest(manifest, rawType)
