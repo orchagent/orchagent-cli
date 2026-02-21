@@ -418,7 +418,7 @@ type BuildInjectedPayloadOptions = {
   dataOption?: string
   fileArgs?: string[]
   mountArgs?: string[]
-  llmCredentials?: { api_key: string; provider: string; model?: string }
+  llmCredentials?: { api_key?: string; provider?: string; model?: string }
 }
 
 export async function buildInjectedPayload(
@@ -2208,11 +2208,18 @@ async function executeCloud(
     }
   }
 
-  let llmCredentials: { api_key: string; provider: string; model?: string } | undefined
+  let llmCredentials: { api_key?: string; provider?: string; model?: string } | undefined
   if (llmKey && llmProvider) {
     llmCredentials = {
       api_key: llmKey,
       provider: llmProvider,
+      ...(options.model && { model: options.model }),
+    }
+  } else if (effectiveProvider || options.model) {
+    // No local key, but user specified --provider or --model.
+    // Send preferences so the gateway uses the right vault key.
+    llmCredentials = {
+      ...(effectiveProvider && { provider: effectiveProvider }),
       ...(options.model && { model: options.model }),
     }
   } else if (cloudEngine !== 'code_runtime') {
