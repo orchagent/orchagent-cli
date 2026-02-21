@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { getOrg, getCreditsBalance, request } from '../lib/api'
+import { getOrg, request } from '../lib/api'
 
 interface Workspace {
   id: string
@@ -41,12 +41,5 @@ export function registerWhoamiCommand(program: Command): void {
         }
       }
 
-      // Show balance after org info
-      try {
-        const balance = await getCreditsBalance(config)
-        process.stdout.write(`Credits: $${(balance.balance_cents / 100).toFixed(2)} USD\n`)
-      } catch {
-        // Ignore errors - don't let balance check break whoami
-      }
     })
 }

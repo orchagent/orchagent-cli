@@ -70,6 +70,8 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
     api_url: resolved.apiUrl,
     default_org: existing.default_org ?? org.slug,
   }
+  // Clear workspace from previous account — workspaces are account-specific
+  delete nextConfig.workspace
 
   await saveConfig(nextConfig)
   await track('cli_login', { method: 'key' })
@@ -94,6 +96,8 @@ async function browserBasedLogin(port: number): Promise<void> {
       api_url: resolved.apiUrl,
       default_org: existing.default_org ?? result.orgSlug,
     }
+    // Clear workspace from previous account — workspaces are account-specific
+    delete nextConfig.workspace
 
     await saveConfig(nextConfig)
     await track('cli_login', { method: 'browser' })
