@@ -420,6 +420,22 @@ export function registerPublishCommand(program: Command): void {
           )
         }
         workspaceId = ws.id
+
+        // Warn when publishing to the public showcase workspace
+        if (ws.slug === 'orchagent-public' && !options.dryRun) {
+          process.stderr.write(
+            chalk.red.bold('\n  PUBLIC WORKSPACE\n') +
+            chalk.red(`  Everything published to "${ws.slug}" is publicly visible on orchagent.io/explore.\n\n`)
+          )
+          const readline = await import('readline/promises')
+          const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+          const answer = await rl.question(chalk.red('  Continue? (y/N): '))
+          rl.close()
+          if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+            process.stderr.write('\nPublish cancelled.\n')
+            process.exit(0)
+          }
+        }
       }
 
       // Check for SKILL.md first (skills take precedence)
@@ -1170,6 +1186,6 @@ export function registerPublishCommand(program: Command): void {
       }
 
       process.stdout.write(`\nView analytics and usage: https://orchagent.io/dashboard\n`)
-      process.stdout.write(`\nSkill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
+      process.stdout.write(`\nSkill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
     })
 }

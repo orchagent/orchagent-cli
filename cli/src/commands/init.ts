@@ -1053,7 +1053,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${s + 2}. Copy .env.example to .env and add platform tokens\n`)
         process.stdout.write(`  ${s + 3}. Test locally: pip install -r requirements.txt && python main.py\n`)
         process.stdout.write(`  ${s + 4}. Deploy: orch publish && orch service deploy\n`)
-        process.stdout.write(`\n  Skill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
+        process.stdout.write(`\n  Skill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
         return
       }
 
@@ -1115,7 +1115,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${s + 3}. orch run <org>/${agentName}            Test it\n`)
         process.stdout.write(`  ${s + 4}. orch schedule create <org>/${agentName} --cron "0 9 * * 1"   Schedule weekly\n`)
         process.stdout.write(`\n  See README.md for full setup guide.\n`)
-        process.stdout.write(`\n  Skill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
+        process.stdout.write(`\n  Skill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
         return
       }
 
@@ -1169,7 +1169,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum + 2}. Copy .env.example to .env and fill in your tokens\n`)
         process.stdout.write(`  ${stepNum + 3}. Test locally: npm install && node main.js\n`)
         process.stdout.write(`  ${stepNum + 4}. Deploy: orch publish\n`)
-        process.stdout.write(`\n  Skill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
+        process.stdout.write(`\n  Skill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
         return
       }
 
@@ -1360,6 +1360,6 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
         process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish\n`)
       }
-      process.stdout.write(`\n  Skill: orch skill install orchagent/agent-builder — gives your AI the full platform builder reference\n`)
+      process.stdout.write(`\n  Skill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
     })
 }
