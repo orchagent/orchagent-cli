@@ -193,7 +193,7 @@ async function getGitHubStatus(config: ResolvedConfig, json: boolean): Promise<v
 
   process.stdout.write(`GitHub Status:\n\n`)
   process.stdout.write(`  Connected: ${chalk.green('Yes')}\n`)
-  process.stdout.write(`  Account:   ${chalk.bold(connection.github_account_login)}\n`)
+  process.stdout.write(`  Account:   ${chalk.bold(connection.github_account_login || 'Unknown')}\n`)
   if (connection.github_account_type) {
     process.stdout.write(`  Type:      ${connection.github_account_type === 'User' ? 'User' : 'Organization'}\n`)
   }

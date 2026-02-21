@@ -283,7 +283,7 @@ Examples:
             timeoutMs: 300000, // 5 minutes - scans can take time
           })
         } catch (err) {
-          spinner.fail(`Scan failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+          spinner.stop()
           throw err
         }
 
@@ -302,7 +302,7 @@ Examples:
                 (payload as { message?: string }).message ||
                 response.statusText
               : response.statusText
-          spinner.fail(`Scan failed: ${message}`)
+          spinner.stop()
           throw new CliError(message)
         }
 

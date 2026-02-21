@@ -243,14 +243,14 @@ export function registerServiceCommand(program: Command): void {
           match = agentsList.find(a => a.name === agentName && a.version === agentVersion)
         }
         if (!match) {
-          spinner.fail('Agent not found')
+          spinner.stop()
           throw new CliError(`Agent '${agentName}' (version ${agentVersion}) not found in workspace`)
         }
         agentId = match.id
         spinner.succeed('Agent resolved')
       } catch (e) {
         if (e instanceof CliError) throw e
-        spinner.fail('Failed to resolve agent')
+        spinner.stop()
         throw e
       }
 
@@ -462,7 +462,7 @@ export function registerServiceCommand(program: Command): void {
 
         process.stdout.write(`${chalk.green('\u2713')} Service '${result.service.service_name}' restarted (restarts: ${result.service.restart_count})\n`)
       } catch (e) {
-        spinner.fail('Restart failed')
+        spinner.stop()
         throw e
       }
     })
@@ -585,7 +585,7 @@ export function registerServiceCommand(program: Command): void {
 
         process.stdout.write(`${chalk.green('\u2713')} Service '${result.service.service_name}' deleted\n`)
       } catch (e) {
-        spinner.fail('Delete failed')
+        spinner.stop()
         throw e
       }
     })
@@ -656,7 +656,7 @@ export function registerServiceCommand(program: Command): void {
           process.stdout.write(chalk.gray('Service restarted to apply changes.\n'))
         }
       } catch (e) {
-        spinner.fail('Failed to update environment')
+        spinner.stop()
         throw e
       }
     })
@@ -721,7 +721,7 @@ export function registerServiceCommand(program: Command): void {
           process.stdout.write(chalk.gray('Service restarted to apply changes.\n'))
         }
       } catch (e) {
-        spinner.fail('Failed to update environment')
+        spinner.stop()
         throw e
       }
     })
@@ -821,7 +821,7 @@ export function registerServiceCommand(program: Command): void {
           process.stdout.write(chalk.gray('Service restarted to apply changes.\n'))
         }
       } catch (e) {
-        spinner.fail('Failed to attach secrets')
+        spinner.stop()
         throw e
       }
     })
@@ -880,7 +880,7 @@ export function registerServiceCommand(program: Command): void {
           process.stdout.write(chalk.gray('Service restarted to apply changes.\n'))
         }
       } catch (e) {
-        spinner.fail('Failed to detach secrets')
+        spinner.stop()
         throw e
       }
     })

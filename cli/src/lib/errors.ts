@@ -6,6 +6,8 @@ export class CliError extends Error {
   exitCode: number
   cause?: Error
   responseBody?: unknown
+  /** When true, exitWithError skips printing — the message was already shown (e.g. via spinner.fail). */
+  displayed?: boolean
 
   constructor(message: string, exitCode = 1) {
     super(message)
@@ -45,7 +47,13 @@ export async function exitWithError(err: unknown): Promise<never> {
   // Flush PostHog before exiting
   await shutdownPostHog()
 
-  process.stderr.write(`${message}\n`)
+  // Skip printing if the error was already shown (e.g. by spinner.fail)
+  const alreadyDisplayed =
+    (err instanceof CliError && err.displayed) ||
+    (err instanceof Error && (err as Error & { _displayed?: boolean })._displayed)
+  if (!alreadyDisplayed) {
+    process.stderr.write(`${message}\n`)
+  }
   if (err instanceof CliError) {
     process.exit(err.exitCode)
   }

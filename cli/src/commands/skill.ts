@@ -8,7 +8,6 @@ import { publicRequest, ApiError, getOrg, listMyAgents, reportInstall, getPublic
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { trackInstall, computeHash, untrackInstall, type InstalledAgent } from '../lib/installed'
-import { isPaidAgent, formatPrice } from '../lib/pricing'
 import type { Agent, AgentTypeValue, PublicAgent, ResolvedConfig } from '../types'
 import packageJson from '../../package.json'
 
@@ -101,63 +100,6 @@ async function downloadSkillWithFallback(
     }
   }
 
-  // Check if paid skill BEFORE attempting download
-  if (skillMeta && isPaidAgent(skillMeta)) {
-    // Paid skill - check ownership
-    if (config.apiKey) {
-      const callerOrg = await getOrg(config, workspaceId)
-      const isOwner = (skillMeta.org_id && callerOrg.id === skillMeta.org_id) ||
-                      (skillMeta.org_slug && callerOrg.slug === skillMeta.org_slug)
-
-      if (isOwner) {
-        // Owner - fetch from authenticated endpoint with full content
-        const myAgents = await listMyAgents(config, workspaceId)
-        const matching = myAgents.filter(a => a.name === skill && a.type === 'skill')
-
-        if (matching.length > 0) {
-          let targetAgent: Agent
-          if (version === 'latest') {
-            targetAgent = matching.sort((a, b) =>
-              new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-            )[0]
-          } else {
-            const found = matching.find(a => a.version === version)
-            if (!found) {
-              throw new ApiError(`Skill '${org}/${skill}@${version}' not found`, 404)
-            }
-            targetAgent = found
-          }
-
-          // Fetch full skill data with prompt from authenticated endpoint
-          const skillData = await request<Agent>(config, 'GET', `/agents/${targetAgent.id}`)
-
-          // Convert Agent to SkillDownload format
-          return {
-            type: skillData.type,
-            name: skillData.name,
-            version: skillData.version,
-            description: skillData.description,
-            prompt: skillData.prompt,
-          }
-        }
-      } else {
-        // Non-owner - block with helpful message
-        const price = formatPrice(skillMeta)
-        throw new CliError(
-          `This skill is paid (${price}) and can only be used on the server.\n\n` +
-          `Paid skills are loaded automatically during server execution.`
-        )
-      }
-    } else {
-      // Not authenticated - block
-      const price = formatPrice(skillMeta)
-      throw new CliError(
-        `This skill is paid (${price}) and can only be used on the server.\n\n` +
-        `Paid skills are loaded automatically during server execution.`
-      )
-    }
-  }
-
   // Check if download is disabled (server-only skill)
   if (skillMeta && skillMeta.allow_local_download === false) {
     if (config.apiKey) {
@@ -212,13 +154,6 @@ async function downloadSkillWithFallback(
       // If download fails but metadata exists, it might be a 403 for other reasons
       if (err instanceof ApiError && err.status === 403) {
         const payload = err.payload as any
-        if (payload?.error?.code === 'PAID_AGENT_SERVER_ONLY') {
-          const price = payload.error.price_per_call_cents || 0
-          throw new CliError(
-            `This skill costs $${(price/100).toFixed(2)}/call and runs on server only.\n\n` +
-            `Use: orchagent run ${org}/${skill}@${version} --data '{...}'`
-          )
-        }
         if (payload?.error?.code === 'DOWNLOAD_DISABLED') {
           throw new CliError(
             `This skill is server-only and cannot be downloaded.\n\n` +

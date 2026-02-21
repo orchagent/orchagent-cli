@@ -788,7 +788,7 @@ Skill prompt.`
 
       await program.parseAsync(['node', 'test', 'publish'])
 
-      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Published skill'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Published'))
       expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('test-org/output-skill'))
       // Version comes from server response, not from metadata in SKILL.md
     })

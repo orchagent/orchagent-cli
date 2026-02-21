@@ -18,7 +18,6 @@ import {
   request,
   getAgentWithFallback,
   safeFetchWithRetryForCalls,
-  getCreditsBalance,
   resolveWorkspaceIdForOrg,
 } from '../lib/api'
 import { CliError, jsonInputError, ExitCodes } from '../lib/errors'
@@ -36,7 +35,6 @@ import {
   PROVIDER_ENV_VARS,
 } from '../lib/llm'
 import { track } from '../lib/analytics'
-import { isPaidAgent, formatPrice } from '../lib/pricing'
 import packageJson from '../../package.json'
 import type { ResolvedConfig, PublicAgent, Agent } from '../types'
 
@@ -544,19 +542,12 @@ async function downloadAgent(
         }
 
         // Non-owner - block with helpful message
-        if (errorCode === 'PAID_AGENT_SERVER_ONLY') {
-          const price = payload.error.price_per_call_cents || 0
-          const priceStr = price ? `$${(price / 100).toFixed(2)}/call` : 'PAID'
-          throw new CliError(
-            `This agent is paid (${priceStr}) and runs on server only.\n\n` +
-            `Run without --local: orch run ${org}/${agent}@${version} --data '{...}'`
-          )
-        } else {
-          throw new CliError(
-            `This agent is server-only and cannot be downloaded.\n\n` +
-            `Run without --local: orch run ${org}/${agent}@${version} --data '{...}'`
-          )
-        }
+        // Use the gateway message which has the correct type label (agent/tool/skill/prompt)
+        const serverMsg = payload?.error?.message || 'This agent is server-only.'
+        throw new CliError(
+          `${serverMsg}\n\n` +
+          `Run without --local: orch run ${org}/${agent}@${version} --data '{...}'`
+        )
       }
     }
     if (!(err instanceof ApiError) || err.status !== 404) throw err
@@ -2084,56 +2075,6 @@ async function executeCloud(
     }
   }
 
-  // Pre-call balance check for paid agents
-  let pricingInfo: { price_cents: number | null } | undefined
-  if (isPaidAgent(agentMeta)) {
-    let isOwner = false
-    try {
-      const callerOrg = await getOrg(resolved, workspaceId)
-      const agentOrgId = agentMeta.org_id
-      const agentOrgSlug = agentMeta.org_slug
-      if (agentOrgId && callerOrg.id === agentOrgId) {
-        isOwner = true
-      } else if (agentOrgSlug && callerOrg.slug === agentOrgSlug) {
-        isOwner = true
-      }
-    } catch {
-      isOwner = false
-    }
-
-    if (isOwner) {
-      if (!options.json) process.stderr.write(`Cost: FREE (author)\n\n`)
-    } else {
-      const price = agentMeta.price_per_call_cents
-      pricingInfo = { price_cents: price ?? null }
-
-      if (!price || price <= 0) {
-        if (!options.json) process.stderr.write(`Warning: Pricing data unavailable. The server will verify payment.\n\n`)
-      } else {
-        try {
-          const balanceData = await getCreditsBalance(resolved)
-          const balance = balanceData.balance_cents
-
-          if (balance < price) {
-            process.stderr.write(
-              `Insufficient credits:\n` +
-              `  Balance:  $${(balance / 100).toFixed(2)}\n` +
-              `  Required: $${(price / 100).toFixed(2)}\n\n` +
-              `Add credits:\n` +
-              `  orch billing add 5\n` +
-              `  orch billing balance  # check current balance\n`
-            )
-            process.exit(ExitCodes.PERMISSION_DENIED)
-          }
-
-          if (!options.json) process.stderr.write(`Cost: $${(price / 100).toFixed(2)}/call\n\n`)
-        } catch (err) {
-          if (!options.json) process.stderr.write(`Warning: Could not verify balance. The server will check payment.\n\n`)
-        }
-      }
-    }
-  }
-
   const endpoint =
     options.endpoint?.trim() || agentMeta.default_endpoint || 'analyze'
 
@@ -2427,7 +2368,7 @@ async function executeCloud(
       ...(timeoutMs ? { timeoutMs } : {}),
     })
   } catch (err) {
-    spinner?.fail(`Run failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    spinner?.stop()
     throw err
   }
 
@@ -2445,24 +2386,8 @@ async function executeCloud(
         ? (payload as { error?: { code?: string } }).error?.code
         : undefined
 
-    if (response.status === 402 || errorCode === 'INSUFFICIENT_CREDITS') {
-      spinner?.fail('Insufficient credits')
-      let errorMessage = 'Insufficient credits to run this agent.\n\n'
-
-      if (pricingInfo?.price_cents) {
-        errorMessage += `This agent costs $${(pricingInfo.price_cents / 100).toFixed(2)} per call.\n\n`
-      }
-
-      errorMessage +=
-        'Add credits:\n' +
-        '  orch billing add 5\n' +
-        '  orch billing balance  # check current balance\n'
-
-      throw new CliError(errorMessage, ExitCodes.PERMISSION_DENIED)
-    }
-
     if (errorCode === 'CLI_VERSION_TOO_OLD') {
-      spinner?.fail('CLI version too old')
+      spinner?.stop()
       const minVersion =
         typeof payload === 'object' && payload
           ? (payload as { error?: { min_version?: string } }).error?.min_version
@@ -2475,7 +2400,7 @@ async function executeCloud(
     }
 
     if (errorCode === 'LLM_KEY_REQUIRED') {
-      spinner?.fail('LLM key required')
+      spinner?.stop()
       throw new CliError(
         'This public agent requires you to provide an LLM key.\n' +
           'Use --key <key> --provider <provider> or set OPENAI_API_KEY/ANTHROPIC_API_KEY env var.'
@@ -2487,7 +2412,7 @@ async function executeCloud(
         typeof payload === 'object' && payload
           ? (payload as { error?: { message?: string } }).error?.message || 'Rate limit exceeded'
           : 'Rate limit exceeded'
-      spinner?.fail('Rate limited by LLM provider')
+      spinner?.stop()
       throw new CliError(
         rateLimitMsg + '\n\n' +
           'This is the LLM provider\'s rate limit on your API key, not an OrchAgent limit.\n' +
@@ -2511,7 +2436,7 @@ async function executeCloud(
     const refSuffix = requestId ? `\n\nref: ${requestId}` : ''
 
     if (errorCode === 'SANDBOX_ERROR') {
-      spinner?.fail('Agent execution failed')
+      spinner?.stop()
       const hint =
         typeof payload === 'object' && payload
           ? (payload as { error?: { hint?: string } }).error?.hint
@@ -2526,7 +2451,7 @@ async function executeCloud(
     }
 
     if (errorCode === 'SANDBOX_TIMEOUT') {
-      spinner?.fail('Agent timed out')
+      spinner?.stop()
       throw new CliError(
         `${message}\n\n` +
         `The agent did not complete in time. Try:\n` +
@@ -2538,7 +2463,7 @@ async function executeCloud(
     }
 
     if (errorCode === 'MISSING_SECRETS') {
-      spinner?.fail('Missing workspace secrets')
+      spinner?.stop()
 
       // Extract secret names from gateway message:
       // "Agent requires secret(s) not found in workspace: NAME1, NAME2. Add them in Settings > Secrets."
@@ -2572,7 +2497,7 @@ async function executeCloud(
     }
 
     if (response.status >= 500) {
-      spinner?.fail(`Server error (${response.status})`)
+      spinner?.stop()
       throw new CliError(
         `${message}\n\n` +
         `This is a platform error — try again in a moment.\n` +
@@ -2581,7 +2506,7 @@ async function executeCloud(
       )
     }
 
-    spinner?.fail(`Run failed: ${message}`)
+    spinner?.stop()
     throw new CliError(message + refSuffix)
   }
 
@@ -2671,10 +2596,6 @@ async function executeCloud(
   }
 
   spinner?.succeed(`Ran ${org}/${parsed.agent}@${parsed.version}`)
-
-  if (!options.json && isPaidAgent(agentMeta) && pricingInfo?.price_cents && pricingInfo.price_cents > 0) {
-    process.stderr.write(`\nCost: $${(pricingInfo.price_cents / 100).toFixed(2)} USD\n`)
-  }
 
   const inputType =
     hasInjection
@@ -3138,13 +3059,6 @@ Examples:
     orch run orchagent/leak-finder --local --data '{"path": "."}'
     orch run joe/summarizer --local --data '{"text": "Hello world"}'
     orch run orchagent/leak-finder --local --download-only
-
-Paid Agents:
-  Paid agents charge per call and deduct from your prepaid credits.
-  Check your balance: orch billing balance
-  Add credits: orch billing add 5
-
-  Same-author calls are FREE - you won't be charged for calling your own agents.
 
 File handling (cloud):
   For prompt agents, file content is read and sent as JSON mapped to the agent's

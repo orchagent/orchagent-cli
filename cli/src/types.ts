@@ -50,10 +50,7 @@ export type PublicAgent = {
   // Schema fields (returned by detail endpoint)
   input_schema?: object
   output_schema?: object
-  // Pricing fields
   org_id?: string
-  pricing_mode?: 'free' | 'per_call' | null
-  price_per_call_cents?: number | null
   allow_local_download?: boolean
 }
 
@@ -169,8 +166,6 @@ export type Agent = {
   required_secrets?: string[]
   default_skills?: string[]
   skills_locked?: boolean
-  pricing_mode?: 'free' | 'per_call' | null
-  price_per_call_cents?: number | null
   allow_local_download?: boolean
 }
 

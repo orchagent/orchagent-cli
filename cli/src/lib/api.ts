@@ -745,46 +745,6 @@ export async function setWorkspaceDefaultEnvironment(
 }
 
 // ============================================
-// BILLING API TYPES AND FUNCTIONS
-// ============================================
-
-// Billing API types
-export interface CreditTransaction {
-  amount_cents: number
-  balance_after_cents: number
-  transaction_type: string
-  created_at: string
-  reference_id?: string
-}
-
-export interface CreditsBalanceResponse {
-  balance_cents: number
-  recent_transactions: CreditTransaction[]
-}
-
-export interface CreateCreditCheckoutResponse {
-  checkout_url: string
-  session_id: string
-}
-
-// Billing API functions
-export async function getCreditsBalance(
-  config: ResolvedConfig
-): Promise<CreditsBalanceResponse> {
-  return request<CreditsBalanceResponse>(config, 'GET', '/billing/credits')
-}
-
-export async function createCreditCheckout(
-  config: ResolvedConfig,
-  amountCents: number
-): Promise<CreateCreditCheckoutResponse> {
-  return request<CreateCreditCheckoutResponse>(config, 'POST', '/billing/add-credits', {
-    body: JSON.stringify({ amount_cents: amountCents }),
-    headers: { 'Content-Type': 'application/json' },
-  })
-}
-
-// ============================================
 // AGENT SERVICE KEY MANAGEMENT
 // ============================================
 

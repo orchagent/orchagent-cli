@@ -28,10 +28,6 @@ vi.mock('../lib/api', () => {
     resolveWorkspaceIdForOrg: vi.fn().mockResolvedValue(undefined),
   }
 })
-vi.mock('../lib/pricing', () => ({
-  isPaidAgent: vi.fn().mockReturnValue(false),
-  formatPrice: vi.fn().mockReturnValue('FREE'),
-}))
 
 import { registerInfoCommand } from './info'
 import { getResolvedConfig } from '../lib/config'

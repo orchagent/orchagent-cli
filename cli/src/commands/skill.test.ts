@@ -54,10 +54,6 @@ vi.mock('../lib/api', () => {
 vi.mock('../lib/analytics', () => ({
   track: vi.fn().mockResolvedValue(undefined),
 }))
-vi.mock('../lib/pricing', () => ({
-  isPaidAgent: vi.fn().mockReturnValue(false),
-  formatPrice: vi.fn().mockReturnValue('FREE'),
-}))
 vi.mock('../lib/installed', () => ({
   trackInstall: vi.fn().mockResolvedValue(undefined),
   computeHash: vi.fn().mockReturnValue('hash123'),

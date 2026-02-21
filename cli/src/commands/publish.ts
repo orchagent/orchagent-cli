@@ -513,7 +513,7 @@ export function registerPublishCommand(program: Command): void {
           const skillAgentId = skillResult.agent?.id
 
           await track('cli_publish', { agent_type: 'skill', multi_file: hasMultipleFiles })
-          process.stdout.write(`\nPublished skill: ${org.slug}/${skillData.frontmatter.name}@${skillVersion}\n`)
+          process.stdout.write(`\n${chalk.green('✔')} Published ${org.slug}/${skillData.frontmatter.name}@${skillVersion} successfully!\n\n`)
           if (hasMultipleFiles) {
             process.stdout.write(`Files: ${skillFiles.length} files included\n`)
           }
@@ -742,6 +742,7 @@ export function registerPublishCommand(program: Command): void {
 
       let agentUrl = options.url
       let shouldUploadBundle = false
+      let servicesUpdated = 0
       let runtimeConfig: Record<string, unknown> | undefined
       let bundleEntrypoint = manifest.entrypoint
 
@@ -1121,9 +1122,9 @@ export function registerPublishCommand(program: Command): void {
             }
           }
 
-          // Show service auto-update info
+          // Store service update count for success message
           if (uploadResult.services_updated && uploadResult.services_updated > 0) {
-            process.stdout.write(`  ${chalk.green(`Updated ${uploadResult.services_updated} service(s) to ${assignedVersion}`)}\n`)
+            servicesUpdated = uploadResult.services_updated
           }
         } finally {
           // Clean up temp files
@@ -1138,7 +1139,11 @@ export function registerPublishCommand(program: Command): void {
         callable,
         hosted: shouldUploadBundle,
       })
-      process.stdout.write(`\nPublished agent: ${org.slug}/${manifest.name}@${assignedVersion}\n`)
+      process.stdout.write(`\n${chalk.green('✔')} Published ${org.slug}/${manifest.name}@${assignedVersion} successfully!\n`)
+      if (servicesUpdated > 0) {
+        process.stdout.write(`${chalk.green('✔')} Updated ${servicesUpdated} running service(s) to ${assignedVersion} successfully!\n`)
+      }
+      process.stdout.write(`\n`)
       process.stdout.write(`Type: ${canonicalType}\n`)
       process.stdout.write(`Run mode: ${runMode}\n`)
       process.stdout.write(`Execution engine: ${executionEngine}${shouldUploadBundle ? ' (hosted)' : ''}\n`)

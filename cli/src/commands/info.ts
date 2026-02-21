@@ -4,7 +4,6 @@ import chalk from 'chalk'
 import { getResolvedConfig } from '../lib/config'
 import { ApiError, getOrg, listMyAgents, getPublicAgent, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
-import { isPaidAgent, formatPrice } from '../lib/pricing'
 import type { AgentTypeValue } from '../types'
 
 type SchemaProperty = {
@@ -33,8 +32,6 @@ type AgentDownload = {
   output_schema?: Schema
   sdk_compatible?: boolean
   prompt?: string
-  pricing_mode?: 'free' | 'per_call' | null
-  price_per_call_cents?: number | null
 }
 
 function formatSchema(schema: Schema, indent: string = '  '): string {
@@ -108,8 +105,6 @@ async function getAgentInfo(
       source_url: meta.source_url as string | undefined,
       run_command: meta.run_command as string | undefined,
       url: meta.url as string | undefined,
-      pricing_mode: publicMeta.pricing_mode,
-      price_per_call_cents: publicMeta.price_per_call_cents,
     }
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 404) throw err
@@ -157,15 +152,13 @@ async function getAgentInfo(
     source_url: targetAgent.source_url,
     run_command: targetAgent.run_command,
     url: targetAgent.url,
-    pricing_mode: targetAgent.pricing_mode,
-    price_per_call_cents: targetAgent.price_per_call_cents,
   }
 }
 
 export function registerInfoCommand(program: Command): void {
   program
     .command('info <agent>')
-    .description('Show agent details including pricing, inputs, and outputs')
+    .description('Show agent details including inputs and outputs')
     .option('--json', 'Output as JSON')
     .action(async (agentArg: string, options: { json?: boolean }) => {
       const config = await getResolvedConfig()
@@ -201,17 +194,6 @@ export function registerInfoCommand(program: Command): void {
         process.stdout.write(`Callable: ${chalk.green('yes')} — other agents can invoke this via the orchagent SDK\n`)
       }
       process.stdout.write(`Providers: ${agentData.supported_providers.join(', ')}\n`)
-
-      // Display pricing information
-      const priceStr = formatPrice(agentData)
-      const color = isPaidAgent(agentData) ? chalk.yellow : chalk.green
-      process.stdout.write(`Price: ${color(priceStr)}\n`)
-
-      // If paid, show server-only message for non-owners
-      if (isPaidAgent(agentData)) {
-        process.stdout.write(chalk.gray('Note: Paid agents run on server only (use orch run)\n'))
-        process.stdout.write(chalk.gray('      Owners can still download for development/testing\n'))
-      }
 
       if (agentData.type === 'tool') {
         // Don't show internal routing URLs - they confuse users
