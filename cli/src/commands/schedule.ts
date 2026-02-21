@@ -80,7 +80,7 @@ interface ScheduleResponse {
 interface TriggerResponse {
   run_id: string
   status: string
-  duration_ms: number
+  duration_ms: number | null
   output: unknown
   error: string | null
 }
@@ -133,6 +133,8 @@ function statusColor(status: string | null): string {
     case 'completed': return chalk.green(status)
     case 'failed': return chalk.red(status)
     case 'running': return chalk.yellow(status)
+    case 'queued': return chalk.cyan(status)
+    case 'deduplicated': return chalk.dim(status)
     default: return status
   }
 }
@@ -510,10 +512,19 @@ export function registerScheduleCommand(program: Command): void {
         } : {}
       )
 
-      process.stdout.write(chalk.green('\u2713') + ` Run completed\n\n`)
+      // Status-aware header message
+      const isAsync = result.status === 'queued' || result.status === 'deduplicated'
+      if (isAsync) {
+        process.stdout.write(chalk.cyan('\u2713') + ` Run ${result.status}\n\n`)
+      } else if (result.status === 'failed' || result.status === 'timeout') {
+        process.stdout.write(chalk.red('\u2717') + ` Run ${result.status}\n\n`)
+      } else {
+        process.stdout.write(chalk.green('\u2713') + ` Run completed\n\n`)
+      }
+
       process.stdout.write(`  Run ID:   ${result.run_id}\n`)
       process.stdout.write(`  Status:   ${statusColor(result.status)}\n`)
-      process.stdout.write(`  Duration: ${result.duration_ms}ms\n`)
+      process.stdout.write(`  Duration: ${result.duration_ms != null ? `${result.duration_ms}ms` : 'pending'}\n`)
 
       if (result.error) {
         process.stdout.write(`  Error:    ${chalk.red(result.error)}\n`)

@@ -44,7 +44,6 @@ export type PublicAgent = {
   execution_engine?: AgentExecutionEngine | null
   callable?: boolean
   description?: string | null
-  stars_count?: number
   tags?: string[]
   supported_providers?: LlmProvider[]
   // Schema fields (returned by detail endpoint)
@@ -144,7 +143,6 @@ export type Agent = {
   execution_engine?: AgentExecutionEngine | null
   callable?: boolean
   description?: string
-  stars_count?: number
   tags?: string[]
   supported_providers?: LlmProvider[]
   created_at: string

@@ -185,3 +185,47 @@ describe('Bug 8: Skill install - duplicate frontmatter stripping', () => {
     expect(content).toContain('Do something useful.')
   })
 })
+
+describe('UX-11: Skill list — no dead marketplace references', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let exitSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerSkillCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    exitSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('does not reference /explore page in skill list output', async () => {
+    try {
+      await program.parseAsync(['node', 'test', 'skill', 'list'])
+    } catch {
+      // Expected — process.exit mock throws
+    }
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).not.toContain('/explore')
+    expect(output).not.toContain('discover')
+  })
+
+  it('shows install instructions in skill list output', async () => {
+    try {
+      await program.parseAsync(['node', 'test', 'skill', 'list'])
+    } catch {
+      // Expected — process.exit mock throws
+    }
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('orch skill install')
+  })
+})

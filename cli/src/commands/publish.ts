@@ -478,7 +478,7 @@ export function registerPublishCommand(program: Command): void {
         if (ws.slug === 'orchagent-public' && !options.dryRun) {
           process.stderr.write(
             chalk.red.bold('\n  PUBLIC WORKSPACE\n') +
-            chalk.red(`  Everything published to "${ws.slug}" is publicly visible on orchagent.io/explore.\n\n`)
+            chalk.red(`  Everything published to "${ws.slug}" is publicly visible on orchagent.io.\n\n`)
           )
           const readline = await import('readline/promises')
           const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
@@ -624,6 +624,11 @@ export function registerPublishCommand(program: Command): void {
       }
       if (runMode === 'always_on' && executionEngine === 'direct_llm') {
         throw new CliError('run_mode=always_on requires runtime.command or loop configuration')
+      }
+      if (manifest.timeout_seconds !== undefined) {
+        if (!Number.isInteger(manifest.timeout_seconds) || manifest.timeout_seconds <= 0) {
+          throw new CliError('timeout_seconds must be a positive integer')
+        }
       }
 
       // Warn about deprecated prompt field
@@ -1056,6 +1061,7 @@ export function registerPublishCommand(program: Command): void {
           is_public: false,
           supported_providers: supportedProviders,
           default_models: manifest.default_models,
+          timeout_seconds: manifest.timeout_seconds,
           // Local run fields for code runtime agents
           source_url: manifest.source_url,
           pip_package: manifest.pip_package,

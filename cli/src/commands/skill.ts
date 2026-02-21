@@ -225,11 +225,11 @@ export function registerSkillCommand(program: Command): void {
     .option('--json', 'Output raw JSON')
     .action(async () => {
       process.stdout.write(
-        'Browse and discover skills at: https://orchagent.io/explore\n\n' +
         'Install a skill:\n' +
         '  orch skill install <org>/<skill-name>\n\n' +
         'View installed skills:\n' +
-        '  orch update --check\n'
+        '  orch update --check\n\n' +
+        'Learn more: https://docs.orchagent.io/skills\n'
       )
       process.exit(0)
     })

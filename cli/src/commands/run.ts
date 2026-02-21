@@ -2799,9 +2799,12 @@ async function executeLocal(
       return
     }
 
+    // Resolve @file.json / @- stdin syntax before parsing
+    const resolvedInput = await resolveJsonBody(options.input)
+
     let agentInputData: Record<string, unknown>
     try {
-      agentInputData = JSON.parse(options.input) as Record<string, unknown>
+      agentInputData = JSON.parse(resolvedInput) as Record<string, unknown>
     } catch {
       throw new CliError('Invalid JSON input')
     }

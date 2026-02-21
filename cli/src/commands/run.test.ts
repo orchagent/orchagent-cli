@@ -733,6 +733,120 @@ describe('Bug 2: orch run . --local for local directories', () => {
   })
 })
 
+describe('BUG-18: @file syntax broken in local mode', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+    mockFs.mkdir.mockResolvedValue(undefined)
+    mockFs.writeFile.mockResolvedValue(undefined)
+    mockFs.rm.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('resolves @file.json in --data for local managed_loop agents', async () => {
+    // Agent download returns a managed_loop agent with prompt
+    mockPublicRequest.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      prompt: 'You are a test assistant. Process: {{task}}',
+      supported_providers: ['any'],
+    })
+
+    // Mock fs.stat for validateFilePath inside resolveJsonBody
+    mockFs.stat.mockResolvedValue({ isDirectory: () => false } as any)
+    // Mock fs.readFile for the @file read
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      if (filePath.toString() === '/tmp/input.json') {
+        return '{"task": "analyze this code"}' as any
+      }
+      return '' as any
+    })
+
+    // executeAgentLocally will be called — it imports dynamically, so mock the spawn
+    // We just need to verify it doesn't throw "Invalid JSON input" on @file syntax
+    // The test will fail in executeAgentLocally but that's fine — we're testing the
+    // @file resolution step, not the full agent execution
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent@v1',
+        '--local',
+        '--data', '@/tmp/input.json',
+      ])
+    } catch (err: any) {
+      // Should NOT throw "Invalid JSON input" — that means @file wasn't resolved
+      expect(err.message).not.toContain('Invalid JSON input')
+    }
+  })
+
+  it('rejects @file that points to a non-existent file in local mode', async () => {
+    mockPublicRequest.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      prompt: 'You are a test assistant.',
+      supported_providers: ['any'],
+    })
+
+    // File doesn't exist
+    mockFs.stat.mockRejectedValue(new Error('ENOENT'))
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent@v1',
+        '--local',
+        '--data', '@/tmp/nonexistent.json',
+      ])
+    ).rejects.toThrow() // Should throw file-not-found, not "Invalid JSON input"
+  })
+
+  it('still accepts raw JSON in --data for local mode', async () => {
+    mockPublicRequest.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      prompt: 'You are a test assistant.',
+      supported_providers: ['any'],
+    })
+
+    mockFs.stat.mockResolvedValue({ isDirectory: () => false } as any)
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent@v1',
+        '--local',
+        '--data', '{"task": "test"}',
+      ])
+    } catch (err: any) {
+      // Should NOT throw "Invalid JSON input" — raw JSON should still work
+      expect(err.message).not.toContain('Invalid JSON input')
+    }
+  })
+})
+
 describe('Bug 3: EISDIR validation on cloud runs', () => {
   let program: Command
   let stdoutSpy: ReturnType<typeof vi.spyOn>

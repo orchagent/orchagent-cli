@@ -355,6 +355,67 @@ describe('publish command', () => {
       )
     })
 
+    it('forwards timeout_seconds from manifest', async () => {
+      const manifest = {
+        name: 'timeout-agent',
+        version: 'v1',
+        type: 'prompt',
+        timeout_seconds: 5,
+      }
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        if (path.includes('orchagent.json')) {
+          return JSON.stringify(manifest)
+        }
+        if (path.includes('prompt.md')) {
+          return 'Handle input: {{input}}'
+        }
+        if (path.includes('schema.json')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      expect(mockCreateAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          timeout_seconds: 5,
+        }),
+        undefined
+      )
+    })
+
+    it('rejects invalid timeout_seconds values', async () => {
+      const manifest = {
+        name: 'invalid-timeout-agent',
+        version: 'v1',
+        type: 'prompt',
+        timeout_seconds: 0,
+      }
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        if (path.includes('orchagent.json')) {
+          return JSON.stringify(manifest)
+        }
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await expect(program.parseAsync(['node', 'test', 'publish'])).rejects.toThrow(
+        'timeout_seconds must be a positive integer'
+      )
+      expect(mockCreateAgent).not.toHaveBeenCalled()
+    })
+
     it('outputs service key when returned', async () => {
       const manifest = {
         name: 'service-agent',

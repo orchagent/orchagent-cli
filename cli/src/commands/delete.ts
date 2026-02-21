@@ -76,18 +76,12 @@ Examples:
 
       // Show agent info
       process.stdout.write(`\n${chalk.bold('Agent:')} ${selectedAgent.name}@${selectedAgent.version}\n`)
-      if (deleteCheck.stars_count > 0 || deleteCheck.fork_count > 0) {
-        process.stdout.write(`${chalk.bold('Stars:')} ${deleteCheck.stars_count}  ${chalk.bold('Forks:')} ${deleteCheck.fork_count}\n`)
-      }
       process.stdout.write('\n')
 
       // Handle dry-run
       if (options.dryRun) {
         process.stdout.write('\nDRY RUN - No changes will be made\n\n')
         process.stdout.write(`Would delete: ${selectedAgent.name}@${selectedAgent.version}\n`)
-        if (deleteCheck.stars_count > 0 || deleteCheck.fork_count > 0) {
-          process.stdout.write(chalk.yellow('Warning: This agent has stars or forks\n'))
-        }
         process.stdout.write(chalk.gray('\nData would be retained for 30 days before permanent deletion.\n'))
         process.stdout.write('\nNo changes made (dry run)\n')
         return
@@ -96,7 +90,7 @@ Examples:
       // Handle confirmation
       if (!options.yes) {
         if (deleteCheck.requires_confirmation) {
-          process.stdout.write(chalk.yellow('Warning: This agent has stars or forks. Type the agent name to confirm deletion.\n\n'))
+          process.stdout.write(chalk.yellow('Warning: This agent requires extra confirmation. Type the agent name to confirm deletion.\n\n'))
           const confirmName = await promptText(`Type "${selectedAgent.name}" to confirm deletion: `)
 
           if (confirmName !== selectedAgent.name) {

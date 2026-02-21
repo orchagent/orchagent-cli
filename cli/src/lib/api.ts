@@ -300,6 +300,7 @@ export async function createAgent(
     is_public?: boolean
     supported_providers?: string[]
     default_models?: Record<string, string>
+    timeout_seconds?: number
     // Local run support for tool agents
     source_url?: string
     pip_package?: string
@@ -527,7 +528,7 @@ export async function downloadCodeBundleAuthenticated(
 export async function checkAgentDelete(
   config: ResolvedConfig,
   agentId: string
-): Promise<{ agent_id: string; agent_name: string; stars_count: number; fork_count: number; requires_confirmation: boolean }> {
+): Promise<{ agent_id: string; agent_name: string; requires_confirmation: boolean }> {
   return request(config, 'GET', `/agents/${agentId}/delete-check`)
 }
 
