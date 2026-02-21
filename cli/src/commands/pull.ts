@@ -86,9 +86,12 @@ function parsePullRef(value: string): PullAgentRef {
   throw new CliError('Invalid agent reference. Use org/agent[@version] or agent[@version] format.')
 }
 
-function canonicalType(typeValue: string | undefined): 'agent' | 'skill' {
+function canonicalType(typeValue: string | undefined): string {
   const normalized = (typeValue || 'agent').toLowerCase()
-  return normalized === 'skill' ? 'skill' : 'agent'
+  if (['prompt', 'tool', 'agent', 'skill'].includes(normalized)) return normalized
+  if (normalized === 'code') return 'tool'
+  if (normalized === 'agentic') return 'agent'
+  return 'agent'
 }
 
 function resolveEngine(data: PullData): 'direct_llm' | 'managed_loop' | 'code_runtime' {
@@ -294,7 +297,7 @@ function buildManifest(data: PullData): Record<string, unknown> {
   const manifest: Record<string, unknown> = {
     name: data.name,
     description: data.description || '',
-    type: canonicalType(data.type) === 'skill' ? 'skill' : 'agent',
+    type: canonicalType(data.type),
   }
 
   if (data.run_mode) manifest.run_mode = data.run_mode

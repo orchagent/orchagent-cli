@@ -216,20 +216,20 @@ async function downloadSkillWithFallback(
 
 export function registerSkillCommand(program: Command): void {
   const skill = program.command('skill').description('Manage and install skills')
+  skill.action(() => { skill.help() })
 
-  // orch skill list (deprecated)
+  // orch skill list
   skill
     .command('list')
-    .description('(Deprecated) Use "orchagent search --type skills" instead')
+    .description('Browse available skills')
     .option('--json', 'Output raw JSON')
     .action(async () => {
       process.stdout.write(
-        'The "skill list" command has been replaced by "search".\n\n' +
-        'Usage:\n' +
-        '  orchagent search <query> --type skills   Search skills by keyword\n' +
-        '  orchagent search --popular --type skills Top skills by stars\n' +
-        '  orchagent search --recent --type skills  Most recently published\n\n' +
-        'View all skills at: https://orchagent.io/explore\n'
+        'Browse and discover skills at: https://orchagent.io/explore\n\n' +
+        'Install a skill:\n' +
+        '  orch skill install <org>/<skill-name>\n\n' +
+        'View installed skills:\n' +
+        '  orch update --check\n'
       )
       process.exit(0)
     })

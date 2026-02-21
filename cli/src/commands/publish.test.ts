@@ -19,7 +19,7 @@ vi.mock('../lib/api')
 vi.mock('../lib/bundle')
 
 import fs from 'fs/promises'
-import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, checkDependencies, detectSdkCompatible } from './publish'
+import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, scanReservedPort, checkDependencies, detectSdkCompatible } from './publish'
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { createAgent, getOrg, previewAgentVersion, uploadCodeBundle, request, getPublicAgent } from '../lib/api'
 import { detectEntrypoint, createCodeBundle, validateBundle, previewBundle } from '../lib/bundle'
@@ -119,7 +119,7 @@ describe('publish command', () => {
           name: 'my-agent',
           type: 'prompt',
           run_mode: 'on_demand',
-          callable: false,
+          callable: true,
           description: 'Test agent',
           prompt: 'You are a helpful assistant.\n\nAnalyze: {{input}}',
           url: 'https://prompt-agent.internal',
@@ -570,6 +570,142 @@ describe('publish command', () => {
         undefined
       )
     })
+
+    describe('execution_engine inference', () => {
+      it('infers managed_loop for type=agent even without custom_tools or max_turns', async () => {
+        const manifest = {
+          name: 'plain-agent',
+          version: 'v1',
+          type: 'agent',
+          description: 'Agent with no custom_tools or max_turns',
+          required_secrets: [],
+        }
+
+        mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+          const path = String(filePath)
+          if (path.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          if (path.includes('orchagent.json')) return JSON.stringify(manifest)
+          if (path.includes('prompt.md')) return 'You are an agent.'
+          if (path.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          throw new Error(`Unexpected file: ${path}`)
+        })
+
+        await program.parseAsync(['node', 'test', 'publish'])
+
+        // Should send loop config with default max_turns (managed_loop behavior)
+        expect(mockCreateAgent).toHaveBeenCalledWith(
+          expect.any(Object),
+          expect.objectContaining({
+            type: 'agent',
+            loop: expect.objectContaining({ max_turns: 25 }),
+          }),
+          undefined
+        )
+        // Should display managed_loop in output
+        const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+        expect(allOutput).toContain('Execution engine: managed_loop')
+      })
+
+      it('infers managed_loop for type=agent with top-level custom_tools', async () => {
+        const manifest = {
+          name: 'tools-agent',
+          version: 'v1',
+          type: 'agent',
+          description: 'Agent with custom_tools',
+          required_secrets: [],
+          custom_tools: [
+            { name: 'get_stats', description: 'Get stats', command: 'joe/stats-tool@v1' },
+          ],
+        }
+
+        mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+          const path = String(filePath)
+          if (path.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          if (path.includes('orchagent.json')) return JSON.stringify(manifest)
+          if (path.includes('prompt.md')) return 'You are an orchestrator.'
+          if (path.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          throw new Error(`Unexpected file: ${path}`)
+        })
+
+        await program.parseAsync(['node', 'test', 'publish'])
+
+        expect(mockCreateAgent).toHaveBeenCalledWith(
+          expect.any(Object),
+          expect.objectContaining({
+            type: 'agent',
+            loop: expect.objectContaining({
+              custom_tools: manifest.custom_tools,
+            }),
+          }),
+          undefined
+        )
+      })
+
+      it('infers managed_loop for type=agent with loop.custom_tools', async () => {
+        const manifest = {
+          name: 'loop-agent',
+          version: 'v1',
+          type: 'agent',
+          description: 'Agent with loop config',
+          required_secrets: [],
+          loop: {
+            custom_tools: [
+              { name: 'scan', description: 'Scan code', command: 'joe/scanner@v1' },
+            ],
+            max_turns: 10,
+          },
+        }
+
+        mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+          const path = String(filePath)
+          if (path.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          if (path.includes('orchagent.json')) return JSON.stringify(manifest)
+          if (path.includes('prompt.md')) return 'You are a scanner.'
+          if (path.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          throw new Error(`Unexpected file: ${path}`)
+        })
+
+        await program.parseAsync(['node', 'test', 'publish'])
+
+        expect(mockCreateAgent).toHaveBeenCalledWith(
+          expect.any(Object),
+          expect.objectContaining({
+            type: 'agent',
+            loop: expect.objectContaining({ max_turns: 10 }),
+          }),
+          undefined
+        )
+      })
+
+      it('infers direct_llm for type=prompt', async () => {
+        const manifest = {
+          name: 'prompt-agent',
+          version: 'v1',
+          type: 'prompt',
+          description: 'A prompt agent',
+        }
+
+        mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+          const path = String(filePath)
+          if (path.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          if (path.includes('orchagent.json')) return JSON.stringify(manifest)
+          if (path.includes('prompt.md')) return 'You are helpful.'
+          if (path.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          throw new Error(`Unexpected file: ${path}`)
+        })
+
+        await program.parseAsync(['node', 'test', 'publish'])
+
+        // Should NOT have loop config
+        expect(mockCreateAgent).toHaveBeenCalledWith(
+          expect.any(Object),
+          expect.not.objectContaining({ loop: expect.anything() }),
+          undefined
+        )
+        const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+        expect(allOutput).toContain('Execution engine: direct_llm')
+      })
+    })
   })
 
   describe('extractTemplateVariables', () => {
@@ -679,6 +815,30 @@ Skill content here.`
       expect(callArgs.name).toBe('simple-skill')
       expect(callArgs.type).toBe('skill')
       expect(callArgs).not.toHaveProperty('version')
+    })
+
+    it('sends callable=false for skills (BUG-001 regression)', async () => {
+      const skillMd = `---
+name: bug-001-skill
+description: Reproduces BUG-001 callable regression
+---
+Skill content here.`
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) {
+          return skillMd
+        }
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      const callArgs = mockCreateAgent.mock.calls[0][1]
+      expect(callArgs.type).toBe('skill')
+      // BUG-001: CLI was not sending callable field for skills.
+      // Gateway defaults callable to true, then rejects skills with callable=true.
+      expect(callArgs.callable).toBe(false)
     })
 
     it('falls back to manifest if SKILL.md has no frontmatter', async () => {
@@ -1377,6 +1537,104 @@ describe('scanUndeclaredEnvVars', () => {
   })
 })
 
+describe('scanReservedPort', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('detects Python app.run(port=8080)', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'server.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('app.run(host="0.0.0.0", port=8080)')
+
+    expect(await scanReservedPort('/test')).toBe(true)
+  })
+
+  it('detects Python .listen(8080)', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('server.listen(8080)')
+
+    expect(await scanReservedPort('/test')).toBe(true)
+  })
+
+  it('detects Python PORT = 8080', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('PORT = 8080\napp.run(port=PORT)')
+
+    expect(await scanReservedPort('/test')).toBe(true)
+  })
+
+  it('detects Python bind(("0.0.0.0", 8080))', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('sock.bind(("0.0.0.0", 8080))')
+
+    expect(await scanReservedPort('/test')).toBe(true)
+  })
+
+  it('detects JS app.listen(8080)', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'server.js', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('app.listen(8080, () => console.log("running"))')
+
+    expect(await scanReservedPort('/test')).toBe(true)
+  })
+
+  it('detects JS port: 8080', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'index.ts', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('const config = { port: 8080 }')
+
+    expect(await scanReservedPort('/test')).toBe(true)
+  })
+
+  it('returns false for port 3000', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'server.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.readFile.mockResolvedValue('app.run(host="0.0.0.0", port=3000)')
+
+    expect(await scanReservedPort('/test')).toBe(false)
+  })
+
+  it('returns false when no code files exist', async () => {
+    mockFs.readdir.mockResolvedValue([
+      { name: 'readme.md', isFile: () => true, isDirectory: () => false },
+    ] as any)
+
+    expect(await scanReservedPort('/test')).toBe(false)
+  })
+
+  it('handles directory read errors gracefully', async () => {
+    mockFs.readdir.mockRejectedValue(new Error('ENOENT'))
+
+    expect(await scanReservedPort('/test')).toBe(false)
+  })
+
+  it('scans subdirectories up to 2 levels deep', async () => {
+    mockFs.readdir.mockImplementation(async (dir: any) => {
+      if (String(dir) === '/test') {
+        return [{ name: 'lib', isFile: () => false, isDirectory: () => true }] as any
+      }
+      if (String(dir).endsWith('/lib')) {
+        return [{ name: 'app.py', isFile: () => true, isDirectory: () => false }] as any
+      }
+      return [] as any
+    })
+    mockFs.readFile.mockResolvedValue('app.run(port=8080)')
+
+    expect(await scanReservedPort('/test')).toBe(true)
+  })
+})
+
 describe('required_secrets enforcement (C-1)', () => {
   let program: Command
   let stdoutSpy: ReturnType<typeof vi.spyOn>
@@ -1459,6 +1717,67 @@ describe('required_secrets enforcement (C-1)', () => {
 
     const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(stderrOutput).toContain('must declare required_secrets')
+  })
+
+  it('allows tool type with explicit empty required_secrets array', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool agent',
+      required_secrets: [],
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123', bundle_size_bytes: 100,
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('required_secrets')
+  })
+
+  it('allows agent type with explicit empty required_secrets array', async () => {
+    const manifest = {
+      name: 'my-agent',
+      type: 'agent',
+      description: 'An agent',
+      runtime: { command: 'python main.py' },
+      required_secrets: [],
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123', bundle_size_bytes: 100,
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('required_secrets')
   })
 
   it('allows tool type with --no-required-secrets flag', async () => {
@@ -1894,7 +2213,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
     await program.parseAsync(['node', 'test', 'publish'])
 
     const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
-    expect(stderrOutput).toContain('not marked as callable')
+    expect(stderrOutput).toContain('callable: false')
     expect(stderrOutput).toContain('test-org/not-callable-worker@v1')
   })
 
@@ -1939,7 +2258,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
 
     const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(stderrOutput).not.toContain('Unpublished dependencies')
-    expect(stderrOutput).not.toContain('not marked as callable')
+    expect(stderrOutput).not.toContain('callable: false')
   })
 
   it('shows no dependency warnings when agent has no manifest dependencies', async () => {
@@ -1961,7 +2280,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
 
     const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(stderrOutput).not.toContain('Unpublished dependencies')
-    expect(stderrOutput).not.toContain('not marked as callable')
+    expect(stderrOutput).not.toContain('callable: false')
     // Should not have fetched agent list
     expect(mockRequest).not.toHaveBeenCalled()
   })

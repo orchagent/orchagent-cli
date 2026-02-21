@@ -41,14 +41,6 @@ export const claudeCodeAdapter: FormatAdapter = {
       return { canConvert: false, warnings, errors }
     }
 
-    // Warnings for fields that can't be fully mapped
-    if (agent.input_schema) {
-      warnings.push('input_schema will be described in the prompt body, not enforced')
-    }
-    if (agent.output_schema) {
-      warnings.push('output_schema will be described in the prompt body, not enforced')
-    }
-
     return { canConvert: true, warnings, errors }
   },
 
@@ -59,7 +51,11 @@ export const claudeCodeAdapter: FormatAdapter = {
     const frontmatter: Record<string, unknown> = {
       name: normalizedName,
       description: agent.description || `Delegatable agent: ${agent.name}`,
-      tools: 'Read, Glob, Grep', // Safe defaults - read-only
+    }
+
+    // Only include tools for agent-type (prompt and skill types are single LLM calls)
+    if (agent.type === 'agent') {
+      frontmatter.tools = 'Read, Glob, Grep' // Safe defaults - read-only
     }
 
     // Map model if specified

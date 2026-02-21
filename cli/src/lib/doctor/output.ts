@@ -57,7 +57,7 @@ function renderLlmSection(checks: CheckResult[], verbose: boolean): void {
     // Build location text
     let location: string
     if (serverVal === null) {
-      location = localVal ? 'Server unknown, local configured' : 'Server unknown, not local'
+      location = localVal ? 'Local configured (vault keys not checked)' : 'Not configured locally (vault keys used for cloud runs)'
     } else if (serverVal && localVal) {
       location = 'Configured (server + local)'
     } else if (serverVal) {

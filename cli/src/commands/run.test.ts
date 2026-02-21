@@ -1086,6 +1086,126 @@ describe('Bug 6: 500 error messages', () => {
     ).rejects.toThrow(/error in the agent's code/)
   })
 
+  it('shows platform issue message when SANDBOX_ERROR contains 403', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          message: 'orchagent-sdk error: HTTP 403 Forbidden when calling joe/text-stats-tool@v1',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_test456' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/platform configuration issue/)
+  })
+
+  it('shows platform issue message when SANDBOX_ERROR contains 401 proxy token', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          message: 'Invalid or expired proxy token',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_test789' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/platform configuration issue/)
+  })
+
+  it('shows platform issue message when SANDBOX_ERROR mentions ORCHAGENT_SERVICE_KEY', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          message: 'KeyError: ORCHAGENT_SERVICE_KEY not found in environment',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_test101' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/platform configuration issue/)
+  })
+
+  it('still blames agent code for genuine code errors like ModuleNotFoundError', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          message: 'Code execution failed with exit code 1: ModuleNotFoundError: No module named \'pandas\'',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_test202' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/error in the agent's code/)
+  })
+
   it('shows SANDBOX_TIMEOUT with timeout-specific guidance', async () => {
     mockGetAgentWithFallback.mockResolvedValue({
       type: 'tool',

@@ -111,6 +111,7 @@ export function registerSecretsCommand(program: Command): void {
   const secrets = program
     .command('secrets')
     .description('Manage workspace secrets (injected as env vars into agent sandboxes)')
+    .action(() => { secrets.help() })
 
   // orch secrets list
   secrets

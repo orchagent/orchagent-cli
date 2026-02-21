@@ -280,6 +280,59 @@ describe('secret add merge logic', () => {
   })
 })
 
+describe('service URL formatting', () => {
+  // Mirrors formatServiceUrl from service.ts
+  function formatServiceUrl(
+    providerUrl: string | null,
+    cloudRunUrl: string | null,
+    infrastructureProvider: string | null,
+  ): { url: string; isInternal: boolean } {
+    const url = providerUrl || cloudRunUrl || '-'
+    const isInternal = infrastructureProvider === 'flyio' && url !== '-'
+    return { url, isInternal }
+  }
+
+  it('marks Fly.io URLs as internal', () => {
+    const result = formatServiceUrl(
+      'https://orch-ws-uuid-my-bot.fly.dev',
+      null,
+      'flyio',
+    )
+    expect(result.url).toBe('https://orch-ws-uuid-my-bot.fly.dev')
+    expect(result.isInternal).toBe(true)
+  })
+
+  it('does not mark Cloud Run URLs as internal', () => {
+    const result = formatServiceUrl(
+      'https://orch-svc-xxx.run.app',
+      'https://orch-svc-xxx.run.app',
+      'cloud_run',
+    )
+    expect(result.isInternal).toBe(false)
+  })
+
+  it('returns dash when no URL available', () => {
+    const result = formatServiceUrl(null, null, null)
+    expect(result.url).toBe('-')
+    expect(result.isInternal).toBe(false)
+  })
+
+  it('prefers provider_url over cloud_run_url', () => {
+    const result = formatServiceUrl(
+      'https://provider.fly.dev',
+      'https://cloud-run.run.app',
+      'flyio',
+    )
+    expect(result.url).toBe('https://provider.fly.dev')
+  })
+
+  it('handles null provider with flyio infrastructure', () => {
+    const result = formatServiceUrl(null, null, 'flyio')
+    expect(result.url).toBe('-')
+    expect(result.isInternal).toBe(false)
+  })
+})
+
 describe('secret remove filter logic', () => {
   function removeSecrets(current: string[], toRemove: string[]): { filtered: string[]; removed: string[] } {
     const namesToRemove = new Set(toRemove)

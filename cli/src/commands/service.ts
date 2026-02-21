@@ -146,6 +146,14 @@ function healthColor(health: string): string {
   }
 }
 
+function formatServiceUrl(svc: AutomationService): string {
+  const url = svc.provider_url || svc.cloud_run_url || '-'
+  if (url !== '-' && svc.infrastructure_provider === 'flyio') {
+    return `${url} ${chalk.gray('(internal — not a public endpoint)')}`
+  }
+  return url
+}
+
 function severityColor(severity: string, message: string): string {
   switch (severity.toUpperCase()) {
     case 'ERROR':
@@ -303,14 +311,14 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`  ${chalk.bold('Name:')}     ${svc.service_name}\n`)
         process.stdout.write(`  ${chalk.bold('Agent:')}    ${svc.agent_name}@${svc.agent_version}\n`)
         process.stdout.write(`  ${chalk.bold('State:')}    ${stateColor(svc.current_state)}\n`)
-        process.stdout.write(`  ${chalk.bold('URL:')}      ${svc.provider_url || svc.cloud_run_url || '-'}\n`)
+        process.stdout.write(`  ${chalk.bold('URL:')}      ${formatServiceUrl(svc)}\n`)
         if (options.pin) {
           process.stdout.write(`  ${chalk.bold('Pinned:')}   ${chalk.yellow(`yes (won't auto-update on publish)`)}\n`)
         }
         process.stdout.write(`\n`)
         process.stdout.write(chalk.gray(`View logs: orch service logs ${svc.id}\n`))
       } catch (e) {
-        deploySpinner.fail('Deploy failed')
+        deploySpinner.stop()
         throw e
       }
     })
@@ -508,7 +516,7 @@ export function registerServiceCommand(program: Command): void {
       }
       process.stdout.write(`  Instances:    ${svc.min_instances}-${svc.max_instances}\n`)
       process.stdout.write(`  Service ID:   ${svc.provider_service_id || svc.cloud_run_service || '-'}\n`)
-      process.stdout.write(`  URL:          ${svc.provider_url || svc.cloud_run_url || '-'}\n`)
+      process.stdout.write(`  URL:          ${formatServiceUrl(svc)}\n`)
       process.stdout.write(`  Deployed:     ${formatDate(svc.last_deployed_at)}\n`)
       process.stdout.write(`  Last Restart: ${formatDate(svc.last_restart_at)}\n`)
 

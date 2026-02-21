@@ -1,4 +1,5 @@
-import { execSync } from 'child_process'
+import { execSync, execFileSync } from 'child_process'
+import { realpathSync } from 'fs'
 
 import packageJson from '../../../../package.json'
 import { DIST_TAGS_URL, writeCache } from '../../update-notifier'
@@ -155,6 +156,165 @@ export async function checkGitAvailable(): Promise<CheckResult> {
 }
 
 /**
+ * Find all binary paths for a given command name using `which -a`.
+ * Returns an empty array if the command is not found.
+ * Note: Uses execSync with a hardcoded binary name — no user input, safe from injection.
+ */
+function findAllBinaryPaths(binaryName: string): string[] {
+  try {
+    const output = execSync(`which -a ${binaryName}`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    return output.trim().split('\n').filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Get the CLI version from a binary path by running it with --version.
+ * Uses execFileSync (no shell) to avoid injection via path characters.
+ */
+function getVersionFromBinary(binPath: string): string | null {
+  try {
+    const output = execFileSync(binPath, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    const match = output.match(/(\d+\.\d+\.\d+)/)
+    return match ? match[1] : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Resolve a path through symlinks. Returns the original path if resolution fails.
+ */
+function safeRealpathSync(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return p
+  }
+}
+
+interface InstallationInfo {
+  path: string
+  realPath: string
+  version: string
+  binary: string
+}
+
+/**
+ * Detect multiple CLI installations at different paths/versions (BUG-008).
+ *
+ * System-level (/usr/local/bin/orchagent) and user-level (~/.npm-global/bin/orch)
+ * installs can coexist silently. `npm update -g` updates one but not the other,
+ * leaving the user running an outdated version without knowing it.
+ */
+export async function checkDualInstallation(): Promise<CheckResult> {
+  // Skip on Windows (which -a not available)
+  if (process.platform === 'win32') {
+    return {
+      category: 'environment',
+      name: 'dual_installation',
+      status: 'info',
+      message: 'Installation path check skipped (Windows)',
+      details: { skipped: true, reason: 'Windows not supported' },
+    }
+  }
+
+  try {
+    const binaryNames = ['orch', 'orchagent']
+    const installations = new Map<string, InstallationInfo>()
+
+    for (const binary of binaryNames) {
+      const paths = findAllBinaryPaths(binary)
+
+      for (const binPath of paths) {
+        const realPath = safeRealpathSync(binPath)
+
+        // Deduplicate by resolved real path
+        if (installations.has(realPath)) continue
+
+        const version = getVersionFromBinary(binPath) || 'unknown'
+
+        installations.set(realPath, {
+          path: binPath,
+          realPath,
+          version,
+          binary,
+        })
+      }
+    }
+
+    if (installations.size <= 1) {
+      return {
+        category: 'environment',
+        name: 'dual_installation',
+        status: 'success',
+        message: 'Single CLI installation',
+        details: {
+          installationCount: installations.size,
+          installations: [...installations.values()],
+        },
+      }
+    }
+
+    // Multiple installations found
+    const allInstalls = [...installations.values()]
+    const versions = new Set(allInstalls.map((i) => i.version))
+    const versionsDiffer = versions.size > 1
+
+    const pathList = allInstalls
+      .map((i) => `${i.path} (v${i.version})`)
+      .join(', ')
+
+    if (versionsDiffer) {
+      return {
+        category: 'environment',
+        name: 'dual_installation',
+        status: 'warning',
+        message: `Multiple CLI versions found: ${pathList}`,
+        fix: 'Remove the outdated installation. Run `which -a orch orchagent` to see all paths, then remove the older binary',
+        details: {
+          installationCount: installations.size,
+          versionMismatch: true,
+          installations: allInstalls,
+        },
+      }
+    }
+
+    // Same version at multiple paths — informational only
+    return {
+      category: 'environment',
+      name: 'dual_installation',
+      status: 'info',
+      message: `Multiple CLI paths (same version v${allInstalls[0].version}): ${pathList}`,
+      details: {
+        installationCount: installations.size,
+        versionMismatch: false,
+        installations: allInstalls,
+      },
+    }
+  } catch (err) {
+    return {
+      category: 'environment',
+      name: 'dual_installation',
+      status: 'info',
+      message: 'Could not check for duplicate installations',
+      details: {
+        error: err instanceof Error ? err.message : 'unknown error',
+      },
+    }
+  }
+}
+
+/**
  * Run all environment checks.
  */
 export async function runEnvironmentChecks(): Promise<CheckResult[]> {
@@ -162,6 +322,7 @@ export async function runEnvironmentChecks(): Promise<CheckResult[]> {
     checkNodeVersion(),
     checkCliVersion(),
     checkGitAvailable(),
+    checkDualInstallation(),
   ])
   return results
 }

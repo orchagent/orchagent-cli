@@ -1049,11 +1049,176 @@ describe('init command', () => {
     })
   })
 
+  describe('always_on run mode for code_runtime (BUG-5)', () => {
+    describe('Python', () => {
+      it('generates HTTP server code instead of stdin/stdout', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on'])
+
+        const mainCall = mockFs.writeFile.mock.calls.find(
+          ([p]) => (p as string).endsWith('main.py')
+        )
+        expect(mainCall).toBeDefined()
+        const content = mainCall![1] as string
+        // Should have HTTP server, not stdin/stdout
+        expect(content).toContain('HTTPServer')
+        expect(content).not.toContain('sys.stdin.read()')
+      })
+
+      it('includes /health endpoint in generated code', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on'])
+
+        const mainCall = mockFs.writeFile.mock.calls.find(
+          ([p]) => (p as string).endsWith('main.py')
+        )
+        const content = mainCall![1] as string
+        expect(content).toContain('/health')
+      })
+
+      it('warns about reserved port 8080 in generated code', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on'])
+
+        const mainCall = mockFs.writeFile.mock.calls.find(
+          ([p]) => (p as string).endsWith('main.py')
+        )
+        const content = mainCall![1] as string
+        expect(content).toContain('8080')
+        expect(content).toContain('3000')
+      })
+
+      it('sets run_mode to always_on in manifest', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on'])
+
+        const manifestCall = mockFs.writeFile.mock.calls.find(
+          ([p]) => (p as string).endsWith('orchagent.json')
+        )
+        const manifest = JSON.parse(manifestCall![1] as string)
+        expect(manifest.run_mode).toBe('always_on')
+        expect(manifest.type).toBe('tool')
+        expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      })
+
+      it('shows service deploy in next steps', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on'])
+
+        expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('orch service deploy'))
+      })
+    })
+
+    describe('JavaScript', () => {
+      it('generates HTTP server code instead of stdin/stdout', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on', '--language', 'javascript'])
+
+        const mainCall = mockFs.writeFile.mock.calls.find(
+          ([p]) => (p as string).endsWith('main.js')
+        )
+        expect(mainCall).toBeDefined()
+        const content = mainCall![1] as string
+        // Should have HTTP server, not stdin/stdout
+        expect(content).toContain('createServer')
+        expect(content).not.toContain("readFileSync('/dev/stdin'")
+      })
+
+      it('includes /health endpoint in generated code', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on', '--language', 'javascript'])
+
+        const mainCall = mockFs.writeFile.mock.calls.find(
+          ([p]) => (p as string).endsWith('main.js')
+        )
+        const content = mainCall![1] as string
+        expect(content).toContain('/health')
+      })
+
+      it('warns about reserved port 8080 in generated code', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on', '--language', 'javascript'])
+
+        const mainCall = mockFs.writeFile.mock.calls.find(
+          ([p]) => (p as string).endsWith('main.js')
+        )
+        const content = mainCall![1] as string
+        expect(content).toContain('8080')
+        expect(content).toContain('3000')
+      })
+
+      it('sets run_mode to always_on in manifest', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on', '--language', 'javascript'])
+
+        const manifestCall = mockFs.writeFile.mock.calls.find(
+          ([p]) => (p as string).endsWith('orchagent.json')
+        )
+        const manifest = JSON.parse(manifestCall![1] as string)
+        expect(manifest.run_mode).toBe('always_on')
+        expect(manifest.type).toBe('tool')
+        expect(manifest.runtime).toEqual({ command: 'node main.js' })
+      })
+
+      it('shows service deploy in next steps', async () => {
+        await program.parseAsync(['node', 'test', 'init', 'my-service', '--type', 'tool', '--run-mode', 'always_on', '--language', 'javascript'])
+
+        expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('orch service deploy'))
+      })
+    })
+
+    it('on_demand tool still generates stdin/stdout code (no regression)', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-tool', '--type', 'tool', '--run-mode', 'on_demand'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      const content = mainCall![1] as string
+      expect(content).toContain('sys.stdin.read()')
+      expect(content).not.toContain('HTTPServer')
+    })
+  })
+
   describe('JS managed_loop blocked', () => {
     it('throws for --type agent --language javascript', async () => {
       await expect(
         program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--language', 'javascript'])
       ).rejects.toThrow('JavaScript agent-type agents are not yet supported')
+    })
+  })
+
+  describe('--language flag rejected for types that do not use it', () => {
+    it('throws for --type prompt --language javascript', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'prompt', '--language', 'javascript'])
+      ).rejects.toThrow(/--language.*prompt/)
+    })
+
+    it('throws for default type (prompt) with --language javascript', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--language', 'javascript'])
+      ).rejects.toThrow(/--language.*prompt/)
+    })
+
+    it('throws for --type skill --language javascript', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'skill', '--language', 'javascript'])
+      ).rejects.toThrow(/--language.*skill/)
+    })
+
+    it('throws for --type prompt --language js (alias)', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'prompt', '--language', 'js'])
+      ).rejects.toThrow(/--language.*prompt/)
+    })
+
+    it('throws for --type prompt --language typescript (alias)', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'prompt', '--language', 'ts'])
+      ).rejects.toThrow(/--language.*prompt/)
+    })
+
+    it('does not throw for --type tool --language javascript', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'tool', '--language', 'javascript'])
+      ).resolves.not.toThrow()
+    })
+
+    it('does not throw for --orchestrator --language javascript', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--orchestrator', '--language', 'javascript'])
+      ).resolves.not.toThrow()
     })
   })
 

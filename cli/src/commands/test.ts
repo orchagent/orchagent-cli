@@ -620,7 +620,7 @@ async function runPromptFixtureTests(
   if (!detected) {
     throw new CliError(
       'No LLM key found for fixture tests.\n' +
-      'Set an environment variable (e.g., OPENAI_API_KEY) or run `orchagent keys add <provider>`'
+      'Set an environment variable (e.g., OPENAI_API_KEY) or run `orch secrets set <PROVIDER>_API_KEY <key>`'
     )
   }
 

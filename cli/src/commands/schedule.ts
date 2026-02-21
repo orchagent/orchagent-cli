@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import Table from 'cli-table3'
 import chalk from 'chalk'
+import readline from 'readline/promises'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request } from '../lib/api'
@@ -173,6 +174,7 @@ export function registerScheduleCommand(program: Command): void {
   const schedule = program
     .command('schedule')
     .description('Manage scheduled agent runs (cron and webhooks)')
+    .action(() => { schedule.help() })
 
   // orch schedule list
   schedule
@@ -439,14 +441,28 @@ export function registerScheduleCommand(program: Command): void {
   schedule
     .command('delete <schedule-id>')
     .description('Delete a schedule')
+    .option('-y, --yes', 'Skip confirmation prompt')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (scheduleId: string, options: { workspace?: string }) => {
+    .action(async (scheduleId: string, options: { yes?: boolean; workspace?: string }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
       }
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      if (!options.yes) {
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        })
+        const answer = await rl.question(`Delete schedule ${scheduleId}? (y/N): `)
+        rl.close()
+        if (answer.trim().toLowerCase() !== 'y' && answer.trim().toLowerCase() !== 'yes') {
+          process.stdout.write('Cancelled.\n')
+          return
+        }
+      }
 
       await request<{ deleted: boolean }>(
         config,
@@ -516,8 +532,9 @@ export function registerScheduleCommand(program: Command): void {
     .command('info <schedule-id>')
     .description('Show detailed schedule information with recent runs and events')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--reveal', 'Show full webhook URL (for webhook schedules)')
     .option('--json', 'Output as JSON')
-    .action(async (partialScheduleId: string, options: { workspace?: string; json?: boolean }) => {
+    .action(async (partialScheduleId: string, options: { workspace?: string; reveal?: boolean; json?: boolean }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -526,8 +543,9 @@ export function registerScheduleCommand(program: Command): void {
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
+      const revealParam = options.reveal ? '?reveal_webhook=true' : ''
       const [scheduleRes, runsRes, eventsRes] = await Promise.all([
-        request<ScheduleResponse>(config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}`),
+        request<ScheduleResponse>(config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}${revealParam}`),
         request<ScheduleRunsResponse>(config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}/runs?limit=5`),
         request<ScheduleEventsResponse>(config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}/events?limit=5`),
       ])
@@ -546,6 +564,11 @@ export function registerScheduleCommand(program: Command): void {
         process.stdout.write(`  Cron:       ${s.cron_expression}\n`)
         process.stdout.write(`  Timezone:   ${s.timezone}\n`)
       }
+      if (s.webhook_url) {
+        process.stdout.write(`  Webhook:    ${s.webhook_url}\n`)
+      } else if (s.schedule_type === 'webhook' && !options.reveal) {
+        process.stdout.write(`  Webhook:    ${chalk.gray('(redacted — use --reveal to show)')}\n`)
+      }
       process.stdout.write(`  Enabled:    ${s.enabled ? chalk.green('yes') : chalk.red('no')}\n`)
       process.stdout.write(`  Auto-update: ${s.auto_update === false ? chalk.yellow('pinned') : chalk.green('yes')}\n`)
 
@@ -558,6 +581,10 @@ export function registerScheduleCommand(program: Command): void {
 
       if (s.next_run_at) {
         process.stdout.write(`  Next Run:   ${formatDate(s.next_run_at)}\n`)
+      }
+      if (s.input_data && Object.keys(s.input_data).length > 0) {
+        const inputStr = JSON.stringify(s.input_data)
+        process.stdout.write(`  Input:      ${inputStr.length > 100 ? inputStr.slice(0, 100) + '...' : inputStr}\n`)
       }
       if (s.alert_webhook_url) {
         process.stdout.write(`  Alert URL:  ${s.alert_webhook_url.slice(0, 50)}...\n`)

@@ -130,6 +130,62 @@ export async function scanUndeclaredEnvVars(agentDir: string, requiredSecrets: s
   return [...found].filter(v => !declared.has(v) && !autoInjected.has(v)).sort()
 }
 
+/**
+ * Scan code files for patterns that bind to port 8080 — the platform reserves
+ * this port for the always-on service health server.  Returns true if a likely
+ * port-8080 binding is detected.
+ */
+export async function scanReservedPort(agentDir: string): Promise<boolean> {
+  // Patterns that indicate binding to port 8080 in Python / JS / TS
+  const pyPatterns = [
+    /\.listen\s*\(\s*8080\b/,                              // server.listen(8080
+    /\.run\s*\([^)]*port\s*=\s*8080\b/,                    // app.run(port=8080
+    /\.run\s*\([^)]*host\s*=\s*['"][^'"]*['"],?\s*8080\b/, // app.run("0.0.0.0", 8080
+    /bind\s*\(\s*\(?['"][^'"]*['"]\s*,\s*8080\b/,          // bind(("0.0.0.0", 8080
+    /PORT\s*=\s*8080\b/,                                    // PORT = 8080
+    /port\s*=\s*8080\b/,                                    // port=8080
+  ]
+  const jsPatterns = [
+    /\.listen\s*\(\s*8080\b/,               // app.listen(8080
+    /port\s*[:=]\s*8080\b/,                  // port: 8080  or  port = 8080
+    /PORT\s*[:=]\s*8080\b/,                  // PORT = 8080
+  ]
+
+  async function scanDir(dir: string, depth: number): Promise<boolean> {
+    let entries: import('fs').Dirent[]
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+      if (!entries || !Array.isArray(entries)) return false
+    } catch {
+      return false
+    }
+    for (const entry of entries) {
+      const name = entry.name as string
+      const fullPath = path.join(dir, name)
+      if (entry.isDirectory() && depth < 2 && !name.startsWith('.') && name !== 'node_modules' && name !== '__pycache__' && name !== 'venv' && name !== '.venv') {
+        if (await scanDir(fullPath, depth + 1)) return true
+      } else if (entry.isFile() && name.endsWith('.py')) {
+        try {
+          const content = await fs.readFile(fullPath, 'utf-8')
+          for (const re of pyPatterns) {
+            if (re.test(content)) return true
+          }
+        } catch { /* skip */ }
+      } else if (entry.isFile() && (name.endsWith('.js') || name.endsWith('.ts'))) {
+        try {
+          const content = await fs.readFile(fullPath, 'utf-8')
+          for (const re of jsPatterns) {
+            if (re.test(content)) return true
+          }
+        } catch { /* skip */ }
+      }
+    }
+    return false
+  }
+
+  return scanDir(agentDir, 0)
+}
+
 interface SkillFrontmatter {
   name: string
   description: string
@@ -308,10 +364,7 @@ function inferExecutionEngineFromManifest(
   if (runtimeCommand) return 'code_runtime'
   if (hasLoop) return 'managed_loop'
   if (rawType === 'tool' || rawType === 'code') return 'code_runtime'
-  if (rawType === 'agentic') return 'managed_loop'
-  if (rawType === 'agent' && (manifest.custom_tools?.length || manifest.max_turns)) {
-    return 'managed_loop'
-  }
+  if (rawType === 'agentic' || rawType === 'agent') return 'managed_loop'
   return 'direct_llm'
 }
 
@@ -502,6 +555,7 @@ export function registerPublishCommand(program: Command): void {
             description: skillData.frontmatter.description,
             prompt: skillData.body,
             is_public: false,
+            callable: false,
             supported_providers: ['any'],
             default_skills: skillsFromFlag,
             skills_locked: options.skillsLocked || undefined,
@@ -561,7 +615,7 @@ export function registerPublishCommand(program: Command): void {
       const { canonicalType, rawType } = canonicalizeManifestType(manifest.type)
       const runMode = normalizeRunMode(manifest.run_mode)
       const executionEngine = inferExecutionEngineFromManifest(manifest, rawType)
-      const callable = Boolean(manifest.callable)
+      const callable = manifest.callable !== undefined ? Boolean(manifest.callable) : true
 
       if (canonicalType === 'skill') {
         throw new CliError(
@@ -816,13 +870,14 @@ export function registerPublishCommand(program: Command): void {
         }
 
         if (notCallable.length > 0) {
-          process.stderr.write(chalk.yellow(`\n⚠ Dependencies not marked as callable:\n`))
+          process.stderr.write(chalk.yellow(`\n⚠ Dependencies have callable: false:\n`))
           for (const dep of notCallable) {
             process.stderr.write(chalk.yellow(`  - ${dep.ref}\n`))
           }
           process.stderr.write(
-            `\n  Agents must have callable: true in orchagent.json to be invoked\n` +
-            `  by orchestrators. Update and republish each dependency.\n\n`
+            `\n  These agents have explicitly set callable: false, which blocks\n` +
+            `  agent-to-agent calls at runtime. Set callable: true (or remove\n` +
+            `  the field to use the default) and republish each dependency.\n\n`
           )
         }
       }
@@ -944,22 +999,42 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
+      // Warn if always_on code binds to port 8080 (reserved for platform health server)
+      if (runMode === 'always_on' && executionEngine === 'code_runtime') {
+        const usesReservedPort = await scanReservedPort(cwd)
+        if (usesReservedPort) {
+          process.stderr.write(
+            chalk.yellow(`\n⚠ Your code appears to bind to port 8080, which is reserved by the\n`) +
+            chalk.yellow(`  platform health server for always-on services.\n\n`) +
+            `  Your service will crash with EADDRINUSE at runtime.\n` +
+            `  Use a different port (e.g. 3000) or read the ORCHAGENT_HEALTH_PORT\n` +
+            `  env var to detect the reserved port.\n\n`
+          )
+        }
+      }
+
       // C-1: Block publish if tool/agent type has no required_secrets declared.
       // Prompt and skill types are exempt (prompt agents get LLM keys from platform,
       // skills don't run standalone).
+      // An explicit empty array (required_secrets: []) is a valid declaration
+      // meaning "this agent deliberately needs no secrets."
       if (
         (canonicalType === 'tool' || canonicalType === 'agent') &&
-        (!manifest.required_secrets || manifest.required_secrets.length === 0) &&
+        manifest.required_secrets === undefined &&
         options.requiredSecrets !== false
       ) {
         process.stderr.write(
           chalk.red(`\nError: ${canonicalType} agents must declare required_secrets in orchagent.json.\n\n`) +
           `  Add the env vars your code needs at runtime:\n` +
           `  ${chalk.cyan('"required_secrets": ["ANTHROPIC_API_KEY", "MY_TOKEN"]')}\n\n` +
+          `  If this agent genuinely needs no secrets, add an empty array:\n` +
+          `  ${chalk.cyan('"required_secrets": []')}\n\n` +
           `  These are matched by name against your workspace secrets vault.\n` +
           `  Use ${chalk.cyan('--no-required-secrets')} to skip this check.\n`
         )
-        throw new CliError('Missing required_secrets declaration', ExitCodes.INVALID_INPUT)
+        const err = new CliError('Missing required_secrets declaration', ExitCodes.INVALID_INPUT)
+        err.displayed = true
+        throw err
       }
 
       // Create the agent (server auto-assigns version)
@@ -1206,6 +1281,5 @@ export function registerPublishCommand(program: Command): void {
       }
 
       process.stdout.write(`\nView analytics and usage: https://orchagent.io/dashboard\n`)
-      process.stdout.write(`\nSkill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
     })
 }

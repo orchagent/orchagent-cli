@@ -695,6 +695,70 @@ describe('pull command', () => {
     expect(output).toContain('Bundle extracted')
   })
 
+  // ─── BUG-4: Pull preserves original agent type ──────────────────────────
+
+  it('preserves prompt type (not canonicalized to agent)', async () => {
+    mockPublicRequest.mockResolvedValue(
+      makeDownloadResponse({ type: 'prompt' })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
+    expect(manifest.type).toBe('prompt')
+  })
+
+  it('preserves tool type (not canonicalized to agent)', async () => {
+    mockPublicRequest.mockResolvedValue(
+      makeDownloadResponse({
+        type: 'tool',
+        execution_engine: 'code_runtime',
+        has_bundle: false,
+        prompt: undefined,
+      })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
+    expect(manifest.type).toBe('tool')
+  })
+
+  it('canonicalizes legacy "code" type to "tool"', async () => {
+    mockPublicRequest.mockResolvedValue(
+      makeDownloadResponse({
+        type: 'code',
+        execution_engine: 'code_runtime',
+        has_bundle: false,
+        prompt: undefined,
+      })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
+    expect(manifest.type).toBe('tool')
+  })
+
+  it('canonicalizes legacy "agentic" type to "agent"', async () => {
+    mockPublicRequest.mockResolvedValue(
+      makeDownloadResponse({ type: 'agentic' })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
+    expect(manifest.type).toBe('agent')
+  })
+
   it('omits prompt.md for code_runtime agents', async () => {
     mockPublicRequest.mockResolvedValue(
       makeDownloadResponse({

@@ -149,6 +149,135 @@ function main() {
 main();
 `
 
+const ALWAYS_ON_TEMPLATE_PY = `"""
+orchagent always-on service entrypoint.
+
+Runs a long-lived HTTP server that handles requests over HTTP.
+This is the standard pattern for always-on services on orchagent.
+
+IMPORTANT: Port 8080 is reserved by the platform health server.
+           Use a different port (default: 3000).
+
+Local development:
+  python main.py
+"""
+
+import json
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+PORT = int(os.environ.get("PORT", "3000"))
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._respond(400, {"error": "Invalid JSON"})
+            return
+
+        user_input = data.get("input", "")
+
+        # --- Your logic here ---
+        # To use workspace secrets, add them to "required_secrets" in orchagent.json:
+        #   "required_secrets": ["MY_API_KEY"]
+        # Then access via: os.environ["MY_API_KEY"]
+        result = f"Received: {user_input}"
+        # --- End your logic ---
+
+        self._respond(200, {"result": result})
+
+    def do_GET(self):
+        if self.path == "/health":
+            self._respond(200, {"status": "ok"})
+            return
+        self._respond(200, {"status": "running"})
+
+    def _respond(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+
+    def log_message(self, format, *args):
+        print(f"[{self.log_date_time_string()}] {format % args}")
+
+
+if __name__ == "__main__":
+    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    print(f"Always-on service listening on port {PORT}")
+    server.serve_forever()
+`
+
+const ALWAYS_ON_TEMPLATE_JS = `/**
+ * orchagent always-on service entrypoint.
+ *
+ * Runs a long-lived HTTP server that handles requests over HTTP.
+ * This is the standard pattern for always-on services on orchagent.
+ *
+ * IMPORTANT: Port 8080 is reserved by the platform health server.
+ *            Use a different port (default: 3000).
+ *
+ * Local development:
+ *   node main.js
+ */
+
+const http = require('http');
+
+const PORT = parseInt(process.env.PORT || '3000', 10);
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'GET') {
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'running' }));
+    return;
+  }
+
+  if (req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      let data;
+      try {
+        data = body ? JSON.parse(body) : {};
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        return;
+      }
+
+      const input = data.input || '';
+
+      // --- Your logic here ---
+      // To use workspace secrets, add them to "required_secrets" in orchagent.json:
+      //   "required_secrets": ["MY_API_KEY"]
+      // Then access via: process.env.MY_API_KEY
+      const result = \`Received: \${input}\`;
+      // --- End your logic ---
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ result }));
+    });
+    return;
+  }
+
+  res.writeHead(405, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Method not allowed' }));
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(\`Always-on service listening on port \${PORT}\`);
+});
+`
+
 const DISCORD_MAIN_JS = `/**
  * Discord bot agent — powered by Claude.
  *
@@ -294,6 +423,8 @@ DISCORD_CHANNEL_IDS=
 # MODEL=claude-sonnet-4-5-20250929
 # MAX_TOKENS=1024
 `
+
+const AGENT_BUILDER_HINT = `\n  Tip: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`
 
 type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'discord_js' | 'support_agent' | 'github_weekly_summary'
 
@@ -910,6 +1041,14 @@ export function registerInitCommand(program: Command): void {
       }
       // JS orchestrators are now supported via the orchagent-sdk npm package
 
+      // Block --language for types that don't create runtime files
+      if (isJavaScript && (initMode.type === 'prompt' || initMode.type === 'skill')) {
+        throw new CliError(
+          `The --language flag has no effect for ${initMode.type} types (no runtime files are created). ` +
+          'Use --type tool or --type agent to create a project with runtime scaffolding.'
+        )
+      }
+
       if (options.template) {
         const template = options.template.trim().toLowerCase()
         const validTemplates = ['support-agent', 'discord', 'discord-js', 'github-weekly-summary']
@@ -1053,7 +1192,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${s + 2}. Copy .env.example to .env and add platform tokens\n`)
         process.stdout.write(`  ${s + 3}. Test locally: pip install -r requirements.txt && python main.py\n`)
         process.stdout.write(`  ${s + 4}. Deploy: orch publish && orch service deploy\n`)
-        process.stdout.write(`\n  Skill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
+        process.stdout.write(AGENT_BUILDER_HINT)
         return
       }
 
@@ -1115,7 +1254,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${s + 3}. orch run <org>/${agentName}            Test it\n`)
         process.stdout.write(`  ${s + 4}. orch schedule create <org>/${agentName} --cron "0 9 * * 1"   Schedule weekly\n`)
         process.stdout.write(`\n  See README.md for full setup guide.\n`)
-        process.stdout.write(`\n  Skill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
+        process.stdout.write(AGENT_BUILDER_HINT)
         return
       }
 
@@ -1169,7 +1308,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum + 2}. Copy .env.example to .env and fill in your tokens\n`)
         process.stdout.write(`  ${stepNum + 3}. Test locally: npm install && node main.js\n`)
         process.stdout.write(`  ${stepNum + 4}. Deploy: orch publish\n`)
-        process.stdout.write(`\n  Skill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
+        process.stdout.write(AGENT_BUILDER_HINT)
         return
       }
 
@@ -1257,7 +1396,7 @@ export function registerInitCommand(program: Command): void {
         await fs.writeFile(envExamplePath, DISCORD_ENV_EXAMPLE)
       } else if (initMode.flavor === 'code_runtime') {
         if (isJavaScript) {
-          await fs.writeFile(path.join(targetDir, 'main.js'), CODE_TEMPLATE_JS)
+          await fs.writeFile(path.join(targetDir, 'main.js'), runMode === 'always_on' ? ALWAYS_ON_TEMPLATE_JS : CODE_TEMPLATE_JS)
           await fs.writeFile(path.join(targetDir, 'package.json'), JSON.stringify({
             name: agentName,
             private: true,
@@ -1265,7 +1404,7 @@ export function registerInitCommand(program: Command): void {
             dependencies: {},
           }, null, 2) + '\n')
         } else {
-          await fs.writeFile(path.join(targetDir, 'main.py'), CODE_TEMPLATE_PY)
+          await fs.writeFile(path.join(targetDir, 'main.py'), runMode === 'always_on' ? ALWAYS_ON_TEMPLATE_PY : CODE_TEMPLATE_PY)
         }
         await fs.writeFile(schemaPath, SCHEMA_TEMPLATE)
       } else if (initMode.flavor === 'managed_loop') {
@@ -1297,11 +1436,12 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${prefix}requirements.txt  - Python dependencies\n`)
         process.stdout.write(`  ${prefix}.env.example      - Environment variables template\n`)
       } else if (initMode.flavor === 'code_runtime') {
+        const entrypointDesc = runMode === 'always_on' ? 'Always-on HTTP server' : 'Agent entrypoint (stdin/stdout JSON)'
         if (isJavaScript) {
-          process.stdout.write(`  ${prefix}main.js           - Agent entrypoint (stdin/stdout JSON)\n`)
+          process.stdout.write(`  ${prefix}main.js           - ${entrypointDesc}\n`)
           process.stdout.write(`  ${prefix}package.json      - npm dependencies\n`)
         } else {
-          process.stdout.write(`  ${prefix}main.py           - Agent entrypoint (stdin/stdout JSON)\n`)
+          process.stdout.write(`  ${prefix}main.py           - ${entrypointDesc}\n`)
         }
       } else {
         process.stdout.write(`  ${prefix}prompt.md         - Prompt template\n`)
@@ -1340,7 +1480,14 @@ export function registerInitCommand(program: Command): void {
         if (name) {
           process.stdout.write(`  1. cd ${name}\n`)
         }
-        if (isJavaScript) {
+        if (runMode === 'always_on') {
+          const mainFile = isJavaScript ? 'main.js' : 'main.py'
+          const testCmd = isJavaScript ? 'node main.js' : 'python main.py'
+          process.stdout.write(`  ${stepNum}. Edit ${mainFile} with your service logic\n`)
+          process.stdout.write(`  ${stepNum + 1}. Test locally: ${testCmd}\n`)
+          process.stdout.write(`  ${stepNum + 2}. Publish: orch publish\n`)
+          process.stdout.write(`  ${stepNum + 3}. Deploy: orch service deploy\n`)
+        } else if (isJavaScript) {
           process.stdout.write(`  ${stepNum}. Edit main.js with your agent logic\n`)
           process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
           process.stdout.write(`  ${stepNum + 2}. Test: echo '{"input": "test"}' | node main.js\n`)
@@ -1360,6 +1507,6 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
         process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish\n`)
       }
-      process.stdout.write(`\n  Skill: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`)
+      process.stdout.write(AGENT_BUILDER_HINT)
     })
 }

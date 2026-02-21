@@ -35,6 +35,8 @@ interface RunLogsResponse {
   agent_version: string | null
   run_status: string | null
   error_message: string | null
+  input_data: unknown | null
+  output_data: unknown | null
   has_execution_log: boolean
   stdout: string | null
   stderr: string | null
@@ -107,9 +109,14 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 60000).toFixed(1)}m`
 }
 
-/** Detect if a string looks like a UUID (run ID) */
+/** Detect if a string looks like a full UUID (run ID) */
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+}
+
+/** Detect if a string looks like a short UUID prefix (8+ hex chars) */
+function isShortUuid(value: string): boolean {
+  return /^[0-9a-f]{7,}$/i.test(value) && !value.includes('/')
 }
 
 // ============================================
@@ -143,16 +150,53 @@ export function registerLogsCommand(program: Command): void {
 
         const workspaceId = await resolveWorkspaceId(config, options.workspace)
 
-        // If target looks like a UUID, show detailed logs for that run
+        // If target looks like a UUID (full or short prefix), show detailed logs for that run
         if (target && isUuid(target)) {
           await showRunLogs(config, workspaceId, target, options.json)
           return
         }
 
-        // Otherwise list runs, optionally filtered by agent name
-        await listRuns(config, workspaceId, target, options)
+        if (target && isShortUuid(target)) {
+          // Short UUID prefix — find the matching run from the list
+          const fullId = await resolveShortRunId(config, workspaceId, target)
+          await showRunLogs(config, workspaceId, fullId, options.json)
+          return
+        }
+
+        // Otherwise list runs, optionally filtered by agent name.
+        // Strip org prefix if provided (e.g. "joe/my-agent" → "my-agent")
+        const agentFilter = target?.includes('/') ? target.split('/').pop() : target
+        await listRuns(config, workspaceId, agentFilter, options)
       }
     )
+}
+
+// ============================================
+// SHORT RUN ID RESOLUTION
+// ============================================
+
+async function resolveShortRunId(
+  config: ResolvedConfig,
+  workspaceId: string,
+  shortId: string
+): Promise<string> {
+  // Server-side prefix matching — searches ALL runs, not just the last 200
+  const result = await request<RunsListResponse>(
+    config,
+    'GET',
+    `/workspaces/${workspaceId}/runs?limit=200&run_id_prefix=${encodeURIComponent(shortId)}`
+  )
+
+  if (result.runs.length === 0) {
+    throw new CliError(`No run found matching '${shortId}'.`)
+  }
+  if (result.runs.length > 1) {
+    throw new CliError(
+      `Ambiguous run ID '${shortId}' — matches ${result.runs.length} runs. Use more characters to narrow it down.`
+    )
+  }
+
+  return result.runs[0].id
 }
 
 // ============================================
@@ -266,6 +310,22 @@ async function showRunLogs(
     const exitLabel =
       result.exit_code === 0 ? chalk.green(String(result.exit_code)) : chalk.red(String(result.exit_code))
     process.stdout.write(`Exit code: ${exitLabel}\n`)
+  }
+
+  // Input data
+  if (result.input_data != null && Object.keys(result.input_data as object).length > 0) {
+    process.stdout.write(
+      '\n' + chalk.bold.blue('--- input ---') + '\n' +
+      JSON.stringify(result.input_data, null, 2) + '\n'
+    )
+  }
+
+  // Output data
+  if (result.output_data != null && Object.keys(result.output_data as object).length > 0) {
+    process.stdout.write(
+      '\n' + chalk.bold.green('--- output ---') + '\n' +
+      JSON.stringify(result.output_data, null, 2) + '\n'
+    )
   }
 
   // Error message

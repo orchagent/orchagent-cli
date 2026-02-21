@@ -1,6 +1,6 @@
 {
   "name": "@orchagent/cli",
-  "version": "0.3.84",
+  "version": "0.3.85",
   "description": "Command-line interface for orchagent — deploy and run AI agents for your team",
   "license": "MIT",
   "author": "orchagent <hello@orchagent.io>",
@@ -25,7 +25,8 @@
     "node": ">=18"
   },
   "bin": {
-    "orch": "dist/index.js"
+    "orch": "dist/index.js",
+    "orchagent": "dist/index.js"
   },
   "files": [
     "dist",

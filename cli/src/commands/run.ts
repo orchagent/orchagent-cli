@@ -827,7 +827,7 @@ async function executePromptLocally(
       const providers = providersToCheck.join(', ')
       throw new CliError(
         `No LLM key found for: ${providers}\n` +
-        `Set an environment variable (e.g., OPENAI_API_KEY), run 'orchagent keys add <provider>', or configure in web dashboard`
+        `Set an environment variable (e.g., OPENAI_API_KEY), run 'orch secrets set <PROVIDER>_API_KEY <key>', or configure in web dashboard`
       )
     }
 
@@ -867,7 +867,7 @@ async function executePromptLocally(
     const providers = providersToCheck.join(', ')
     throw new CliError(
       `No LLM key found for: ${providers}\n` +
-      `Set an environment variable (e.g., OPENAI_API_KEY), run 'orchagent keys add <provider>', or configure in web dashboard`
+      `Set an environment variable (e.g., OPENAI_API_KEY), run 'orch secrets set <PROVIDER>_API_KEY <key>', or configure in web dashboard`
     )
   }
 
@@ -924,7 +924,7 @@ async function executeAgentLocally(
     const providers = providersToCheck.join(', ')
     throw new CliError(
       `No LLM key found for: ${providers}\n` +
-      `Set an environment variable (e.g., ANTHROPIC_API_KEY), run 'orchagent keys add <provider>', or configure in web dashboard`
+      `Set an environment variable (e.g., ANTHROPIC_API_KEY), run 'orch secrets set <PROVIDER>_API_KEY <key>', or configure in web dashboard`
     )
   }
 
@@ -2163,13 +2163,6 @@ async function executeCloud(
       ...(effectiveProvider && { provider: effectiveProvider }),
       ...(options.model && { model: options.model }),
     }
-  } else if (cloudEngine !== 'code_runtime') {
-    const searchedProviders = effectiveProvider ? [effectiveProvider] : supportedProviders
-    const providerList = searchedProviders.join(', ')
-    process.stderr.write(
-      `Warning: No LLM key found for provider(s): ${providerList}\n` +
-      `Set an env var (e.g., OPENAI_API_KEY), run 'orchagent keys add <provider>', use --key, or configure in web dashboard\n\n`
-    )
   }
 
   if (options.skills) {
@@ -2441,10 +2434,25 @@ async function executeCloud(
         typeof payload === 'object' && payload
           ? (payload as { error?: { hint?: string } }).error?.hint
           : undefined
+
+      // Detect platform errors that surface as SANDBOX_ERROR (BUG-11)
+      const lowerMessage = (message || '').toLowerCase()
+      const isPlatformError =
+        /\b403\b/.test(message || '') ||
+        /\b401\b/.test(message || '') ||
+        lowerMessage.includes('proxy token') ||
+        lowerMessage.includes('orchagent_service_key') ||
+        lowerMessage.includes('orchagent_billing_org')
+
+      const attribution = isPlatformError
+        ? `This may be a platform configuration issue, not an error in the agent's code.\n` +
+          `If this persists, contact support with the ref below.`
+        : `This is an error in the agent's code, not the platform.\n` +
+          `Check the agent code and requirements, then republish.`
+
       throw new CliError(
         `${message}\n\n` +
-        `This is an error in the agent's code, not the platform.\n` +
-        `Check the agent code and requirements, then republish.` +
+        attribution +
         (hint ? `\n\nHint: ${hint}` : '') +
         refSuffix
       )
