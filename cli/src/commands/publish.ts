@@ -1051,6 +1051,31 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
+      // C-1: Block publish if tool/agent type has no required_secrets declared.
+      // Prompt and skill types are exempt (prompt agents get LLM keys from platform,
+      // skills don't run standalone).
+      // An explicit empty array (required_secrets: []) is a valid declaration
+      // meaning "this agent deliberately needs no secrets."
+      // Runs before dry-run so --dry-run catches the same errors as real publish (BUG-11).
+      if (
+        (canonicalType === 'tool' || canonicalType === 'agent') &&
+        manifest.required_secrets === undefined &&
+        options.requiredSecrets !== false
+      ) {
+        process.stderr.write(
+          chalk.red(`\nError: ${canonicalType} agents must declare required_secrets in orchagent.json.\n\n`) +
+          `  Add the env vars your code needs at runtime:\n` +
+          `  ${chalk.cyan('"required_secrets": ["ANTHROPIC_API_KEY", "MY_TOKEN"]')}\n\n` +
+          `  If this agent genuinely needs no secrets, add an empty array:\n` +
+          `  ${chalk.cyan('"required_secrets": []')}\n\n` +
+          `  These are matched by name against your workspace secrets vault.\n` +
+          `  Use ${chalk.cyan('--no-required-secrets')} to skip this check.\n`
+        )
+        const err = new CliError('Missing required_secrets declaration', ExitCodes.INVALID_INPUT)
+        err.displayed = true
+        throw err
+      }
+
       // Handle dry-run for agents
       if (options.dryRun) {
         const preview = await previewAgentVersion(config, manifest.name, workspaceId)
@@ -1242,30 +1267,6 @@ export function registerPublishCommand(program: Command): void {
             `  env var to detect the reserved port.\n\n`
           )
         }
-      }
-
-      // C-1: Block publish if tool/agent type has no required_secrets declared.
-      // Prompt and skill types are exempt (prompt agents get LLM keys from platform,
-      // skills don't run standalone).
-      // An explicit empty array (required_secrets: []) is a valid declaration
-      // meaning "this agent deliberately needs no secrets."
-      if (
-        (canonicalType === 'tool' || canonicalType === 'agent') &&
-        manifest.required_secrets === undefined &&
-        options.requiredSecrets !== false
-      ) {
-        process.stderr.write(
-          chalk.red(`\nError: ${canonicalType} agents must declare required_secrets in orchagent.json.\n\n`) +
-          `  Add the env vars your code needs at runtime:\n` +
-          `  ${chalk.cyan('"required_secrets": ["ANTHROPIC_API_KEY", "MY_TOKEN"]')}\n\n` +
-          `  If this agent genuinely needs no secrets, add an empty array:\n` +
-          `  ${chalk.cyan('"required_secrets": []')}\n\n` +
-          `  These are matched by name against your workspace secrets vault.\n` +
-          `  Use ${chalk.cyan('--no-required-secrets')} to skip this check.\n`
-        )
-        const err = new CliError('Missing required_secrets declaration', ExitCodes.INVALID_INPUT)
-        err.displayed = true
-        throw err
       }
 
       // Create the agent (server auto-assigns version)

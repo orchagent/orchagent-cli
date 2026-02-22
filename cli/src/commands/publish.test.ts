@@ -1462,6 +1462,7 @@ describe('publish command - schema auto-migration', () => {
       name: 'test-agent',
       type: 'tool',
       description: 'Test',
+      required_secrets: [],
       input_schema: { type: 'object', properties: { query: { type: 'string' } } },
     }
 
@@ -2514,14 +2515,14 @@ describe('dry-run custom_tools display (BUG-15)', () => {
   ]
 
   it('shows correct count when custom_tools defined at top level', async () => {
-    mockManifest({ name: 'test-agent', type: 'agent', custom_tools: tools3 })
+    mockManifest({ name: 'test-agent', type: 'agent', required_secrets: [], custom_tools: tools3 })
     await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
     const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(output).toContain('Custom tools: 3')
   })
 
   it('shows correct count when custom_tools defined inside loop', async () => {
-    mockManifest({ name: 'test-agent', type: 'agent', loop: { max_turns: 10, custom_tools: tools3 } })
+    mockManifest({ name: 'test-agent', type: 'agent', required_secrets: [], loop: { max_turns: 10, custom_tools: tools3 } })
     await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
     const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(output).toContain('Custom tools: 3')
@@ -2529,7 +2530,7 @@ describe('dry-run custom_tools display (BUG-15)', () => {
 
   it('shows loop count when custom_tools in both top-level and loop', async () => {
     mockManifest({
-      name: 'test-agent', type: 'agent',
+      name: 'test-agent', type: 'agent', required_secrets: [],
       custom_tools: [{ name: 'lint', description: 'Run linter', command: 'eslint .' }],
       loop: { max_turns: 5, custom_tools: [
         { name: 'test', description: 'Run tests', command: 'pytest' },
@@ -2542,24 +2543,24 @@ describe('dry-run custom_tools display (BUG-15)', () => {
   })
 
   it('shows 0 when no custom_tools defined', async () => {
-    mockManifest({ name: 'test-agent', type: 'agent' })
+    mockManifest({ name: 'test-agent', type: 'agent', required_secrets: [] })
     await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
     const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(output).toContain('Custom tools: 0')
   })
 
   it('validates custom_tools from loop (rejects missing command)', async () => {
-    mockManifest({ name: 'test-agent', type: 'agent', loop: { custom_tools: [{ name: 'broken-tool', description: 'No command' }] } })
+    mockManifest({ name: 'test-agent', type: 'agent', required_secrets: [], loop: { custom_tools: [{ name: 'broken-tool', description: 'No command' }] } })
     await expect(program.parseAsync(['node', 'test', 'publish', '--dry-run'])).rejects.toThrow(/must have 'name' and 'command'/)
   })
 
   it('validates custom_tools from loop (rejects reserved names)', async () => {
-    mockManifest({ name: 'test-agent', type: 'agent', loop: { custom_tools: [{ name: 'bash', description: 'Reserved', command: 'bash' }] } })
+    mockManifest({ name: 'test-agent', type: 'agent', required_secrets: [], loop: { custom_tools: [{ name: 'bash', description: 'Reserved', command: 'bash' }] } })
     await expect(program.parseAsync(['node', 'test', 'publish', '--dry-run'])).rejects.toThrow(/conflicts with a built-in tool name/)
   })
 
   it('validates custom_tools from loop (rejects duplicates)', async () => {
-    mockManifest({ name: 'test-agent', type: 'agent', loop: { custom_tools: [
+    mockManifest({ name: 'test-agent', type: 'agent', required_secrets: [], loop: { custom_tools: [
       { name: 'lint', description: 'Run linter', command: 'eslint .' },
       { name: 'lint', description: 'Duplicate', command: 'pylint .' },
     ] } })
@@ -2612,6 +2613,7 @@ describe('IDEA-013: publish sends environment field', () => {
     mockManifest({
       name: 'env-agent',
       type: 'agent',
+      required_secrets: [],
       environment: {
         python_version: '3.11',
         node_version: '20',
@@ -2634,6 +2636,7 @@ describe('IDEA-013: publish sends environment field', () => {
     mockManifest({
       name: 'plain-agent',
       type: 'agent',
+      required_secrets: [],
     })
 
     await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
@@ -2863,6 +2866,146 @@ describe('dry-run server-side validation (BUG-11)', () => {
 
     const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(stderrOutput).toContain('Could not reach server for validation')
+    expect(stderrOutput).toContain('No changes made (dry run)')
+  })
+
+  it('blocks tool type without required_secrets during dry-run (BUG-11 C-1 parity)', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool agent',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'my-tool',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+    ).rejects.toThrow(/Missing required_secrets/)
+
+    expect(mockCreateAgent).not.toHaveBeenCalled()
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('must declare required_secrets')
+  })
+
+  it('blocks agent type without required_secrets during dry-run (BUG-11 C-1 parity)', async () => {
+    const manifest = {
+      name: 'my-agent',
+      type: 'agent',
+      description: 'An agent',
+      runtime: { command: 'python main.py' },
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'my-agent',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+    ).rejects.toThrow(/Missing required_secrets/)
+
+    expect(mockCreateAgent).not.toHaveBeenCalled()
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('must declare required_secrets')
+  })
+
+  it('allows tool type with empty required_secrets during dry-run', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool agent',
+      required_secrets: [],
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'my-tool',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+    mockPreviewBundle.mockResolvedValue({
+      fileCount: 1, totalSizeBytes: 100, entrypoint: 'main.py', files: [],
+    } as any)
+    mockValidateAgentPublish.mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('must declare required_secrets')
+    expect(stderrOutput).toContain('No changes made (dry run)')
+  })
+
+  it('respects --no-required-secrets during dry-run', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool agent',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'my-tool',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+    mockPreviewBundle.mockResolvedValue({
+      fileCount: 1, totalSizeBytes: 100, entrypoint: 'main.py', files: [],
+    } as any)
+    mockValidateAgentPublish.mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run', '--no-required-secrets'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('must declare required_secrets')
     expect(stderrOutput).toContain('No changes made (dry run)')
   })
 })

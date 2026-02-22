@@ -1,5 +1,6 @@
 import { Command } from 'commander'
 
+import { printJson } from '../lib/output'
 import {
   getDefaultFormats,
   setDefaultFormats,
@@ -79,7 +80,7 @@ export async function setConfigValue(key: string, value: string): Promise<void> 
   }
 }
 
-async function getConfigValue(key: string): Promise<void> {
+async function getConfigValue(key: string, options: { json?: boolean } = {}): Promise<void> {
   if (!isValidKey(key)) {
     throw new CliError(
       `Unknown config key: ${key}. Supported keys: ${SUPPORTED_KEYS.join(', ')}`
@@ -89,6 +90,10 @@ async function getConfigValue(key: string): Promise<void> {
   if (key === 'default-format') {
     const resolved = await getResolvedConfig()
     const formats = await getDefaultFormats(resolved)
+    if (options.json) {
+      printJson({ key, value: formats.length > 0 ? formats : [] })
+      return
+    }
     if (formats.length === 0) {
       process.stdout.write('(not set)\n')
     } else {
@@ -98,6 +103,10 @@ async function getConfigValue(key: string): Promise<void> {
 
   if (key === 'default-scope') {
     const scope = await getDefaultScope()
+    if (options.json) {
+      printJson({ key, value: scope ?? null })
+      return
+    }
     if (!scope) {
       process.stdout.write('(not set)\n')
     } else {
@@ -107,6 +116,10 @@ async function getConfigValue(key: string): Promise<void> {
 
   if (key === 'default-provider') {
     const provider = await getDefaultProvider()
+    if (options.json) {
+      printJson({ key, value: provider ?? null })
+      return
+    }
     if (!provider) {
       process.stdout.write('(not set)\n')
     } else {
@@ -126,8 +139,17 @@ async function unsetConfigValue(key: string): Promise<void> {
   process.stdout.write(`Unset ${key}\n`)
 }
 
-async function listConfigValues(): Promise<void> {
+async function listConfigValues(options: { json?: boolean } = {}): Promise<void> {
   const config = await loadConfig()
+
+  if (options.json) {
+    printJson({
+      default_format: config.default_formats ?? [],
+      default_scope: config.default_scope ?? null,
+      default_provider: config.default_provider ?? null,
+    })
+    return
+  }
 
   process.stdout.write('CLI Configuration:\n\n')
 
@@ -173,8 +195,9 @@ export function registerConfigCommand(program: Command): void {
   config
     .command('get <key>')
     .description('Get a configuration value')
-    .action(async (key: string) => {
-      await getConfigValue(key)
+    .option('--json', 'Output as JSON')
+    .action(async (key: string, options: { json?: boolean }) => {
+      await getConfigValue(key, options)
     })
 
   config
@@ -187,7 +210,8 @@ export function registerConfigCommand(program: Command): void {
   config
     .command('list')
     .description('List all configuration values')
-    .action(async () => {
-      await listConfigValues()
+    .option('--json', 'Output as JSON')
+    .action(async (options: { json?: boolean }) => {
+      await listConfigValues(options)
     })
 }

@@ -14,6 +14,7 @@ import {
   request,
 } from '../lib/api'
 import { CliError } from '../lib/errors'
+import { printJson } from '../lib/output'
 import { track } from '../lib/analytics'
 import type { ResolvedConfig, Org } from '../types'
 
@@ -69,10 +70,15 @@ function statusColor(status: string | undefined): string {
 
 async function listEnvs(
   config: ResolvedConfig,
-  options: { workspace?: string }
+  options: { workspace?: string; json?: boolean }
 ): Promise<void> {
   const workspaceId = await resolveWorkspaceId(config, options.workspace)
   const result = await listEnvironments(config, workspaceId)
+
+  if (options.json) {
+    printJson(result)
+    return
+  }
 
   if (result.environments.length === 0) {
     console.log(chalk.gray('No environments found.'))
@@ -102,7 +108,7 @@ async function listEnvs(
       statusColor(env.build?.status),
       env.agent_count.toString(),
       env.environment.is_predefined ? chalk.blue('predefined') : chalk.gray('custom'),
-      env.environment.id.slice(0, 8),
+      env.environment.id,
     ])
   }
 
@@ -128,9 +134,15 @@ async function listEnvs(
 
 async function getEnvStatus(
   config: ResolvedConfig,
-  environmentId: string
+  environmentId: string,
+  options: { json?: boolean }
 ): Promise<void> {
   const result = await getEnvironment(config, environmentId)
+
+  if (options.json) {
+    printJson(result)
+    return
+  }
 
   console.log()
   console.log(chalk.bold(`Environment: ${result.environment.name}`))
@@ -250,6 +262,7 @@ export function registerEnvCommand(program: Command): void {
     .command('list')
     .description('List environments in workspace')
     .option('-w, --workspace <slug>', 'Workspace slug')
+    .option('--json', 'Output as JSON')
     .action(async (options) => {
       const config = await getResolvedConfig()
       await listEnvs(config, options)
@@ -258,9 +271,10 @@ export function registerEnvCommand(program: Command): void {
   env
     .command('status <environment-id>')
     .description('Check environment build status')
-    .action(async (environmentId) => {
+    .option('--json', 'Output as JSON')
+    .action(async (environmentId, options) => {
       const config = await getResolvedConfig()
-      await getEnvStatus(config, environmentId)
+      await getEnvStatus(config, environmentId, options)
     })
 
   env

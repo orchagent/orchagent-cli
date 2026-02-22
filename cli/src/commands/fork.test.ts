@@ -15,7 +15,7 @@ vi.mock('../lib/api', () => {
 
   return {
     ApiError,
-    getPublicAgent: vi.fn(),
+    getAgentWithFallback: vi.fn(),
     request: vi.fn(),
     forkAgent: vi.fn(),
   }
@@ -26,13 +26,13 @@ vi.mock('../lib/key-store')
 
 import { registerForkCommand } from './fork'
 import { getResolvedConfig } from '../lib/config'
-import { getPublicAgent, request, forkAgent, ApiError } from '../lib/api'
+import { getAgentWithFallback, request, forkAgent, ApiError } from '../lib/api'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
 import { saveServiceKey } from '../lib/key-store'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
-const mockGetPublicAgent = vi.mocked(getPublicAgent)
+const mockGetAgentWithFallback = vi.mocked(getAgentWithFallback)
 const mockRequest = vi.mocked(request)
 const mockForkAgent = vi.mocked(forkAgent)
 const mockTrack = vi.mocked(track)
@@ -59,7 +59,7 @@ describe('fork command', () => {
       apiUrl: 'https://api.test.com',
     })
 
-    mockGetPublicAgent.mockResolvedValue({
+    mockGetAgentWithFallback.mockResolvedValue({
       id: 'source-agent-id',
       org_slug: 'orchagent',
       name: 'my-discord-agent',
@@ -101,7 +101,7 @@ describe('fork command', () => {
   it('forks a public agent into current workspace by default', async () => {
     await program.parseAsync(['node', 'test', 'fork', 'orchagent/my-discord-agent'])
 
-    expect(mockGetPublicAgent).toHaveBeenCalledWith(
+    expect(mockGetAgentWithFallback).toHaveBeenCalledWith(
       expect.any(Object),
       'orchagent',
       'my-discord-agent',

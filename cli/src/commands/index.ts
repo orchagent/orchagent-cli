@@ -2,12 +2,10 @@ import { Command } from 'commander'
 
 import { registerLoginCommand } from './login'
 import { registerLogoutCommand } from './logout'
-import { registerCallCommand } from './call'
 import { registerAgentsCommand } from './agents'
 import { registerInitCommand } from './init'
 import { registerPublishCommand } from './publish'
 import { registerWhoamiCommand } from './whoami'
-import { registerKeysCommand } from './keys'
 import { registerRunCommand } from './run'
 import { registerInfoCommand } from './info'
 import { registerSkillCommand } from './skill'
@@ -42,6 +40,7 @@ import { registerEstimateCommand } from './estimate'
 import { registerReplayCommand } from './replay'
 import { registerTraceCommand } from './trace'
 import { registerMetricsCommand } from './metrics'
+import { registerDagCommand } from './dag'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -49,11 +48,9 @@ export function registerCommands(program: Command): void {
   registerWhoamiCommand(program)
   registerInitCommand(program)
   registerPublishCommand(program)
-  registerCallCommand(program)
   registerRunCommand(program)
   registerInfoCommand(program)
   registerAgentsCommand(program)
-  registerKeysCommand(program)
   registerSkillCommand(program)
   registerDeleteCommand(program)
   registerForkCommand(program)
@@ -86,4 +83,5 @@ export function registerCommands(program: Command): void {
   registerReplayCommand(program)
   registerTraceCommand(program)
   registerMetricsCommand(program)
+  registerDagCommand(program)
 }

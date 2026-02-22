@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 
 import { getResolvedConfig } from '../lib/config'
-import { getPublicAgent, request, forkAgent, ApiError } from '../lib/api'
+import { getAgentWithFallback, request, forkAgent, ApiError } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
 import { track } from '../lib/analytics'
@@ -57,16 +57,16 @@ async function resolveWorkspace(
 export function registerForkCommand(program: Command): void {
   program
     .command('fork <agent>')
-    .description('Fork a public agent into your workspace')
+    .description('Fork an agent into your workspace')
     .option('--name <new-name>', 'Rename the forked agent')
     .option('-w, --workspace <workspace-slug>', 'Target workspace slug')
     .option('--json', 'Output raw JSON')
     .addHelpText('after', `
 Examples:
-  orch fork orchagent/my-discord-agent
-  orch fork orchagent/my-discord-agent --workspace acme-corp
-  orch fork orchagent/my-discord-agent --name customer-support-bot
-  orch fork orchagent/my-discord-agent@v2 --json
+  orch fork orchagent/security-agent
+  orch fork orchagent/security-agent --workspace acme-corp
+  orch fork orchagent/security-agent --name my-security-scanner
+  orch fork joe/my-agent --workspace acme-corp   # fork your own private agent into another workspace
 `)
     .action(async (agentRef: string, options: { name?: string; workspace?: string; json?: boolean }) => {
       const write = (message: string) => {
@@ -81,7 +81,7 @@ Examples:
       const { org, agent, version } = parseAgentRef(agentRef)
 
       write('Resolving source agent...\n')
-      const source = await getPublicAgent(config, org, agent, version)
+      const source = await getAgentWithFallback(config, org, agent, version)
       if (!source.id) {
         throw new CliError(
           `Could not resolve source agent ID for '${org}/${agent}@${version}'.`
