@@ -39,6 +39,9 @@ import { registerDiffCommand } from './diff'
 import { registerHealthCommand } from './health'
 import { registerDevCommand } from './dev'
 import { registerEstimateCommand } from './estimate'
+import { registerReplayCommand } from './replay'
+import { registerTraceCommand } from './trace'
+import { registerMetricsCommand } from './metrics'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -80,4 +83,7 @@ export function registerCommands(program: Command): void {
   registerHealthCommand(program)
   registerDevCommand(program)
   registerEstimateCommand(program)
+  registerReplayCommand(program)
+  registerTraceCommand(program)
+  registerMetricsCommand(program)
 }
