@@ -20,7 +20,7 @@ vi.mock('../lib/analytics', () => ({
 }))
 
 import fs from 'fs/promises'
-import { registerRunCommand, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint } from './run'
+import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import {
@@ -1185,10 +1185,11 @@ describe('Bug 6: 500 error messages', () => {
       text: async () => JSON.stringify({
         error: {
           code: 'SANDBOX_ERROR',
+          category: 'code_error',
           message: 'Code execution failed with exit code 1: ModuleNotFoundError: No module named \'pandas\'',
           is_retryable: false,
         },
-        metadata: { request_id: 'req_test123' },
+        metadata: { request_id: 'req_test123', sandbox_exit_code: 1 },
       }),
     } as any)
 
@@ -1305,10 +1306,136 @@ describe('Bug 6: 500 error messages', () => {
       text: async () => JSON.stringify({
         error: {
           code: 'SANDBOX_ERROR',
+          category: 'code_error',
           message: 'Code execution failed with exit code 1: ModuleNotFoundError: No module named \'pandas\'',
           is_retryable: false,
         },
-        metadata: { request_id: 'req_test202' },
+        metadata: { request_id: 'req_test202', sandbox_exit_code: 1 },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/error in the agent's code/)
+  })
+
+  it('shows setup failure message for SANDBOX_ERROR with category setup_error', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          category: 'setup_error',
+          message: 'Sandbox execution failed: Failed to create sandbox',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_setup_err' },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/failed during setup/)
+  })
+
+  it('does not say "error in agent code" for setup failures without category (backward compat)', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    // Old gateway that doesn't send category or sandbox_exit_code
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          message: 'Sandbox execution failed: connection reset by peer',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_no_exit_code' },
+      }),
+    } as any)
+
+    // Should NOT say "error in agent's code" — no exit code means sandbox didn't run
+    const promise = program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{"test": true}',
+    ])
+    await expect(promise).rejects.toThrow(/execution failed/)
+    await expect(promise).rejects.not.toThrow(/error in the agent's code/)
+  })
+
+  it('shows code error message when category is code_error', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          category: 'code_error',
+          message: 'Code execution failed with exit code 1: NameError: name \'foo\' is not defined',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_code_err', sandbox_exit_code: 1 },
+      }),
+    } as any)
+
+    await expect(
+      program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+    ).rejects.toThrow(/error in the agent's code/)
+  })
+
+  it('falls back to code error when no category but sandbox_exit_code present', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    // Old gateway sends sandbox_exit_code in metadata but no category
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({
+        error: {
+          code: 'SANDBOX_ERROR',
+          message: 'Code execution failed with exit code 1: ImportError',
+          is_retryable: false,
+        },
+        metadata: { request_id: 'req_fallback', sandbox_exit_code: 1 },
       }),
     } as any)
 
@@ -2134,6 +2261,63 @@ describe('F-18: Pre-flight secrets check', () => {
   })
 })
 
+describe('Streaming headers for code_runtime cloud runs', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      execution_engine: 'code_runtime',
+      name: 'tool-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      text: async () => '{"result":"ok"}',
+      arrayBuffer: async () => new ArrayBuffer(0),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    } as any)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('requests SSE by default for code_runtime runs', async () => {
+    await program.parseAsync(['node', 'test', 'run', 'test-org/tool-agent', '--data', '{"x":1}'])
+
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    expect(fetchCall[1]?.headers?.Accept).toBe('text/event-stream')
+  })
+
+  it('does not request SSE when --no-stream is set', async () => {
+    await program.parseAsync(['node', 'test', 'run', 'test-org/tool-agent', '--data', '{"x":1}', '--no-stream'])
+
+    expect(mockSafeFetchWithRetryForCalls).toHaveBeenCalled()
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    expect(fetchCall[1]?.headers?.Accept).toBeUndefined()
+  })
+})
+
 // ─── Workspace-aware agent resolution ────────────────────────────────────────
 
 describe('Workspace-aware cloud execution', () => {
@@ -2315,5 +2499,917 @@ describe('localCommandForEntrypoint', () => {
   it('defaults to python3 for unknown extensions', () => {
     expect(localCommandForEntrypoint('main.rb')).toBe('python3')
     expect(localCommandForEntrypoint('main.ts')).toBe('python3')
+  })
+})
+
+describe('UX-4: validateInputSchema', () => {
+  const schema = {
+    properties: {
+      code: { type: 'string', description: 'Source code to analyze' },
+      language: { type: 'string' },
+      max_issues: { type: 'number' },
+      strict: { type: 'boolean' },
+      tags: { type: 'array' },
+      config: { type: 'object' },
+    },
+    required: ['code'],
+  }
+
+  it('returns no errors for valid input', () => {
+    const errors = validateInputSchema({ code: 'console.log("hi")' }, schema)
+    expect(errors).toEqual([])
+  })
+
+  it('returns no errors when all fields match types', () => {
+    const errors = validateInputSchema({
+      code: 'x = 1',
+      language: 'python',
+      max_issues: 5,
+      strict: true,
+      tags: ['lint', 'security'],
+      config: { level: 'warn' },
+    }, schema)
+    expect(errors).toEqual([])
+  })
+
+  it('reports missing required fields', () => {
+    const errors = validateInputSchema({ language: 'python' }, schema)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Missing required field: "code"')
+    expect(errors[0]).toContain('Source code to analyze')
+  })
+
+  it('reports multiple missing required fields', () => {
+    const multiReqSchema = {
+      properties: {
+        name: { type: 'string' },
+        age: { type: 'number', description: 'User age' },
+      },
+      required: ['name', 'age'],
+    }
+    const errors = validateInputSchema({}, multiReqSchema)
+    expect(errors).toHaveLength(2)
+    expect(errors[0]).toContain('"name"')
+    expect(errors[1]).toContain('"age"')
+    expect(errors[1]).toContain('User age')
+  })
+
+  it('reports type mismatch: expected string got number', () => {
+    const errors = validateInputSchema({ code: 42 }, schema)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBe('Field "code" should be string, got number')
+  })
+
+  it('reports type mismatch: expected number got string', () => {
+    const errors = validateInputSchema({ code: 'x', max_issues: 'five' }, schema)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBe('Field "max_issues" should be number, got string')
+  })
+
+  it('reports type mismatch: expected boolean got string', () => {
+    const errors = validateInputSchema({ code: 'x', strict: 'yes' }, schema)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBe('Field "strict" should be boolean, got string')
+  })
+
+  it('reports type mismatch: expected array got object', () => {
+    const errors = validateInputSchema({ code: 'x', tags: { a: 1 } }, schema)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBe('Field "tags" should be array, got object')
+  })
+
+  it('reports type mismatch: expected object got array', () => {
+    const errors = validateInputSchema({ code: 'x', config: [1, 2] }, schema)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBe('Field "config" should be object, got array')
+  })
+
+  it('validates integer type same as number', () => {
+    const intSchema = {
+      properties: { count: { type: 'integer' } },
+      required: ['count'],
+    }
+    expect(validateInputSchema({ count: 5 }, intSchema)).toEqual([])
+    const errors = validateInputSchema({ count: 'five' }, intSchema)
+    expect(errors[0]).toBe('Field "count" should be integer, got string')
+  })
+
+  it('reports both missing required and type errors', () => {
+    const errors = validateInputSchema({ max_issues: 'bad' }, schema)
+    expect(errors).toHaveLength(2)
+    expect(errors[0]).toContain('Missing required field: "code"')
+    expect(errors[1]).toContain('Field "max_issues" should be number, got string')
+  })
+
+  it('returns empty array when schema is undefined', () => {
+    expect(validateInputSchema({ anything: 'goes' }, undefined)).toEqual([])
+  })
+
+  it('returns empty array when schema has no properties', () => {
+    expect(validateInputSchema({ anything: 'goes' }, {})).toEqual([])
+  })
+
+  it('skips type check for null values', () => {
+    const errors = validateInputSchema({ code: 'x', language: null }, schema)
+    expect(errors).toEqual([])
+  })
+
+  it('skips type check for fields not in schema properties', () => {
+    const errors = validateInputSchema({ code: 'x', unknown_field: 123 }, schema)
+    expect(errors).toEqual([])
+  })
+
+  it('skips type check when property has no type defined', () => {
+    const noTypeSchema = {
+      properties: { data: { description: 'some data' } },
+      required: [] as string[],
+    }
+    expect(validateInputSchema({ data: 42 }, noTypeSchema)).toEqual([])
+  })
+
+  it('treats null required field as missing', () => {
+    const errors = validateInputSchema({ code: null }, schema)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toContain('Missing required field: "code"')
+  })
+})
+
+describe('UX-4: Client-side schema validation in cloud execution', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('warns about missing required fields before cloud execution', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      id: 'agent-1',
+      org_name: 'Test',
+      org_slug: 'test-org',
+      name: 'validator',
+      version: 'v1',
+      type: 'prompt',
+      input_schema: {
+        properties: {
+          code: { type: 'string', description: 'Code to review' },
+        },
+        required: ['code'],
+      },
+    })
+
+    // Mock a successful response so execution continues after the warning
+    mockSafeFetchWithRetryForCalls.mockResolvedValue(
+      new Response(JSON.stringify({ result: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/validator@v1',
+      '--data', '{"language": "python"}',
+    ])
+
+    const stderrOutput = stderrSpy.mock.calls.map(c => String(c[0])).join('')
+    expect(stderrOutput).toContain('Input validation warning')
+    expect(stderrOutput).toContain('Missing required field: "code"')
+  })
+
+  it('warns about type mismatches before cloud execution', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      id: 'agent-1',
+      org_name: 'Test',
+      org_slug: 'test-org',
+      name: 'validator',
+      version: 'v1',
+      type: 'prompt',
+      input_schema: {
+        properties: {
+          count: { type: 'number' },
+        },
+        required: [],
+      },
+    })
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue(
+      new Response(JSON.stringify({ result: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/validator@v1',
+      '--data', '{"count": "not-a-number"}',
+    ])
+
+    const stderrOutput = stderrSpy.mock.calls.map(c => String(c[0])).join('')
+    expect(stderrOutput).toContain('Input validation warning')
+    expect(stderrOutput).toContain('should be number, got string')
+  })
+
+  it('does not warn when input matches schema', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      id: 'agent-1',
+      org_name: 'Test',
+      org_slug: 'test-org',
+      name: 'validator',
+      version: 'v1',
+      type: 'prompt',
+      input_schema: {
+        properties: {
+          code: { type: 'string' },
+        },
+        required: ['code'],
+      },
+    })
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue(
+      new Response(JSON.stringify({ result: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    )
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/validator@v1',
+      '--data', '{"code": "hello world"}',
+    ])
+
+    const stderrOutput = stderrSpy.mock.calls.map(c => String(c[0])).join('')
+    expect(stderrOutput).not.toContain('Input validation warning')
+  })
+})
+
+// ─── BUG-13: Error messages should not be printed twice ───────────────────────
+
+describe('BUG-13: SSE streaming errors not printed twice', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let exitSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    exitSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  function createSSEStream(events: Array<{ event: string; data: string }>): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder()
+    const sseText = events
+      .map(e => `event: ${e.event}\ndata: ${e.data}\n\n`)
+      .join('')
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText))
+        controller.close()
+      },
+    })
+  }
+
+  it('does not duplicate error when SSE stream has both progress error and error event', async () => {
+    const errorMessage = 'Agent crashed: ModuleNotFoundError'
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    const sseBody = createSSEStream([
+      { event: 'progress', data: JSON.stringify({ type: 'sandbox_start' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'error', message: errorMessage }) },
+      { event: 'error', data: JSON.stringify({ error: { message: errorMessage } }) },
+    ])
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: sseBody,
+    } as any)
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"task": "test"}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      // The CliError should have displayed=true since the progress event already showed it
+      expect(err.displayed).toBe(true)
+    }
+
+    const stderrOutput = stderrSpy.mock.calls.map(c => String(c[0])).join('')
+    // Error should appear only once (from renderProgress), not duplicated
+    const occurrences = stderrOutput.split(errorMessage).length - 1
+    expect(occurrences).toBe(1)
+  })
+
+  it('still prints error when SSE has error event but no progress error', async () => {
+    const errorMessage = 'Internal server error'
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    const sseBody = createSSEStream([
+      { event: 'progress', data: JSON.stringify({ type: 'sandbox_start' }) },
+      // No progress error event — only the SSE error event
+      { event: 'error', data: JSON.stringify({ error: { message: errorMessage } }) },
+    ])
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: sseBody,
+    } as any)
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"task": "test"}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      // displayed should NOT be true — the error wasn't shown during streaming
+      expect(err.displayed).toBeFalsy()
+      expect(err.message).toBe(errorMessage)
+    }
+  })
+})
+
+// ─── UX-007: --verbose flag on orch run ────────────────────────────────────────
+
+describe('renderProgress verbose control', () => {
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+  })
+  afterEach(() => {
+    stderrSpy.mockRestore()
+  })
+
+  function stderrOutput(): string {
+    return stderrSpy.mock.calls.map(c => String(c[0])).join('')
+  }
+
+  // ── stdout/stderr suppressed by default (verbose=false) ──
+
+  it('suppresses stdout events when verbose is false', () => {
+    renderProgress({ type: 'stdout', text: 'Hello from sandbox\n' })
+    expect(stderrOutput()).toBe('')
+  })
+
+  it('suppresses stderr events when verbose is false', () => {
+    renderProgress({ type: 'stderr', text: 'WARNING: deprecated\n' })
+    expect(stderrOutput()).toBe('')
+  })
+
+  it('suppresses stdout events when verbose is omitted (default)', () => {
+    renderProgress({ type: 'stdout', text: 'debug output' })
+    expect(stderrOutput()).toBe('')
+  })
+
+  // ── stdout/stderr shown when verbose=true ──
+
+  it('shows stdout events when verbose is true', () => {
+    renderProgress({ type: 'stdout', text: 'Hello from sandbox\n' }, true)
+    expect(stderrOutput()).toContain('Hello from sandbox')
+  })
+
+  it('shows stderr events when verbose is true', () => {
+    renderProgress({ type: 'stderr', text: 'WARNING: deprecated\n' }, true)
+    expect(stderrOutput()).toContain('WARNING: deprecated')
+  })
+
+  it('handles empty stdout text gracefully', () => {
+    renderProgress({ type: 'stdout', text: '' }, true)
+    expect(stderrOutput()).toBe('')
+  })
+
+  it('handles empty stderr text gracefully', () => {
+    renderProgress({ type: 'stderr', text: '' }, true)
+    expect(stderrOutput()).toBe('')
+  })
+
+  it('handles non-string stdout text gracefully', () => {
+    renderProgress({ type: 'stdout', text: 42 }, true)
+    expect(stderrOutput()).toBe('')
+  })
+
+  it('handles missing text field gracefully', () => {
+    renderProgress({ type: 'stderr' }, true)
+    expect(stderrOutput()).toBe('')
+  })
+
+  // ── Structural events always shown regardless of verbose ──
+
+  it('shows sandbox_start regardless of verbose', () => {
+    renderProgress({ type: 'sandbox_start' })
+    expect(stderrOutput()).toContain('Starting sandbox')
+  })
+
+  it('shows setup_step regardless of verbose', () => {
+    renderProgress({ type: 'setup_step', name: 'install_deps', status: 'completed' })
+    expect(stderrOutput()).toContain('install_deps')
+    expect(stderrOutput()).toContain('completed')
+  })
+
+  it('shows turn_start regardless of verbose', () => {
+    renderProgress({ type: 'turn_start', turn: 2, max_turns: 5 })
+    expect(stderrOutput()).toContain('Turn 2/5')
+  })
+
+  it('shows tool_call regardless of verbose', () => {
+    renderProgress({ type: 'tool_call', tool: 'bash', args_brief: 'ls -la' })
+    expect(stderrOutput()).toContain('bash')
+    expect(stderrOutput()).toContain('ls -la')
+  })
+
+  it('shows error regardless of verbose', () => {
+    renderProgress({ type: 'error', message: 'Sandbox crashed' })
+    expect(stderrOutput()).toContain('Sandbox crashed')
+  })
+
+  it('shows done regardless of verbose', () => {
+    renderProgress({ type: 'done' })
+    expect(stderrOutput()).toContain('Done')
+  })
+
+  it('shows output_truncated regardless of verbose', () => {
+    renderProgress({ type: 'output_truncated' })
+    expect(stderrOutput()).toContain('truncated')
+  })
+
+  it('shows tool_result error regardless of verbose', () => {
+    renderProgress({ type: 'tool_result', status: 'error' })
+    expect(stderrOutput()).toContain('error')
+  })
+
+  // ── verbose=true done event shows extra detail ──
+
+  it('done event shows exit_code when non-zero and verbose', () => {
+    renderProgress({ type: 'done', exit_code: 1, execution_time_ms: 4500 }, true)
+    const output = stderrOutput()
+    expect(output).toContain('Done')
+    expect(output).toContain('exit_code=1')
+    expect(output).toContain('4.5s')
+  })
+
+  it('done event hides exit_code when zero and verbose', () => {
+    renderProgress({ type: 'done', exit_code: 0, execution_time_ms: 2000 }, true)
+    const output = stderrOutput()
+    expect(output).toContain('Done')
+    expect(output).not.toContain('exit_code')
+    expect(output).toContain('2.0s')
+  })
+
+  it('done event shows no extras without verbose', () => {
+    renderProgress({ type: 'done', exit_code: 1, execution_time_ms: 4500 })
+    const output = stderrOutput()
+    expect(output).toContain('Done')
+    expect(output).not.toContain('exit_code')
+    expect(output).not.toContain('4.5s')
+  })
+
+  // ── heartbeat always silent ──
+
+  it('heartbeat is always silent', () => {
+    renderProgress({ type: 'heartbeat' })
+    renderProgress({ type: 'heartbeat' }, true)
+    expect(stderrOutput()).toBe('')
+  })
+
+  // ── setup_step icon variants ──
+
+  it('setup_step shows ✓ icon for completed status', () => {
+    renderProgress({ type: 'setup_step', name: 'write_code', status: 'completed' })
+    expect(stderrOutput()).toContain('✓')
+  })
+
+  it('setup_step shows x icon for failed status', () => {
+    renderProgress({ type: 'setup_step', name: 'write_code', status: 'failed' })
+    expect(stderrOutput()).toContain('x')
+  })
+
+  it('setup_step shows · icon for started status', () => {
+    renderProgress({ type: 'setup_step', name: 'write_code', status: 'started' })
+    expect(stderrOutput()).toContain('·')
+  })
+
+  // ── tool_call icon variants ──
+
+  it('tool_call uses $ icon for bash', () => {
+    renderProgress({ type: 'tool_call', tool: 'bash' })
+    expect(stderrOutput()).toContain('$')
+  })
+
+  it('tool_call uses > icon for read_file', () => {
+    renderProgress({ type: 'tool_call', tool: 'read_file' })
+    expect(stderrOutput()).toContain('>')
+  })
+
+  it('tool_call uses < icon for write_file', () => {
+    renderProgress({ type: 'tool_call', tool: 'write_file' })
+    expect(stderrOutput()).toContain('<')
+  })
+
+  it('tool_call uses ~ icon for other tools', () => {
+    renderProgress({ type: 'tool_call', tool: 'orch_call' })
+    expect(stderrOutput()).toContain('~')
+  })
+})
+
+describe('UX-007: --verbose flag in streaming mode', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  function stderrOutput(): string {
+    return stderrSpy.mock.calls.map(c => String(c[0])).join('')
+  }
+
+  function createSSEStream(events: Array<{ event: string; data: string }>): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder()
+    const sseText = events
+      .map(e => `event: ${e.event}\ndata: ${e.data}\n\n`)
+      .join('')
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText))
+        controller.close()
+      },
+    })
+  }
+
+  it('shows stdout/stderr in streaming when --verbose is set', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    const sseBody = createSSEStream([
+      { event: 'progress', data: JSON.stringify({ type: 'sandbox_start' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'stdout', text: 'installing deps...\n' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'stderr', text: 'WARN: old version\n' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'done' }) },
+      { event: 'result', data: JSON.stringify({ output: 'success', metadata: {} }) },
+    ])
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: sseBody,
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{"task": "test"}',
+      '--verbose',
+    ])
+
+    const output = stderrOutput()
+    expect(output).toContain('installing deps...')
+    expect(output).toContain('WARN: old version')
+    expect(output).toContain('(verbose)')
+  })
+
+  it('suppresses stdout/stderr in streaming when --verbose is NOT set', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    const sseBody = createSSEStream([
+      { event: 'progress', data: JSON.stringify({ type: 'sandbox_start' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'stdout', text: 'installing deps...\n' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'stderr', text: 'WARN: old version\n' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'done' }) },
+      { event: 'result', data: JSON.stringify({ output: 'success', metadata: {} }) },
+    ])
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: sseBody,
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{"task": "test"}',
+    ])
+
+    const output = stderrOutput()
+    expect(output).not.toContain('installing deps...')
+    expect(output).not.toContain('WARN: old version')
+    expect(output).not.toContain('(verbose)')
+    // Structural events should still be shown
+    expect(output).toContain('Starting sandbox')
+    expect(output).toContain('Done')
+  })
+
+  it('shows verbose debug header with agent metadata', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      execution_engine: 'code_runtime',
+      name: 'my-tool',
+      version: 'v3',
+      supported_providers: ['any'],
+    } as any)
+
+    const sseBody = createSSEStream([
+      { event: 'progress', data: JSON.stringify({ type: 'done' }) },
+      { event: 'result', data: JSON.stringify({ output: 'ok', metadata: {} }) },
+    ])
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: sseBody,
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/my-tool@v3',
+      '--data', '{}',
+      '--verbose',
+    ])
+
+    const output = stderrOutput()
+    // canonicalAgentType normalizes 'tool' → 'agent'
+    expect(output).toContain('type=agent')
+    expect(output).toContain('engine=code_runtime')
+    expect(output).toContain('endpoint=analyze')
+  })
+
+  it('shows verbose pre-request header for non-streaming runs', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      execution_engine: 'direct_llm',
+      name: 'prompter',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({
+        output: 'result',
+        metadata: {
+          stdout: 'sandbox stdout here',
+          stderr: 'sandbox stderr here',
+          processing_time_ms: 3200,
+        },
+      }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/prompter',
+      '--data', '{}',
+      '--verbose',
+    ])
+
+    const output = stderrOutput()
+    // Pre-request debug header
+    expect(output).toContain('[verbose]')
+    // canonicalAgentType normalizes 'prompt' → 'agent'
+    expect(output).toContain('type=agent')
+    expect(output).toContain('engine=direct_llm')
+    // Non-streaming verbose shows stdout/stderr from metadata
+    expect(output).toContain('--- stderr ---')
+    expect(output).toContain('sandbox stderr here')
+    expect(output).toContain('--- stdout ---')
+    expect(output).toContain('sandbox stdout here')
+  })
+
+  it('non-streaming hides stdout/stderr without --verbose', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      execution_engine: 'direct_llm',
+      name: 'prompter',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({
+        output: 'result',
+        metadata: {
+          stdout: 'sandbox stdout here',
+          stderr: 'sandbox stderr here',
+        },
+      }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/prompter',
+      '--data', '{}',
+    ])
+
+    const output = stderrOutput()
+    expect(output).not.toContain('--- stderr ---')
+    expect(output).not.toContain('--- stdout ---')
+    expect(output).not.toContain('[verbose]')
+  })
+
+  it('passes ?verbose=true query parameter when --verbose is set', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      execution_engine: 'direct_llm',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({ output: 'ok', metadata: {} }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{}',
+      '--verbose',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    expect(fetchCall[0]).toContain('?verbose=true')
+  })
+
+  it('does not pass ?verbose=true when --verbose is not set', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      execution_engine: 'direct_llm',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({ output: 'ok', metadata: {} }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{}',
+    ])
+
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    expect(fetchCall[0]).not.toContain('verbose=true')
+  })
+
+  it('--verbose shows done event execution details in streaming', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    const sseBody = createSSEStream([
+      { event: 'progress', data: JSON.stringify({ type: 'sandbox_start' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'done', exit_code: 1, execution_time_ms: 8200 }) },
+      { event: 'result', data: JSON.stringify({ output: 'partial', metadata: {} }) },
+    ])
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: sseBody,
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{}',
+      '--verbose',
+    ])
+
+    const output = stderrOutput()
+    expect(output).toContain('exit_code=1')
+    expect(output).toContain('8.2s')
+  })
+
+  it('--verbose is suppressed when --json is set', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      execution_engine: 'direct_llm',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({ output: 'ok', metadata: { stdout: 'test' } }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{}',
+      '--verbose',
+      '--json',
+    ])
+
+    const output = stderrOutput()
+    // Pre-request verbose header is suppressed in --json mode
+    expect(output).not.toContain('[verbose]')
   })
 })

@@ -148,7 +148,7 @@ export function printUpdateNotification(): void {
     if (isNewer(cachedLatest, current)) {
       process.stderr.write(
         `\nUpdate available: v${current} → v${cachedLatest}\n` +
-        `Run \`npm update -g @orchagent/cli\` to update\n`
+        `Run \`npm install -g @orchagent/cli@latest\` to update\n`
       )
     }
   } catch {

@@ -18,6 +18,24 @@ type Schema = {
   required?: string[]
 }
 
+type ManifestDependency = {
+  id: string
+  version: string
+}
+
+type CustomTool = {
+  name: string
+  description?: string
+  command?: string
+}
+
+type EnvironmentPinning = {
+  python_version?: string
+  node_version?: string
+  pip_flags?: string
+  npm_flags?: string
+}
+
 type AgentDownload = {
   type: AgentTypeValue
   name: string
@@ -32,6 +50,11 @@ type AgentDownload = {
   output_schema?: Schema
   sdk_compatible?: boolean
   prompt?: string
+  // Dependency-related fields
+  dependencies?: ManifestDependency[]
+  default_skills?: string[]
+  custom_tools?: CustomTool[]
+  environment?: EnvironmentPinning
 }
 
 function formatSchema(schema: Schema, indent: string = '  '): string {
@@ -82,6 +105,28 @@ async function fetchReadme(url: string): Promise<string | null> {
   }
 }
 
+function extractDependencies(
+  manifest: Record<string, unknown> | undefined
+): ManifestDependency[] {
+  if (!manifest) return []
+  const deps = manifest.dependencies as Array<{ id?: string; version?: string }> | undefined
+  if (!Array.isArray(deps)) return []
+  return deps
+    .filter(d => d && typeof d.id === 'string' && typeof d.version === 'string')
+    .map(d => ({ id: d.id!, version: d.version! }))
+}
+
+function extractCustomTools(
+  manifest: Record<string, unknown> | undefined
+): CustomTool[] {
+  if (!manifest) return []
+  const tools = manifest.custom_tools as Array<{ name?: string; description?: string; command?: string }> | undefined
+  if (!Array.isArray(tools)) return []
+  return tools
+    .filter(t => t && typeof t.name === 'string')
+    .map(t => ({ name: t.name!, description: t.description, command: t.command }))
+}
+
 async function getAgentInfo(
   config: { apiKey?: string; apiUrl: string; defaultOrg?: string },
   org: string,
@@ -93,6 +138,7 @@ async function getAgentInfo(
   try {
     const publicMeta = await getPublicAgent(config, org, agent, version)
     const meta = publicMeta as Record<string, unknown>
+    const manifest = meta.manifest as Record<string, unknown> | undefined
     return {
       type: (publicMeta.type || 'tool') as AgentDownload['type'],
       name: publicMeta.name,
@@ -105,6 +151,10 @@ async function getAgentInfo(
       source_url: meta.source_url as string | undefined,
       run_command: meta.run_command as string | undefined,
       url: meta.url as string | undefined,
+      dependencies: extractDependencies(manifest),
+      default_skills: (meta.default_skills as string[] | undefined) || [],
+      custom_tools: extractCustomTools(manifest),
+      environment: manifest?.environment as EnvironmentPinning | undefined,
     }
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 404) throw err
@@ -139,6 +189,7 @@ async function getAgentInfo(
     )[0]
   }
 
+  const agentManifest = targetAgent.manifest as Record<string, unknown> | undefined
   return {
     type: targetAgent.type,
     name: targetAgent.name,
@@ -152,6 +203,10 @@ async function getAgentInfo(
     source_url: targetAgent.source_url,
     run_command: targetAgent.run_command,
     url: targetAgent.url,
+    dependencies: extractDependencies(agentManifest),
+    default_skills: targetAgent.default_skills || [],
+    custom_tools: extractCustomTools(agentManifest),
+    environment: agentManifest?.environment as EnvironmentPinning | undefined,
   }
 }
 
@@ -222,6 +277,52 @@ export function registerInfoCommand(program: Command): void {
       if (agentData.output_schema?.properties && Object.keys(agentData.output_schema.properties).length > 0) {
         process.stdout.write('\nOutput Schema:\n')
         process.stdout.write(formatSchema(agentData.output_schema) + '\n')
+      }
+
+      // Display dependencies
+      const hasDeps = agentData.dependencies && agentData.dependencies.length > 0
+      const hasSkills = agentData.default_skills && agentData.default_skills.length > 0
+      const hasTools = agentData.custom_tools && agentData.custom_tools.length > 0
+
+      if (hasDeps) {
+        process.stdout.write('\nDependencies:\n')
+        for (const dep of agentData.dependencies!) {
+          process.stdout.write(`  ${chalk.cyan(dep.id)}@${dep.version}\n`)
+        }
+      }
+
+      if (hasSkills) {
+        process.stdout.write('\nSkills:\n')
+        for (const skill of agentData.default_skills!) {
+          process.stdout.write(`  ${chalk.yellow(skill)}\n`)
+        }
+      }
+
+      if (hasTools) {
+        process.stdout.write('\nCustom Tools:\n')
+        for (const tool of agentData.custom_tools!) {
+          let line = `  ${chalk.magenta(tool.name)}`
+          if (tool.description) {
+            line += ` — ${tool.description}`
+          }
+          process.stdout.write(line + '\n')
+        }
+      }
+
+      // Display environment pinning
+      if (agentData.environment) {
+        const env = agentData.environment
+        const parts: string[] = []
+        if (env.python_version) parts.push(`Python ${env.python_version}`)
+        if (env.node_version) parts.push(`Node ${env.node_version}`)
+        if (env.pip_flags) parts.push(`pip flags: ${env.pip_flags}`)
+        if (env.npm_flags) parts.push(`npm flags: ${env.npm_flags}`)
+        if (parts.length) {
+          process.stdout.write('\nEnvironment:\n')
+          for (const part of parts) {
+            process.stdout.write(`  ${part}\n`)
+          }
+        }
       }
 
       // Fetch and display README if available

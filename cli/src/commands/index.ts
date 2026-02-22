@@ -35,6 +35,10 @@ import { registerTransferCommand } from './transfer'
 import { registerPullCommand } from './pull'
 import { registerLogsCommand } from './logs'
 import { registerSecretsCommand } from './secrets'
+import { registerDiffCommand } from './diff'
+import { registerHealthCommand } from './health'
+import { registerDevCommand } from './dev'
+import { registerEstimateCommand } from './estimate'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -72,4 +76,8 @@ export function registerCommands(program: Command): void {
   registerPullCommand(program)
   registerLogsCommand(program)
   registerSecretsCommand(program)
+  registerDiffCommand(program)
+  registerHealthCommand(program)
+  registerDevCommand(program)
+  registerEstimateCommand(program)
 }

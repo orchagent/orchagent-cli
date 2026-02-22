@@ -275,6 +275,48 @@ export async function getPublicAgent(
   )
 }
 
+export type CostEstimateProvider = {
+  provider: string
+  model: string
+  runs: number
+  total_cost_usd: number
+  avg_cost_usd: number
+}
+
+export type CostEstimate = {
+  sample_size: number
+  avg_cost_usd?: number
+  p50_cost_usd?: number
+  p95_cost_usd?: number
+  avg_input_tokens?: number
+  avg_output_tokens?: number
+  avg_duration_ms?: number | null
+  success_rate?: number
+  provider_breakdown?: CostEstimateProvider[]
+  period_days?: number
+}
+
+export type CostEstimateResponse = {
+  agent: string
+  type: string
+  execution_engine: string | null
+  supported_providers: string[]
+  estimate: CostEstimate
+  metadata: { request_id: string }
+}
+
+export async function getAgentCostEstimate(
+  config: ResolvedConfig,
+  org: string,
+  agent: string,
+  version: string
+): Promise<CostEstimateResponse> {
+  return publicRequest<CostEstimateResponse>(
+    config,
+    `/public/agents/${org}/${agent}/${version}/cost-estimate`
+  )
+}
+
 export async function listMyAgents(config: ResolvedConfig, workspaceId?: string): Promise<Agent[]> {
   const headers: Record<string, string> = {}
   if (workspaceId) headers['X-Workspace-Id'] = workspaceId
@@ -318,6 +360,8 @@ export async function createAgent(
     skill_files?: { path: string; content: string; size: number }[]
     // Local download toggle
     allow_local_download?: boolean
+    // Environment pinning (python_version, node_version, pip_flags, npm_flags)
+    environment?: { python_version?: string; node_version?: string; pip_flags?: string; npm_flags?: string }
   },
   workspaceId?: string
 ): Promise<{ agent: Agent; service_key?: string; services_updated?: number }> {
@@ -527,9 +571,12 @@ export async function downloadCodeBundleAuthenticated(
  */
 export async function checkAgentDelete(
   config: ResolvedConfig,
-  agentId: string
+  agentId: string,
+  workspaceId?: string
 ): Promise<{ agent_id: string; agent_name: string; requires_confirmation: boolean }> {
-  return request(config, 'GET', `/agents/${agentId}/delete-check`)
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request(config, 'GET', `/agents/${agentId}/delete-check`, { headers })
 }
 
 /**
@@ -538,10 +585,13 @@ export async function checkAgentDelete(
 export async function deleteAgent(
   config: ResolvedConfig,
   agentId: string,
-  confirmationName?: string
+  confirmationName?: string,
+  workspaceId?: string
 ): Promise<{ deleted: boolean; agent_id: string; agent_name: string }> {
   const params = confirmationName ? `?confirmation_name=${encodeURIComponent(confirmationName)}` : ''
-  return request(config, 'DELETE', `/agents/${agentId}${params}`)
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request(config, 'DELETE', `/agents/${agentId}${params}`, { headers })
 }
 
 export interface ForkAgentResponse {
@@ -612,6 +662,50 @@ export async function previewAgentVersion(
   const headers: Record<string, string> = {}
   if (workspaceId) headers['X-Workspace-Id'] = workspaceId
   return request(config, 'GET', `/agents/preview?name=${encodeURIComponent(agentName)}`, { headers })
+}
+
+/**
+ * Validate an agent publish payload without actually creating the agent.
+ * Runs server-side validation (name, tier limits, manifest, dependencies, etc.)
+ * and returns a validation report. Used by --dry-run.
+ */
+export async function validateAgentPublish(
+  config: ResolvedConfig,
+  data: {
+    name: string
+    type: string
+    description?: string
+    prompt?: string
+    url?: string
+    input_schema?: object
+    output_schema?: object
+    is_public?: boolean
+    callable?: boolean
+    run_mode?: string
+    runtime?: { command?: string; [key: string]: unknown }
+    loop?: { [key: string]: unknown }
+    default_endpoint?: string
+    timeout_seconds?: number
+    manifest?: object
+    supported_providers?: string[]
+    default_models?: Record<string, string>
+    required_secrets?: string[]
+    default_skills?: string[]
+    skills_locked?: boolean
+    sdk_compatible?: boolean
+    run_command?: string
+    skill_files?: { path: string; content: string; size: number }[]
+    allow_local_download?: boolean
+    environment?: { python_version?: string; node_version?: string; pip_flags?: string; npm_flags?: string }
+  },
+  workspaceId?: string
+): Promise<{ valid: boolean; errors: string[]; warnings: string[] }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request(config, 'POST', '/agents/validate', {
+    body: JSON.stringify(data),
+    headers,
+  })
 }
 
 /**

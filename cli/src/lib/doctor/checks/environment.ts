@@ -96,7 +96,7 @@ export async function checkCliVersion(): Promise<CheckResult> {
         name: 'cli_version',
         status: 'warning',
         message: `CLI v${installedVersion} (v${latestVersion} available)`,
-        fix: 'Run `npm update -g @orchagent/cli` to update',
+        fix: 'Run `npm install -g @orchagent/cli@latest` to update',
         details: { installed: installedVersion, latest: latestVersion },
       }
     }

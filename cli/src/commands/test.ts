@@ -19,6 +19,7 @@ import {
   type LlmProvider,
 } from '../lib/llm'
 import { detectEntrypoint } from '../lib/bundle'
+import { runMockedAgentFixtureTests } from '../lib/test-mock-runner'
 import type { AgentManifest, ResolvedConfig } from '../types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ type TestFixture = {
   expected_output?: Record<string, unknown>
   expected_contains?: string[]
   description?: string
+  mocks?: Record<string, unknown>
 }
 
 type ExecutionEngine = 'direct_llm' | 'managed_loop' | 'code_runtime'
@@ -949,6 +951,13 @@ async function executeTests(
       process.stderr.write(chalk.gray('    "expected_contains": ["response"]\n'))
       process.stderr.write(chalk.gray('  }\n\n'))
       if (validation.executionEngine === 'managed_loop') {
+        process.stderr.write('For orchestrators with sub-agents, add mocked fixtures:\n')
+        process.stderr.write(chalk.gray('  # tests/fixture-mock-basic.json\n'))
+        process.stderr.write(chalk.gray('  {\n'))
+        process.stderr.write(chalk.gray('    "input": {"task": "..."},\n'))
+        process.stderr.write(chalk.gray('    "mocks": {"tool_name": {"key": "mock response"}},\n'))
+        process.stderr.write(chalk.gray('    "expected_contains": ["expected"]\n'))
+        process.stderr.write(chalk.gray('  }\n\n'))
         process.stderr.write('Or test the full agent loop:\n')
         process.stderr.write(chalk.gray(`  orch run . --local --data '{"task": "..."}'\n\n`))
       }
@@ -988,8 +997,47 @@ async function executeTests(
     if (validation.executionEngine === 'code_runtime' && validation.entrypoint) {
       const code = await runCodeRuntimeFixtureTests(agentDir, testFiles.fixtures, validation.entrypoint, verbose)
       if (code !== 0) exitCode = 1
+    } else if (validation.executionEngine === 'managed_loop') {
+      // For managed_loop agents, split fixtures: mocked vs regular
+      const mockedFixtures: string[] = []
+      const regularFixtures: string[] = []
+
+      for (const fixturePath of testFiles.fixtures) {
+        try {
+          const raw = await fs.readFile(fixturePath, 'utf-8')
+          const data = JSON.parse(raw)
+          if (data.mocks && typeof data.mocks === 'object' && !Array.isArray(data.mocks)) {
+            mockedFixtures.push(fixturePath)
+          } else {
+            regularFixtures.push(fixturePath)
+          }
+        } catch {
+          regularFixtures.push(fixturePath) // Let downstream validation handle errors
+        }
+      }
+
+      // Run mocked orchestration tests (full agent loop with mock sub-agents)
+      if (mockedFixtures.length > 0) {
+        try {
+          const manifestPath = path.join(agentDir, 'orchagent.json')
+          const manifestRaw = await fs.readFile(manifestPath, 'utf-8')
+          const manifest: AgentManifest = JSON.parse(manifestRaw)
+          const code = await runMockedAgentFixtureTests(agentDir, mockedFixtures, manifest, verbose, config)
+          if (code !== 0) exitCode = 1
+        } catch (err) {
+          if (err instanceof CliError) throw err
+          process.stderr.write(chalk.red(`  Error running mocked tests: ${(err as Error).message}\n`))
+          exitCode = 1
+        }
+      }
+
+      // Run regular (non-mocked) fixtures as LLM-based prompt tests
+      if (regularFixtures.length > 0) {
+        const code = await runPromptFixtureTests(agentDir, regularFixtures, verbose, config)
+        if (code !== 0) exitCode = 1
+      }
     } else {
-      // Prompt, skill, and managed_loop agents: LLM-based fixture tests
+      // Prompt, skill agents: LLM-based fixture tests
       const code = await runPromptFixtureTests(agentDir, testFiles.fixtures, verbose, config)
       if (code !== 0) exitCode = 1
     }
@@ -1237,6 +1285,22 @@ Fixture Format (tests/fixture-basic.json):
 
   For code_runtime agents, fixtures run your entrypoint with input as stdin.
   For prompt/agent types, fixtures call the LLM with your prompt + input.
+
+Mocked Orchestration Tests (tests/fixture-mock-*.json):
+  For agent-type (managed_loop) orchestrators, add "mocks" to test the full
+  agent loop with deterministic sub-agent responses:
+  {
+    "description": "Orchestrator handles scan results",
+    "input": {"code": "import os"},
+    "mocks": {
+      "scan_secrets": {"findings": [{"type": "code_injection"}]},
+      "scan_deps": {"vulnerabilities": []}
+    },
+    "expected_contains": ["code_injection"]
+  }
+
+  The LLM runs the full tool-use loop, but custom tool calls return mock
+  responses instead of calling real sub-agents. Great for CI testing.
 
 Run mode (--run):
   Validates the agent, then executes it once with the provided --data.

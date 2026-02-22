@@ -8,7 +8,7 @@
  * - Already initialized detection
  * - Tool type (code-runtime scaffolding)
  * - Prompt type (direct_llm scaffolding)
- * - Agent/agentic scaffolding behavior (managed_loop)
+ * - Agent/agentic scaffolding behavior (code_runtime default, --loop for managed_loop)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -296,7 +296,7 @@ describe('init command', () => {
     })
   })
 
-  describe('agent type (managed_loop)', () => {
+  describe('agent type (code_runtime by default)', () => {
     it('sets type to agent in manifest', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
@@ -308,34 +308,25 @@ describe('init command', () => {
       expect(manifest.type).toBe('agent')
     })
 
-    it('includes max_turns in loop for agent type', async () => {
+    it('includes runtime.command in manifest (code_runtime)', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.loop?.max_turns).toBe(25)
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
     })
 
-    it('includes supported_providers for agent type', async () => {
+    it('does not include loop or supported_providers by default', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.supported_providers).toEqual(['anthropic'])
-    })
-
-    it('does not include custom_tools in default manifest', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
-
-      const manifestCall = mockFs.writeFile.mock.calls.find(
-        ([p]) => (p as string).endsWith('orchagent.json')
-      )
-      const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.custom_tools).toBeUndefined()
+      expect(manifest.loop).toBeUndefined()
+      expect(manifest.supported_providers).toBeUndefined()
     })
 
     it('includes empty required_secrets in manifest', async () => {
@@ -348,28 +339,25 @@ describe('init command', () => {
       expect(manifest.required_secrets).toEqual([])
     })
 
-    it('legacy agentic alias produces same result as agent type', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
+    it('creates main.py with agent code template', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
-      const manifestCall = mockFs.writeFile.mock.calls.find(
-        ([p]) => (p as string).endsWith('orchagent.json')
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
       )
-      const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.type).toBe('agent')
-      expect(manifest.loop?.max_turns).toBe(25)
-      expect(manifest.supported_providers).toEqual(['anthropic'])
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('code-runtime agent')
+      expect(content).toContain('task')
     })
 
-    it('creates prompt.md with agent content', async () => {
+    it('does not create prompt.md', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const promptCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('prompt.md')
       )
-      expect(promptCall).toBeDefined()
-      const content = promptCall![1] as string
-      expect(content).toContain('agent')
-      expect(content).not.toContain('{{input}}')
+      expect(promptCall).toBeUndefined()
     })
 
     it('creates schema.json with task input field', async () => {
@@ -384,8 +372,63 @@ describe('init command', () => {
       expect(schema.output.properties).toHaveProperty('success')
     })
 
-    it('does not create main.py', async () => {
+    it('legacy agentic alias produces same result as agent type', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.loop).toBeUndefined()
+    })
+
+    it('supports --language javascript', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--language', 'javascript'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.js')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('code-runtime agent')
+      expect(content).toContain('task')
+    })
+
+    it('shows schema.json in next steps', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('schema.json'))
+    })
+  })
+
+  describe('agent type with --loop (managed_loop)', () => {
+    it('creates managed loop manifest with --loop flag', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--loop'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.loop).toEqual({ max_turns: 25 })
+      expect(manifest.supported_providers).toEqual(['any'])
+    })
+
+    it('creates prompt.md with --loop flag', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--loop'])
+
+      const promptCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('prompt.md')
+      )
+      expect(promptCall).toBeDefined()
+      const content = promptCall![1] as string
+      expect(content).toContain('agent')
+    })
+
+    it('does not create main.py with --loop flag', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--loop'])
 
       const mainCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('main.py')
@@ -393,10 +436,28 @@ describe('init command', () => {
       expect(mainCall).toBeUndefined()
     })
 
-    it('shows schema.json in next steps', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+    it('throws when --loop is used with --type tool', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'tool', '--loop'])
+      ).rejects.toThrow('--loop flag requires --type agent')
+    })
 
-      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('schema.json'))
+    it('throws when --loop is used with --type prompt', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'prompt', '--loop'])
+      ).rejects.toThrow('--loop flag requires --type agent')
+    })
+
+    it('throws when --loop is used with --orchestrator', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--orchestrator', '--loop'])
+      ).rejects.toThrow('Cannot use --loop with --orchestrator')
+    })
+
+    it('throws when --loop is used with --language javascript', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--loop', '--language', 'javascript'])
+      ).rejects.toThrow('JavaScript is not supported for --loop')
     })
   })
 
@@ -1170,11 +1231,17 @@ describe('init command', () => {
     })
   })
 
-  describe('JS managed_loop blocked', () => {
-    it('throws for --type agent --language javascript', async () => {
+  describe('JS agent type', () => {
+    it('does not throw for --type agent --language javascript (code_runtime)', async () => {
       await expect(
         program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--language', 'javascript'])
-      ).rejects.toThrow('JavaScript agent-type agents are not yet supported')
+      ).resolves.not.toThrow()
+    })
+
+    it('throws for --type agent --loop --language javascript', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--loop', '--language', 'javascript'])
+      ).rejects.toThrow('JavaScript is not supported for --loop')
     })
   })
 
@@ -1219,6 +1286,296 @@ describe('init command', () => {
       await expect(
         program.parseAsync(['node', 'test', 'init', 'my-agent', '--orchestrator', '--language', 'javascript'])
       ).resolves.not.toThrow()
+    })
+  })
+
+  describe('fan-out template', () => {
+    it('creates correct files for Python fan-out', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-fanout', '--template', 'fan-out'])
+
+      const writtenFiles = mockFs.writeFile.mock.calls.map(([p]) => path.basename(p as string))
+      expect(writtenFiles).toContain('orchagent.json')
+      expect(writtenFiles).toContain('main.py')
+      expect(writtenFiles).toContain('requirements.txt')
+      expect(writtenFiles).toContain('schema.json')
+      expect(writtenFiles).toContain('README.md')
+      expect(writtenFiles).not.toContain('prompt.md')
+    })
+
+    it('sets agent type with fan-out manifest', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-fanout', '--template', 'fan-out'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.manifest.dependencies).toHaveLength(3)
+      expect(manifest.manifest.dependencies[0].id).toBe('org/agent-a')
+      expect(manifest.manifest.max_hops).toBe(2)
+      expect(manifest.manifest.timeout_ms).toBe(120000)
+      expect(manifest.required_secrets).toEqual([])
+    })
+
+    it('creates main.py with asyncio.gather for parallel calls', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-fanout', '--template', 'fan-out'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('asyncio.gather')
+      expect(content).toContain('from orchagent import AgentClient')
+      expect(content).toContain('org/agent-a@v1')
+      expect(content).toContain('org/agent-b@v1')
+      expect(content).toContain('org/agent-c@v1')
+    })
+
+    it('creates schema.json with task input and results output', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-fanout', '--template', 'fan-out'])
+
+      const schemaCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('schema.json')
+      )
+      const schema = JSON.parse(schemaCall![1] as string)
+      expect(schema.input.properties).toHaveProperty('task')
+      expect(schema.output.properties).toHaveProperty('results')
+      expect(schema.output.properties).toHaveProperty('success')
+    })
+
+    it('creates README with fan-out pattern docs', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-fanout', '--template', 'fan-out'])
+
+      const readmeCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('README.md')
+      )
+      const content = readmeCall![1] as string
+      expect(content).toContain('Fan-Out')
+      expect(content).toContain('parallel')
+    })
+
+    it('shows fan-out label in output', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-fanout', '--template', 'fan-out'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('fan-out orchestrator'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('code_runtime (fan-out)'))
+    })
+
+    it('supports JavaScript via --language', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-fanout', '--template', 'fan-out', '--language', 'javascript'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.js')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('Promise.all')
+      expect(content).toContain("require('orchagent-sdk')")
+
+      const pkgCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('package.json')
+      )
+      expect(pkgCall).toBeDefined()
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.runtime).toEqual({ command: 'node main.js' })
+      expect(manifest.entrypoint).toBe('main.js')
+    })
+
+    it('works without name (current directory)', async () => {
+      await program.parseAsync(['node', 'test', 'init', '--template', 'fan-out'])
+
+      expect(mockFs.mkdir).not.toHaveBeenCalled()
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      expect(manifestCall![0]).toBe(path.join(process.cwd(), 'orchagent.json'))
+    })
+
+    it('throws when orchagent.json already exists', async () => {
+      mockFs.access.mockResolvedValue(undefined)
+
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-fanout', '--template', 'fan-out'])
+      ).rejects.toThrow('Already initialized')
+    })
+  })
+
+  describe('pipeline template', () => {
+    it('creates correct files for Python pipeline', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-pipeline', '--template', 'pipeline'])
+
+      const writtenFiles = mockFs.writeFile.mock.calls.map(([p]) => path.basename(p as string))
+      expect(writtenFiles).toContain('orchagent.json')
+      expect(writtenFiles).toContain('main.py')
+      expect(writtenFiles).toContain('requirements.txt')
+      expect(writtenFiles).toContain('schema.json')
+      expect(writtenFiles).toContain('README.md')
+    })
+
+    it('sets agent type with pipeline dependencies', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-pipeline', '--template', 'pipeline'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.manifest.dependencies).toHaveLength(3)
+      expect(manifest.manifest.dependencies[0].id).toBe('org/parser')
+      expect(manifest.manifest.dependencies[1].id).toBe('org/analyzer')
+      expect(manifest.manifest.dependencies[2].id).toBe('org/reporter')
+    })
+
+    it('creates main.py with sequential calls', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-pipeline', '--template', 'pipeline'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      const content = mainCall![1] as string
+      expect(content).toContain('org/parser@v1')
+      expect(content).toContain('org/analyzer@v1')
+      expect(content).toContain('org/reporter@v1')
+      expect(content).not.toContain('asyncio.gather')
+    })
+
+    it('creates schema with pipeline-specific fields', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-pipeline', '--template', 'pipeline'])
+
+      const schemaCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('schema.json')
+      )
+      const schema = JSON.parse(schemaCall![1] as string)
+      expect(schema.input.properties).toHaveProperty('task')
+      expect(schema.output.properties).toHaveProperty('result')
+      expect(schema.output.properties).toHaveProperty('steps_completed')
+    })
+
+    it('creates README with pipeline pattern docs', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-pipeline', '--template', 'pipeline'])
+
+      const readmeCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('README.md')
+      )
+      const content = readmeCall![1] as string
+      expect(content).toContain('Pipeline')
+      expect(content).toContain('sequentially')
+    })
+
+    it('shows pipeline label in output', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-pipeline', '--template', 'pipeline'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('pipeline orchestrator'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('code_runtime (pipeline)'))
+    })
+
+    it('supports JavaScript via --language', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-pipeline', '--template', 'pipeline', '--language', 'js'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.js')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain("require('orchagent-sdk')")
+      expect(content).toContain("client.call('org/parser@v1'")
+    })
+  })
+
+  describe('map-reduce template', () => {
+    it('creates correct files for Python map-reduce', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-mapreduce', '--template', 'map-reduce'])
+
+      const writtenFiles = mockFs.writeFile.mock.calls.map(([p]) => path.basename(p as string))
+      expect(writtenFiles).toContain('orchagent.json')
+      expect(writtenFiles).toContain('main.py')
+      expect(writtenFiles).toContain('requirements.txt')
+      expect(writtenFiles).toContain('schema.json')
+      expect(writtenFiles).toContain('README.md')
+    })
+
+    it('sets agent type with map-reduce dependencies', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-mapreduce', '--template', 'map-reduce'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('agent')
+      expect(manifest.manifest.dependencies).toHaveLength(2)
+      expect(manifest.manifest.dependencies[0].id).toBe('org/processor')
+      expect(manifest.manifest.dependencies[1].id).toBe('org/aggregator')
+    })
+
+    it('creates main.py with map and reduce pattern', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-mapreduce', '--template', 'map-reduce'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      const content = mainCall![1] as string
+      expect(content).toContain('asyncio.gather')
+      expect(content).toContain('org/processor@v1')
+      expect(content).toContain('org/aggregator@v1')
+      expect(content).toContain('items')
+    })
+
+    it('creates schema with items input', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-mapreduce', '--template', 'map-reduce'])
+
+      const schemaCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('schema.json')
+      )
+      const schema = JSON.parse(schemaCall![1] as string)
+      expect(schema.input.properties).toHaveProperty('items')
+      expect(schema.input.properties.items.type).toBe('array')
+      expect(schema.output.properties).toHaveProperty('items_processed')
+    })
+
+    it('creates README with map-reduce pattern docs', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-mapreduce', '--template', 'map-reduce'])
+
+      const readmeCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('README.md')
+      )
+      const content = readmeCall![1] as string
+      expect(content).toContain('Map-Reduce')
+      expect(content).toContain('Aggregator')
+    })
+
+    it('shows map-reduce label in output', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-mapreduce', '--template', 'map-reduce'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('map-reduce orchestrator'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('code_runtime (map-reduce)'))
+    })
+
+    it('supports JavaScript via --language', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-mapreduce', '--template', 'map-reduce', '--language', 'javascript'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.js')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('Promise.all')
+      expect(content).toContain("client.call('org/processor@v1'")
+      expect(content).toContain("client.call('org/aggregator@v1'")
+    })
+
+    it('throws when orchagent.json already exists', async () => {
+      mockFs.access.mockResolvedValue(undefined)
+
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-mapreduce', '--template', 'map-reduce'])
+      ).rejects.toThrow('Already initialized')
     })
   })
 

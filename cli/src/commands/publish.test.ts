@@ -17,14 +17,18 @@ vi.mock('fs/promises')
 vi.mock('../lib/config')
 vi.mock('../lib/api')
 vi.mock('../lib/bundle')
+vi.mock('../lib/key-store')
 
 import fs from 'fs/promises'
 import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, scanReservedPort, checkDependencies, detectSdkCompatible } from './publish'
+import { CliError } from '../lib/errors'
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { createAgent, getOrg, previewAgentVersion, uploadCodeBundle, request, getPublicAgent } from '../lib/api'
+import { createAgent, getOrg, previewAgentVersion, validateAgentPublish, uploadCodeBundle, request, getPublicAgent } from '../lib/api'
 import { detectEntrypoint, createCodeBundle, validateBundle, previewBundle } from '../lib/bundle'
+import { saveServiceKey } from '../lib/key-store'
 
 const mockFs = vi.mocked(fs)
+const mockSaveServiceKey = vi.mocked(saveServiceKey)
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockLoadConfig = vi.mocked(loadConfig)
 const mockRequest = vi.mocked(request)
@@ -33,6 +37,7 @@ const mockGetOrg = vi.mocked(getOrg)
 const mockGetPublicAgent = vi.mocked(getPublicAgent)
 const mockDetectEntrypoint = vi.mocked(detectEntrypoint)
 const mockPreviewAgentVersion = vi.mocked(previewAgentVersion)
+const mockValidateAgentPublish = vi.mocked(validateAgentPublish)
 const mockUploadCodeBundle = vi.mocked(uploadCodeBundle)
 const mockCreateCodeBundle = vi.mocked(createCodeBundle)
 const mockValidateBundle = vi.mocked(validateBundle)
@@ -71,6 +76,13 @@ describe('publish command', () => {
 
     // Mock createAgent
     mockCreateAgent.mockResolvedValue({ id: 'agent-123' })
+
+    // Mock validateAgentPublish (used by dry-run server validation, BUG-11)
+    mockValidateAgentPublish.mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+    })
 
     // Store original cwd
     originalCwd = process.cwd
@@ -246,6 +258,67 @@ describe('publish command', () => {
       )
     })
 
+    it('throws CliError with non-zero exit code when name is missing (BUG-14)', async () => {
+      const manifest = {}
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        if (path.includes('orchagent.json')) {
+          return JSON.stringify(manifest)
+        }
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      try {
+        await program.parseAsync(['node', 'test', 'publish'])
+        expect.unreachable('Expected CliError to be thrown')
+      } catch (err: unknown) {
+        expect(err).toBeInstanceOf(CliError)
+        const cliErr = err as CliError
+        expect(cliErr.exitCode).toBe(1)
+        expect(cliErr.message).toContain('must have name')
+      }
+    })
+
+    it('throws CliError with non-zero exit code for all name validation failures (BUG-14)', async () => {
+      const validationCases = [
+        { manifest: { name: '' }, expectedMessage: 'must have name' },
+        { manifest: { name: 'x' }, expectedMessage: '2-50 characters' },
+        { manifest: { name: 'My-Agent' }, expectedMessage: 'must be lowercase' },
+        { manifest: { name: 'bad--name' }, expectedMessage: 'consecutive hyphens' },
+      ]
+
+      for (const { manifest, expectedMessage } of validationCases) {
+        mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+          const path = String(filePath)
+          if (path.includes('SKILL.md')) {
+            throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+          }
+          if (path.includes('orchagent.json')) {
+            return JSON.stringify(manifest)
+          }
+          throw new Error(`Unexpected file: ${path}`)
+        })
+
+        const freshProgram = new Command()
+        freshProgram.exitOverride()
+        registerPublishCommand(freshProgram)
+
+        try {
+          await freshProgram.parseAsync(['node', 'test', 'publish'])
+          expect.unreachable(`Expected CliError for: ${JSON.stringify(manifest)}`)
+        } catch (err: unknown) {
+          expect(err).toBeInstanceOf(CliError)
+          const cliErr = err as CliError
+          expect(cliErr.exitCode).not.toBe(0)
+          expect(cliErr.message).toContain(expectedMessage)
+        }
+      }
+    })
+
     it('requires URL or entrypoint for tool-type agents', async () => {
       const manifest = {
         name: 'my-tool',
@@ -416,7 +489,7 @@ describe('publish command', () => {
       expect(mockCreateAgent).not.toHaveBeenCalled()
     })
 
-    it('outputs service key when returned', async () => {
+    it('outputs service key and saves it locally when returned', async () => {
       const manifest = {
         name: 'service-agent',
         version: 'v1',
@@ -427,6 +500,7 @@ describe('publish command', () => {
         id: 'agent-123',
         service_key: 'sk_service_abc123',
       })
+      mockSaveServiceKey.mockResolvedValue('/home/.orchagent/keys/test-org/service-agent.json')
 
       mockFs.readFile.mockImplementation(async (filePath: unknown) => {
         const path = String(filePath)
@@ -448,6 +522,53 @@ describe('publish command', () => {
       await program.parseAsync(['node', 'test', 'publish'])
 
       expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('sk_service_abc123'))
+      expect(mockSaveServiceKey).toHaveBeenCalledWith(
+        'test-org', 'service-agent', expect.any(String),
+        'sk_service_abc123', 'sk_service_a'
+      )
+      // Shows saved path
+      const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+      expect(allOutput).toContain('Saved to')
+      expect(allOutput).toContain('Retrieve later')
+    })
+
+    it('shows warning when key save fails but still displays the key', async () => {
+      const manifest = {
+        name: 'service-agent',
+        version: 'v1',
+        type: 'prompt',
+      }
+
+      mockCreateAgent.mockResolvedValue({
+        id: 'agent-123',
+        service_key: 'sk_service_abc123',
+      })
+      mockSaveServiceKey.mockRejectedValue(new Error('Permission denied'))
+
+      mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+        const path = String(filePath)
+        if (path.includes('SKILL.md')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        if (path.includes('orchagent.json')) {
+          return JSON.stringify(manifest)
+        }
+        if (path.includes('prompt.md')) {
+          return 'Service prompt'
+        }
+        if (path.includes('schema.json')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        throw new Error(`Unexpected file: ${path}`)
+      })
+
+      await program.parseAsync(['node', 'test', 'publish'])
+
+      // Key is still displayed
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('sk_service_abc123'))
+      // Warning is shown
+      const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+      expect(allOutput).toContain('Could not save key locally')
     })
 
     it('shows orch run command with schema field names after publish', async () => {
@@ -2344,5 +2465,404 @@ describe('publish command - dependency warnings (F-9b)', () => {
     expect(stderrOutput).not.toContain('callable: false')
     // Should not have fetched agent list
     expect(mockRequest).not.toHaveBeenCalled()
+  })
+})
+
+describe('dry-run custom_tools display (BUG-15)', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let originalCwd: () => string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({ apiKey: 'sk_test_123', apiUrl: 'https://api.test.com' })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetOrg.mockResolvedValue({ id: 'org-123', slug: 'test-org', name: 'Test Org' })
+    mockPreviewAgentVersion.mockResolvedValue({ name: 'test-agent', existing_versions: [], next_version: 'v1', org_slug: 'test-org' })
+    originalCwd = process.cwd
+    process.cwd = () => '/test/project'
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    process.cwd = originalCwd
+    vi.restoreAllMocks()
+  })
+
+  function mockManifest(manifest: object) {
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You are an agent.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+  }
+
+  const tools3 = [
+    { name: 'lint', description: 'Run linter', command: 'eslint .' },
+    { name: 'test', description: 'Run tests', command: 'pytest' },
+    { name: 'build', description: 'Build project', command: 'make build' },
+  ]
+
+  it('shows correct count when custom_tools defined at top level', async () => {
+    mockManifest({ name: 'test-agent', type: 'agent', custom_tools: tools3 })
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('Custom tools: 3')
+  })
+
+  it('shows correct count when custom_tools defined inside loop', async () => {
+    mockManifest({ name: 'test-agent', type: 'agent', loop: { max_turns: 10, custom_tools: tools3 } })
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('Custom tools: 3')
+  })
+
+  it('shows loop count when custom_tools in both top-level and loop', async () => {
+    mockManifest({
+      name: 'test-agent', type: 'agent',
+      custom_tools: [{ name: 'lint', description: 'Run linter', command: 'eslint .' }],
+      loop: { max_turns: 5, custom_tools: [
+        { name: 'test', description: 'Run tests', command: 'pytest' },
+        { name: 'build', description: 'Build project', command: 'make build' },
+      ] },
+    })
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('Custom tools: 2')
+  })
+
+  it('shows 0 when no custom_tools defined', async () => {
+    mockManifest({ name: 'test-agent', type: 'agent' })
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('Custom tools: 0')
+  })
+
+  it('validates custom_tools from loop (rejects missing command)', async () => {
+    mockManifest({ name: 'test-agent', type: 'agent', loop: { custom_tools: [{ name: 'broken-tool', description: 'No command' }] } })
+    await expect(program.parseAsync(['node', 'test', 'publish', '--dry-run'])).rejects.toThrow(/must have 'name' and 'command'/)
+  })
+
+  it('validates custom_tools from loop (rejects reserved names)', async () => {
+    mockManifest({ name: 'test-agent', type: 'agent', loop: { custom_tools: [{ name: 'bash', description: 'Reserved', command: 'bash' }] } })
+    await expect(program.parseAsync(['node', 'test', 'publish', '--dry-run'])).rejects.toThrow(/conflicts with a built-in tool name/)
+  })
+
+  it('validates custom_tools from loop (rejects duplicates)', async () => {
+    mockManifest({ name: 'test-agent', type: 'agent', loop: { custom_tools: [
+      { name: 'lint', description: 'Run linter', command: 'eslint .' },
+      { name: 'lint', description: 'Duplicate', command: 'pylint .' },
+    ] } })
+    await expect(program.parseAsync(['node', 'test', 'publish', '--dry-run'])).rejects.toThrow(/Duplicate custom tool name/)
+  })
+})
+
+describe('IDEA-013: publish sends environment field', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let originalCwd: () => string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({ apiKey: 'sk_test_123', apiUrl: 'https://api.test.com' })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetOrg.mockResolvedValue({ id: 'org-123', slug: 'test-org', name: 'Test Org' })
+    mockCreateAgent.mockResolvedValue({ id: 'agent-123' })
+    mockPreviewAgentVersion.mockResolvedValue({ name: 'test-agent', existing_versions: [], next_version: 'v1', org_slug: 'test-org' })
+    mockValidateAgentPublish.mockResolvedValue({ valid: true, errors: [], warnings: [] })
+    originalCwd = process.cwd
+    process.cwd = () => '/test/project'
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    process.cwd = originalCwd
+    vi.restoreAllMocks()
+  })
+
+  function mockManifest(manifest: object) {
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You are an agent.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+  }
+
+  it('dry-run shows environment when set', async () => {
+    mockManifest({
+      name: 'env-agent',
+      type: 'agent',
+      environment: {
+        python_version: '3.11',
+        node_version: '20',
+        pip_flags: '--no-deps --pre',
+        npm_flags: '--legacy-peer-deps',
+      },
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('Environment:')
+    expect(output).toContain('Python 3.11')
+    expect(output).toContain('Node 20')
+    expect(output).toContain('pip: --no-deps --pre')
+    expect(output).toContain('npm: --legacy-peer-deps')
+  })
+
+  it('dry-run does not show environment when not set', async () => {
+    mockManifest({
+      name: 'plain-agent',
+      type: 'agent',
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).not.toContain('Environment:')
+  })
+
+  it('sends environment field to createAgent API', async () => {
+    mockManifest({
+      name: 'env-publish-agent',
+      type: 'prompt',
+      description: 'Agent with env',
+      environment: {
+        python_version: '3.11',
+        node_version: '20',
+      },
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    expect(mockCreateAgent).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        name: 'env-publish-agent',
+        environment: {
+          python_version: '3.11',
+          node_version: '20',
+        },
+      }),
+      undefined
+    )
+  })
+
+  it('does not send environment field when not in manifest', async () => {
+    mockManifest({
+      name: 'no-env-agent',
+      type: 'prompt',
+      description: 'Agent without env',
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const callArgs = mockCreateAgent.mock.calls[0][1]
+    expect(callArgs.environment).toBeUndefined()
+  })
+})
+
+describe('dry-run server-side validation (BUG-11)', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let originalCwd: () => string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetOrg.mockResolvedValue({
+      id: 'org-123',
+      slug: 'test-org',
+      name: 'Test Org',
+    })
+
+    originalCwd = process.cwd
+    process.cwd = () => '/test/project'
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    process.cwd = originalCwd
+    vi.restoreAllMocks()
+  })
+
+  it('calls server-side validation endpoint', async () => {
+    const manifest = {
+      name: 'validated-agent',
+      type: 'prompt',
+      description: 'Test agent',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You are a helpful assistant.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'validated-agent',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+    mockValidateAgentPublish.mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+
+    expect(mockValidateAgentPublish).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        name: 'validated-agent',
+        type: 'prompt',
+      }),
+      undefined,
+    )
+    expect(mockCreateAgent).not.toHaveBeenCalled()
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('Server-side validation passed')
+  })
+
+  it('fails when server-side validation returns errors', async () => {
+    const manifest = {
+      name: 'bad-agent',
+      type: 'prompt',
+      description: 'Test agent',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You are a helpful assistant.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'bad-agent',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+    mockValidateAgentPublish.mockResolvedValue({
+      valid: false,
+      errors: ['Private agent limit reached (3). Upgrade your plan for more.'],
+      warnings: [],
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+    ).rejects.toThrow(/Server-side validation failed/)
+
+    expect(mockCreateAgent).not.toHaveBeenCalled()
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('Private agent limit reached')
+    expect(stderrOutput).toContain('Dry run failed')
+  })
+
+  it('shows warnings from server-side validation', async () => {
+    const manifest = {
+      name: 'warn-agent',
+      type: 'prompt',
+      description: 'Test agent',
+      required_secrets: ['MY_SECRET', 'ORCHAGENT_SERVICE_KEY'],
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You are a helpful assistant.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'warn-agent',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+    mockValidateAgentPublish.mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: ['ORCHAGENT_SERVICE_KEY will be removed from required_secrets.'],
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('ORCHAGENT_SERVICE_KEY will be removed')
+    expect(stderrOutput).toContain('Server-side validation passed')
+  })
+
+  it('gracefully handles network failure during validation', async () => {
+    const manifest = {
+      name: 'offline-agent',
+      type: 'prompt',
+      description: 'Test agent',
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You are a helpful assistant.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockPreviewAgentVersion.mockResolvedValue({
+      name: 'offline-agent',
+      existing_versions: [],
+      next_version: 'v1',
+      org_slug: 'test-org',
+    })
+    mockValidateAgentPublish.mockRejectedValue(new Error('fetch failed'))
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('Could not reach server for validation')
+    expect(stderrOutput).toContain('No changes made (dry run)')
   })
 })

@@ -4,14 +4,47 @@ import chalk from 'chalk'
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { listMyAgents, resolveWorkspaceIdForOrg } from '../lib/api'
 import { printJson } from '../lib/output'
+import type { Agent } from '../types'
+
+/**
+ * Given a list of agents, return only the latest version of each agent name.
+ * "Latest" = highest created_at timestamp (most recently published).
+ * Also returns the total version count per agent name for display.
+ */
+export function latestOnly(agents: Agent[]): { agents: Agent[]; versionCounts: Map<string, number> } {
+  const byName = new Map<string, Agent[]>()
+  for (const agent of agents) {
+    const existing = byName.get(agent.name) ?? []
+    existing.push(agent)
+    byName.set(agent.name, existing)
+  }
+
+  const result: Agent[] = []
+  const versionCounts = new Map<string, number>()
+
+  for (const [name, versions] of byName) {
+    versionCounts.set(name, versions.length)
+    // Sort by created_at descending, take the first (latest)
+    versions.sort((a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )
+    result.push(versions[0])
+  }
+
+  // Sort final list alphabetically by name for stable output
+  result.sort((a, b) => a.name.localeCompare(b.name))
+
+  return { agents: result, versionCounts }
+}
 
 export function registerAgentsCommand(program: Command): void {
   program
     .command('agents')
     .description('List your published agents')
     .option('--filter <text>', 'Filter by name')
+    .option('--all-versions', 'Show all versions (default: latest only)')
     .option('--json', 'Output raw JSON')
-    .action(async (options: { filter?: string; json?: boolean }) => {
+    .action(async (options: { filter?: string; allVersions?: boolean; json?: boolean }) => {
       const config = await getResolvedConfig()
 
       // Resolve workspace context
@@ -26,12 +59,23 @@ export function registerAgentsCommand(program: Command): void {
         ? agents.filter(a => a.name.toLowerCase().includes(options.filter!.toLowerCase()))
         : agents
 
+      // Determine display set: latest-only (default) or all versions
+      let displayAgents: Agent[]
+      let versionCounts: Map<string, number> | undefined
+      if (options.allVersions) {
+        displayAgents = filteredAgents
+      } else {
+        const grouped = latestOnly(filteredAgents)
+        displayAgents = grouped.agents
+        versionCounts = grouped.versionCounts
+      }
+
       if (options.json) {
-        printJson(filteredAgents)
+        printJson(displayAgents)
         return
       }
 
-      if (filteredAgents.length === 0) {
+      if (displayAgents.length === 0) {
         process.stdout.write(options.filter
           ? `No agents found matching "${options.filter}"\n`
           : 'No agents published yet.\n\nPublish an agent: orch publish\n'
@@ -49,9 +93,8 @@ export function registerAgentsCommand(program: Command): void {
         ],
       })
 
-      filteredAgents.forEach((agent) => {
+      displayAgents.forEach((agent) => {
         const name = agent.name
-        const version = agent.version
         const type = agent.type || 'tool'
         const desc = agent.description
           ? agent.description.length > 60
@@ -59,10 +102,30 @@ export function registerAgentsCommand(program: Command): void {
             : agent.description
           : '-'
 
+        // In latest-only mode, show version count if > 1
+        let version = agent.version
+        if (!options.allVersions && versionCounts) {
+          const count = versionCounts.get(agent.name) ?? 1
+          if (count > 1) {
+            version = `${agent.version} (${count} total)`
+          }
+        }
+
         table.push([name, version, type, desc])
       })
 
       process.stdout.write(`${table.toString()}\n`)
-      process.stdout.write(`\nTotal: ${filteredAgents.length} agent${filteredAgents.length === 1 ? '' : 's'}\n`)
+
+      if (options.allVersions) {
+        process.stdout.write(`\nTotal: ${displayAgents.length} version${displayAgents.length === 1 ? '' : 's'}\n`)
+      } else {
+        const totalVersions = filteredAgents.length
+        const agentCount = displayAgents.length
+        process.stdout.write(`\n${agentCount} agent${agentCount === 1 ? '' : 's'}`)
+        if (totalVersions > agentCount) {
+          process.stdout.write(` (${totalVersions} versions total, use --all-versions to show all)`)
+        }
+        process.stdout.write('\n')
+      }
     })
 }

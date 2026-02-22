@@ -4,12 +4,15 @@ import path from 'path'
 import os from 'os'
 import yaml from 'yaml'
 import chalk from 'chalk'
+import { spawnSync } from 'child_process'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion, request, getPublicAgent, ApiError } from '../lib/api'
+import { createAgent, getOrg, uploadCodeBundle, previewAgentVersion, validateAgentPublish, request, getPublicAgent, ApiError } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { createCodeBundle, detectEntrypoint, validateBundle, previewBundle } from '../lib/bundle'
+import { saveServiceKey } from '../lib/key-store'
+import { discoverAgents, topoSort, formatPublishPlan } from '../lib/batch-publish'
 import type { AgentManifest, Agent, ResolvedConfig } from '../types'
 
 /**
@@ -437,6 +440,156 @@ export async function checkDependencies(
   )
 }
 
+/**
+ * Batch publish all agents found in subdirectories, in dependency order.
+ * Discovers orchagent.json/SKILL.md in immediate subdirectories,
+ * topologically sorts by manifest dependencies, and publishes leaf-first.
+ */
+export async function batchPublish(
+  rootDir: string,
+  options: { profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean }
+): Promise<void> {
+  process.stderr.write(`\nScanning for agents in ${rootDir}...\n`)
+
+  const agents = await discoverAgents(rootDir)
+  if (agents.length === 0) {
+    throw new CliError(
+      'No agents found. Expected subdirectories with orchagent.json or SKILL.md files.\n\n' +
+      'Example monorepo layout:\n' +
+      '  my-project/\n' +
+      '    leaf-tool/\n' +
+      '      orchagent.json\n' +
+      '    orchestrator/\n' +
+      '      orchagent.json\n' +
+      '      prompt.md\n\n' +
+      'Run `orch publish --all` from the parent directory.'
+    )
+  }
+
+  const result = topoSort(agents)
+  if (!result.ok) {
+    throw new CliError(
+      `Circular dependency detected between: ${result.cycle.join(' → ')}\n\n` +
+      'Break the cycle by removing a dependency in one of these agents\' orchagent.json manifest.dependencies.'
+    )
+  }
+
+  const sorted = result.sorted
+
+  // Resolve org for display (best-effort)
+  let orgSlug: string | undefined
+  try {
+    const config = await getResolvedConfig({}, options.profile)
+    const configFile = await loadConfig()
+    let workspaceId: string | undefined
+    if (configFile.workspace && !options.profile) {
+      const { workspaces } = await request<{ workspaces: Array<{ id: string; slug: string }> }>(
+        config, 'GET', '/workspaces'
+      )
+      const ws = workspaces.find(w => w.slug === configFile.workspace)
+      if (ws) workspaceId = ws.id
+    }
+    const org = await getOrg(config, workspaceId)
+    orgSlug = org.slug
+  } catch {
+    // Non-critical — just won't show org prefix
+  }
+
+  const plan = formatPublishPlan(sorted, orgSlug)
+  process.stderr.write(plan)
+
+  if (options.dryRun) {
+    process.stderr.write(chalk.cyan('DRY RUN — running orch publish --dry-run in each directory:\n\n'))
+  }
+
+  // Build the CLI args to forward (exclude --all)
+  const forwardArgs: string[] = []
+  if (options.profile) forwardArgs.push('--profile', options.profile)
+  if (options.dryRun) forwardArgs.push('--dry-run')
+  if (options.skills) forwardArgs.push('--skills', options.skills)
+  if (options.skillsLocked) forwardArgs.push('--skills-locked')
+  if (options.docker) forwardArgs.push('--docker')
+  if (options.localDownload) forwardArgs.push('--local-download')
+  if (options.requiredSecrets === false) forwardArgs.push('--no-required-secrets')
+
+  const results: Array<{ name: string; dir: string; success: boolean; error?: string }> = []
+
+  for (let i = 0; i < sorted.length; i++) {
+    const agent = sorted[i]
+    const label = `[${i + 1}/${sorted.length}]`
+
+    process.stderr.write(`${chalk.bold(label)} Publishing ${chalk.cyan(agent.name)} from ${agent.dirName}/...\n`)
+
+    // Spawn orch publish in the agent's directory
+    const spawnResult = spawnSync(
+      process.argv[0],
+      [process.argv[1], 'publish', ...forwardArgs],
+      {
+        cwd: agent.dir,
+        stdio: ['inherit', 'inherit', 'inherit'],
+        env: process.env,
+        timeout: 120_000, // 2 minute timeout per agent
+      }
+    )
+
+    if (spawnResult.status === 0) {
+      results.push({ name: agent.name, dir: agent.dirName, success: true })
+    } else {
+      const errMsg = spawnResult.error?.message || `exit code ${spawnResult.status}`
+      results.push({ name: agent.name, dir: agent.dirName, success: false, error: errMsg })
+
+      // Stop on first failure — downstream agents depend on this one
+      process.stderr.write(
+        chalk.red(`\n✗ Failed to publish ${agent.name}. Stopping — downstream agents may depend on it.\n`)
+      )
+      break
+    }
+
+    if (i < sorted.length - 1) {
+      process.stderr.write('\n') // Visual separator between publishes
+    }
+  }
+
+  // Summary
+  const succeeded = results.filter(r => r.success)
+  const failed = results.filter(r => !r.success)
+  const skipped = sorted.length - results.length
+
+  process.stderr.write('\n' + chalk.bold('─'.repeat(50)) + '\n')
+  process.stderr.write(chalk.bold(`Batch publish summary:\n\n`))
+
+  for (const r of results) {
+    if (r.success) {
+      process.stderr.write(`  ${chalk.green('✔')} ${r.name}\n`)
+    } else {
+      process.stderr.write(`  ${chalk.red('✗')} ${r.name} — ${r.error}\n`)
+    }
+  }
+  if (skipped > 0) {
+    const skippedAgents = sorted.slice(results.length)
+    for (const a of skippedAgents) {
+      process.stderr.write(`  ${chalk.yellow('○')} ${a.name} (skipped)\n`)
+    }
+  }
+
+  process.stderr.write(`\n  ${succeeded.length} succeeded`)
+  if (failed.length > 0) process.stderr.write(`, ${chalk.red(`${failed.length} failed`)}`)
+  if (skipped > 0) process.stderr.write(`, ${chalk.yellow(`${skipped} skipped`)}`)
+  process.stderr.write('\n')
+
+  await track('cli_publish_all', {
+    total: sorted.length,
+    succeeded: succeeded.length,
+    failed: failed.length,
+    skipped,
+    dry_run: options.dryRun || false,
+  })
+
+  if (failed.length > 0) {
+    throw new CliError(`Batch publish failed: ${failed[0].name}`, ExitCodes.GENERAL_ERROR)
+  }
+}
+
 export function registerPublishCommand(program: Command): void {
   program
     .command('publish')
@@ -449,12 +602,20 @@ export function registerPublishCommand(program: Command): void {
     .option('--docker', 'Include Dockerfile for custom environment (builds E2B template)')
     .option('--local-download', 'Allow users to download and run locally (default: server-only)')
     .option('--no-required-secrets', 'Skip required_secrets check for tool/agent types')
-    .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean }) => {
+    .option('--all', 'Publish all agents in subdirectories (dependency order)')
+    .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean; all?: boolean }) => {
+      const cwd = process.cwd()
+
+      // --all: batch publish all agents in subdirectories
+      if (options.all) {
+        await batchPublish(cwd, options)
+        return
+      }
+
       const skillsFromFlag = options.skills
         ? options.skills.split(',').map(s => s.trim()).filter(Boolean)
         : undefined
       const config = await getResolvedConfig({}, options.profile)
-      const cwd = process.cwd()
 
       // Resolve workspace context — if `orch workspace use` was called, publish
       // to that workspace instead of the personal org (F-5)
@@ -706,29 +867,6 @@ export function registerPublishCommand(program: Command): void {
       // Validate managed-loop specific fields + normalize loop payload
       let loopConfig: Record<string, unknown> | undefined
       if (executionEngine === 'managed_loop') {
-        if (manifest.custom_tools) {
-          const reservedNames = new Set(['bash', 'read_file', 'write_file', 'list_files', 'submit_result'])
-          const seenNames = new Set<string>()
-          for (const tool of manifest.custom_tools) {
-            if (!tool.name || !tool.command) {
-              throw new CliError(
-                `Invalid custom_tool: each tool must have 'name' and 'command' fields.\n` +
-                `Found: ${JSON.stringify(tool)}`
-              )
-            }
-            if (reservedNames.has(tool.name)) {
-              throw new CliError(
-                `Custom tool '${tool.name}' conflicts with a built-in tool name.\n` +
-                `Reserved names: ${[...reservedNames].join(', ')}`
-              )
-            }
-            if (seenNames.has(tool.name)) {
-              throw new CliError(`Duplicate custom tool name: '${tool.name}'`)
-            }
-            seenNames.add(tool.name)
-          }
-        }
-
         if (manifest.max_turns !== undefined) {
           if (typeof manifest.max_turns !== 'number' || manifest.max_turns < 1 || manifest.max_turns > 50) {
             throw new CliError('max_turns must be a number between 1 and 50')
@@ -749,6 +887,32 @@ export function registerPublishCommand(program: Command): void {
           providedLoop.max_turns = 25
         }
         loopConfig = providedLoop
+
+        // Validate custom_tools from the merged loopConfig (covers both top-level
+        // manifest.custom_tools and loop.custom_tools placements — BUG-15)
+        const mergedTools = Array.isArray(loopConfig.custom_tools) ? loopConfig.custom_tools as Array<{ name?: string; command?: string }> : []
+        if (mergedTools.length > 0) {
+          const reservedNames = new Set(['bash', 'read_file', 'write_file', 'list_files', 'submit_result'])
+          const seenNames = new Set<string>()
+          for (const tool of mergedTools) {
+            if (!tool.name || !tool.command) {
+              throw new CliError(
+                `Invalid custom_tool: each tool must have 'name' and 'command' fields.\n` +
+                `Found: ${JSON.stringify(tool)}`
+              )
+            }
+            if (reservedNames.has(tool.name)) {
+              throw new CliError(
+                `Custom tool '${tool.name}' conflicts with a built-in tool name.\n` +
+                `Reserved names: ${[...reservedNames].join(', ')}`
+              )
+            }
+            if (seenNames.has(tool.name)) {
+              throw new CliError(`Duplicate custom tool name: '${tool.name}'`)
+            }
+            seenNames.add(tool.name)
+          }
+        }
 
         if (!manifest.supported_providers) {
           manifest.supported_providers = ['anthropic']
@@ -915,7 +1079,7 @@ export function registerPublishCommand(program: Command): void {
             const schemaTypes = [inputSchema ? 'input' : null, outputSchema ? 'output' : null].filter(Boolean).join(' + ')
             process.stderr.write(`  ✓ schema.json found (${schemaTypes} schemas)\n`)
           }
-          const customToolCount = manifest.custom_tools?.length || Number(Array.isArray((loopConfig as any)?.custom_tools) ? (loopConfig as any).custom_tools.length : 0)
+          const customToolCount = Array.isArray((loopConfig as any)?.custom_tools) ? (loopConfig as any).custom_tools.length : 0
           process.stderr.write(`  ✓ Custom tools: ${customToolCount}\n`)
           process.stderr.write(`  ✓ Max turns: ${(loopConfig as any)?.max_turns || manifest.max_turns || 25}\n`)
         } else if (executionEngine === 'code_runtime') {
@@ -962,6 +1126,68 @@ export function registerPublishCommand(program: Command): void {
         }
         if (manifest.required_secrets?.length) {
           process.stderr.write(`  Secrets:     ${manifest.required_secrets.join(', ')}\n`)
+        }
+        if (manifest.environment) {
+          const envParts: string[] = []
+          if (manifest.environment.python_version) envParts.push(`Python ${manifest.environment.python_version}`)
+          if (manifest.environment.node_version) envParts.push(`Node ${manifest.environment.node_version}`)
+          if (manifest.environment.pip_flags) envParts.push(`pip: ${manifest.environment.pip_flags}`)
+          if (manifest.environment.npm_flags) envParts.push(`npm: ${manifest.environment.npm_flags}`)
+          if (envParts.length) {
+            process.stderr.write(`  Environment: ${envParts.join(', ')}\n`)
+          }
+        }
+
+        // Server-side validation (BUG-11: dry-run missed server-side checks)
+        process.stderr.write(`\nServer validation...\n`)
+        try {
+          const validation = await validateAgentPublish(config, {
+            name: manifest.name,
+            type: canonicalType,
+            run_mode: runMode,
+            runtime: runtimeConfig,
+            loop: loopConfig,
+            callable,
+            description: manifest.description,
+            prompt,
+            url: agentUrl,
+            input_schema: inputSchema,
+            output_schema: outputSchema,
+            is_public: false,
+            supported_providers: supportedProviders,
+            default_models: manifest.default_models,
+            timeout_seconds: manifest.timeout_seconds,
+            run_command: manifest.run_command,
+            sdk_compatible: sdkCompatible || undefined,
+            manifest: manifest.manifest,
+            required_secrets: manifest.required_secrets,
+            default_skills: skillsFromFlag || manifest.default_skills,
+            skills_locked: manifest.skills_locked || options.skillsLocked || undefined,
+            allow_local_download: options.localDownload || false,
+            environment: manifest.environment,
+          }, workspaceId)
+
+          if (validation.warnings?.length) {
+            for (const warning of validation.warnings) {
+              process.stderr.write(chalk.yellow(`  ⚠ ${warning}\n`))
+            }
+          }
+
+          if (!validation.valid) {
+            for (const error of validation.errors) {
+              process.stderr.write(chalk.red(`  ✗ ${error}\n`))
+            }
+            process.stderr.write(chalk.red(`\nDry run failed: server-side validation found ${validation.errors.length} error(s)\n`))
+            process.stderr.write('No changes made (dry run)\n')
+            const err = new CliError('Server-side validation failed', ExitCodes.INVALID_INPUT)
+            err.displayed = true
+            throw err
+          }
+          process.stderr.write(`  ✓ Server-side validation passed\n`)
+        } catch (err) {
+          if (err instanceof CliError) throw err
+          // Network or auth errors — show warning but don't block dry-run
+          process.stderr.write(chalk.yellow(`  ⚠ Could not reach server for validation (offline?)\n`))
         }
 
         process.stderr.write(`\nWould publish: ${preview.org_slug}/${manifest.name}@${preview.next_version}\n`)
@@ -1074,6 +1300,8 @@ export function registerPublishCommand(program: Command): void {
           default_skills: skillsFromFlag || manifest.default_skills,
           skills_locked: manifest.skills_locked || options.skillsLocked || undefined,
           allow_local_download: options.localDownload || false,
+          // Environment pinning
+          environment: manifest.environment,
         }, workspaceId)
       } catch (err) {
         // Improve SECURITY_BLOCKED error display
@@ -1259,8 +1487,16 @@ export function registerPublishCommand(program: Command): void {
       }
 
       if (result.service_key) {
-        process.stdout.write(`\nService key (save this - shown only once):\n`)
+        process.stdout.write(`\nService key:\n`)
         process.stdout.write(`  ${result.service_key}\n`)
+        try {
+          const keyPrefix = result.service_key.substring(0, 12)
+          const savedPath = await saveServiceKey(org.slug, manifest.name, assignedVersion, result.service_key, keyPrefix)
+          process.stdout.write(`  ${chalk.gray(`Saved to ${savedPath}`)}\n`)
+        } catch {
+          process.stdout.write(`  ${chalk.yellow('Could not save key locally. Copy it now — it cannot be retrieved from the server.')}\n`)
+        }
+        process.stdout.write(`  Retrieve later: ${chalk.cyan(`orch agent-keys list ${org.slug}/${manifest.name}`)}\n`)
       }
 
       // Show next-step CLI command based on run mode

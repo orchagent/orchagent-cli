@@ -122,3 +122,60 @@ export function createProgressSpinner(initialText: string): {
 
   return { spinner, updateProgress }
 }
+
+/**
+ * Format elapsed seconds as a human-readable string.
+ * Under 60s: "5.0s", 60s+: "1m 23s"
+ */
+export function formatElapsed(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)}s`
+  }
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${mins}m ${secs.toString().padStart(2, '0')}s`
+}
+
+/**
+ * Create a spinner that auto-updates with elapsed time.
+ * Shows "Running agent... (5.0s)" and ticks every second.
+ * Call dispose() to stop the timer when done (before spinner.stop/succeed/fail).
+ */
+export function createElapsedSpinner(text: string): {
+  spinner: Ora
+  dispose: () => void
+} {
+  const spinner = createSpinner(text)
+  const startTime = Date.now()
+  let timer: ReturnType<typeof setInterval> | null = null
+
+  const originalStart = spinner.start.bind(spinner)
+  spinner.start = function (this: Ora, newText?: string) {
+    originalStart(newText)
+    timer = setInterval(() => {
+      const elapsed = (Date.now() - startTime) / 1000
+      spinner.text = `${text} (${formatElapsed(elapsed)})`
+    }, 1000)
+    return this
+  }
+
+  const dispose = () => {
+    if (timer) {
+      clearInterval(timer)
+      timer = null
+    }
+  }
+
+  // Auto-dispose on stop/succeed/fail so callers can't leak timers
+  const wrap = <T extends (...args: unknown[]) => Ora>(fn: T): T => {
+    return ((...args: unknown[]) => {
+      dispose()
+      return fn(...args)
+    }) as T
+  }
+  spinner.stop = wrap(spinner.stop.bind(spinner))
+  spinner.succeed = wrap(spinner.succeed.bind(spinner) as (...args: unknown[]) => Ora)
+  spinner.fail = wrap(spinner.fail.bind(spinner) as (...args: unknown[]) => Ora)
+
+  return { spinner, dispose }
+}

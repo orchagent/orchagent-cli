@@ -118,6 +118,13 @@ export type AgentManifest = {
     include?: string[]     // Glob patterns to include
     exclude?: string[]     // Glob patterns to exclude
   }
+  // Environment pinning (optional runtime version/flag constraints)
+  environment?: {
+    python_version?: string   // e.g., "3.9", "3.11"
+    node_version?: string     // e.g., "18", "20"
+    pip_flags?: string        // e.g., "--no-deps", "--pre"
+    npm_flags?: string        // e.g., "--legacy-peer-deps"
+  }
   // Orchestration manifest (for orchestrator agents with dependencies)
   manifest?: {
     manifest_version?: number

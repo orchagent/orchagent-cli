@@ -7,6 +7,7 @@ import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
+import { saveServiceKey } from '../lib/key-store'
 
 interface Workspace {
   id: string
@@ -131,8 +132,16 @@ Examples:
       }
 
       if (result.service_key) {
-        write(`\nService key (save this - shown only once):\n`)
+        write(`\nService key:\n`)
         write(`  ${result.service_key}\n`)
+        try {
+          const keyPrefix = result.service_key.substring(0, 12)
+          const savedPath = await saveServiceKey(targetOrgSlug, forked.name, forked.version, result.service_key, keyPrefix)
+          write(`  ${chalk.gray(`Saved to ${savedPath}`)}\n`)
+        } catch {
+          write(`  ${chalk.yellow('Could not save key locally. Copy it now — it cannot be retrieved from the server.')}\n`)
+        }
+        write(`  Retrieve later: ${chalk.cyan(`orch agent-keys list ${targetOrgSlug}/${forked.name}`)}\n`)
       }
     })
 }

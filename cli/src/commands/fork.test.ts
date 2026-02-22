@@ -22,12 +22,14 @@ vi.mock('../lib/api', () => {
 })
 vi.mock('../lib/analytics')
 vi.mock('../lib/output')
+vi.mock('../lib/key-store')
 
 import { registerForkCommand } from './fork'
 import { getResolvedConfig } from '../lib/config'
 import { getPublicAgent, request, forkAgent, ApiError } from '../lib/api'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
+import { saveServiceKey } from '../lib/key-store'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockGetPublicAgent = vi.mocked(getPublicAgent)
@@ -35,6 +37,7 @@ const mockRequest = vi.mocked(request)
 const mockForkAgent = vi.mocked(forkAgent)
 const mockTrack = vi.mocked(track)
 const mockPrintJson = vi.mocked(printJson)
+const mockSaveServiceKey = vi.mocked(saveServiceKey)
 
 describe('fork command', () => {
   let program: Command
@@ -75,6 +78,7 @@ describe('fork command', () => {
     } as any)
 
     mockTrack.mockResolvedValue(undefined)
+    mockSaveServiceKey.mockResolvedValue('/home/.orchagent/keys/joe/my-discord-agent.json')
   })
 
   afterEach(() => {
@@ -216,5 +220,34 @@ describe('fork command', () => {
       source_version: 'latest',
       target_workspace: null,
     })
+  })
+
+  it('saves service key locally after fork', async () => {
+    await program.parseAsync(['node', 'test', 'fork', 'orchagent/my-discord-agent'])
+
+    expect(mockSaveServiceKey).toHaveBeenCalledWith(
+      'joe', 'my-discord-agent', 'v1', 'sk_service_abc123', 'sk_service_a'
+    )
+    const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
+    expect(output).toContain('Saved to')
+    expect(output).toContain('Retrieve later')
+  })
+
+  it('shows warning when key save fails during fork', async () => {
+    mockSaveServiceKey.mockRejectedValue(new Error('Permission denied'))
+
+    await program.parseAsync(['node', 'test', 'fork', 'orchagent/my-discord-agent'])
+
+    const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
+    // Key is still displayed
+    expect(output).toContain('sk_service_abc123')
+    expect(output).toContain('Could not save key locally')
+  })
+
+  it('does not save key when forking with --json', async () => {
+    await program.parseAsync(['node', 'test', 'fork', 'orchagent/my-discord-agent', '--json'])
+
+    // JSON mode outputs raw JSON, no interactive saving
+    expect(mockSaveServiceKey).not.toHaveBeenCalled()
   })
 })

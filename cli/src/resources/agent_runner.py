@@ -352,10 +352,14 @@ def execute_custom_tool(command_template, params):
     return execute_bash(command)
 
 
-def dispatch_tool(tool_name, tool_input, custom_tools_config):
+def dispatch_tool(tool_name, tool_input, custom_tools_config, mock_tools=None):
     """
     Dispatch a tool call. Returns (result_text, is_submit).
     is_submit is True only when tool_name == "submit_result".
+
+    When mock_tools is provided, custom tools with matching names return
+    the mock response instead of executing the real command. Built-in
+    tools (bash, read_file, etc.) are never mocked.
     """
     if tool_name == "bash":
         return execute_bash(tool_input.get("command", "")), False
@@ -374,6 +378,12 @@ def dispatch_tool(tool_name, tool_input, custom_tools_config):
     elif tool_name == "submit_result":
         return json.dumps(tool_input), True
     else:
+        # Check mock_tools first — return mock response if available
+        if mock_tools and tool_name in mock_tools:
+            mock_response = mock_tools[tool_name]
+            if isinstance(mock_response, str):
+                return mock_response, False
+            return json.dumps(mock_response), False
         for ct in custom_tools_config:
             if ct["name"] == tool_name:
                 return execute_custom_tool(ct["command"], tool_input), False
@@ -685,9 +695,26 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-turns", type=int, default=25)
     parser.add_argument("--verbose", action="store_true", help="Log tool calls to stderr")
+    parser.add_argument("--mock-tools", type=str, default=None,
+                        help="Path to JSON file mapping tool names to mock responses")
     args = parser.parse_args()
 
     _VERBOSE = args.verbose
+
+    # Load mock tool responses if provided (for testing orchestration chains)
+    mock_tools = {}
+    if args.mock_tools:
+        try:
+            with open(args.mock_tools, "r") as f:
+                mock_tools = json.load(f)
+            if _VERBOSE:
+                print("[agent] Loaded %d mock tool(s): %s" % (
+                    len(mock_tools), ", ".join(mock_tools.keys())
+                ), file=sys.stderr, flush=True)
+        except FileNotFoundError:
+            error_exit("Mock tools file not found: %s" % args.mock_tools)
+        except json.JSONDecodeError as e:
+            error_exit("Invalid JSON in mock tools file: %s" % e)
 
     with open("prompt.md", "r") as f:
         author_prompt = f.read()
@@ -761,7 +788,7 @@ def main():
         for call_id, name, input_args in provider.extract_tool_calls(response):
             verbose_log(name, input_args)
             emit_event("tool_call", turn=turn + 1, tool=name, args_brief=_brief_args(name, input_args))
-            result_text, is_submit = dispatch_tool(name, input_args, custom_tools_config)
+            result_text, is_submit = dispatch_tool(name, input_args, custom_tools_config, mock_tools)
             emit_event("tool_result", turn=turn + 1, tool=name, status="error" if result_text.startswith("[ERROR]") else "ok")
 
             if is_submit:

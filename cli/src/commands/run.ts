@@ -19,10 +19,11 @@ import {
   getAgentWithFallback,
   safeFetchWithRetryForCalls,
   resolveWorkspaceIdForOrg,
+  getAgentCostEstimate,
 } from '../lib/api'
 import { CliError, jsonInputError, ExitCodes } from '../lib/errors'
 import { printJson } from '../lib/output'
-import { createSpinner, withSpinner } from '../lib/spinner'
+import { createSpinner, createElapsedSpinner, withSpinner } from '../lib/spinner'
 import {
   detectLlmKey,
   getDefaultModel,
@@ -227,6 +228,82 @@ function applySchemaDefaults(
     }
   }
   return body
+}
+
+/**
+ * Validates input data against an agent's input_schema before sending to the server.
+ * Returns an array of human-readable error strings. Empty array = valid.
+ */
+export function validateInputSchema(
+  body: Record<string, unknown>,
+  schema?: object
+): string[] {
+  if (!schema) return []
+  const s = schema as Record<string, unknown>
+  const props = s.properties as Record<string, Record<string, unknown>> | undefined
+  if (!props || typeof props !== 'object') return []
+
+  const errors: string[] = []
+  const required = (s.required ?? []) as string[]
+
+  // Check required fields
+  for (const field of required) {
+    if (body[field] === undefined || body[field] === null) {
+      const prop = props[field]
+      const desc = prop?.description ? ` (${prop.description})` : ''
+      errors.push(`Missing required field: "${field}"${desc}`)
+    }
+  }
+
+  // Check types of provided fields
+  for (const [key, value] of Object.entries(body)) {
+    const prop = props[key]
+    if (!prop || value === undefined || value === null) continue
+
+    const expectedType = prop.type as string | undefined
+    if (!expectedType) continue
+
+    const actualType = Array.isArray(value) ? 'array' : typeof value
+    let mismatch = false
+
+    switch (expectedType) {
+      case 'string':
+        mismatch = actualType !== 'string'
+        break
+      case 'number':
+      case 'integer':
+        mismatch = actualType !== 'number'
+        break
+      case 'boolean':
+        mismatch = actualType !== 'boolean'
+        break
+      case 'array':
+        mismatch = actualType !== 'array'
+        break
+      case 'object':
+        mismatch = actualType !== 'object'
+        break
+    }
+
+    if (mismatch) {
+      errors.push(`Field "${key}" should be ${expectedType}, got ${actualType}`)
+    }
+  }
+
+  return errors
+}
+
+function warnInputSchemaErrors(
+  body: Record<string, unknown>,
+  schema: object | undefined
+): void {
+  const errors = validateInputSchema(body, schema)
+  if (errors.length === 0) return
+  process.stderr.write(
+    chalk.yellow(`\nInput validation warning:\n`) +
+    errors.map(e => chalk.yellow(`  - ${e}`)).join('\n') +
+    chalk.yellow('\n\nThe request will still be sent, but may fail server-side.\n\n')
+  )
 }
 
 async function readStdin(): Promise<Buffer | null> {
@@ -1062,7 +1139,13 @@ async function executeAgentLocally(
         const result = JSON.parse(stdout.trim())
 
         if (exitCode !== 0 && typeof result === 'object' && result !== null && 'error' in result) {
-          throw new CliError(`Agent error: ${(result as { error: string }).error}`)
+          const errorText = String((result as { error: string }).error)
+          const err = new CliError(`Agent error: ${errorText}`)
+          // BUG-13: If stderr already showed this error during execution, don't print again
+          if (stderr.includes(errorText)) {
+            err.displayed = true
+          }
+          throw err
         }
 
         if (exitCode !== 0) {
@@ -1079,6 +1162,12 @@ async function executeAgentLocally(
         }
       }
     } else if (exitCode !== 0) {
+      // BUG-13: stderr was already relayed to user in real-time; don't embed it again
+      if (stderr.trim()) {
+        const err = new CliError(`Agent exited with code ${exitCode}`)
+        err.displayed = true
+        throw err
+      }
       throw new CliError(
         `Agent exited with code ${exitCode} (no output)\n\n` +
         `Common causes:\n` +
@@ -1477,7 +1566,13 @@ async function executeBundleAgent(
         const result = JSON.parse(stdout.trim())
 
         if (exitCode !== 0 && typeof result === 'object' && result !== null && 'error' in result) {
-          throw new CliError(`Agent error: ${(result as { error: string }).error}`)
+          const errorText = String((result as { error: string }).error)
+          const err = new CliError(`Agent error: ${errorText}`)
+          // BUG-13: If stderr already showed this error during execution, don't print again
+          if (stderr.includes(errorText)) {
+            err.displayed = true
+          }
+          throw err
         }
 
         if (exitCode !== 0) {
@@ -1494,8 +1589,11 @@ async function executeBundleAgent(
         }
       }
     } else if (exitCode !== 0) {
+      // BUG-13: stderr was already relayed to user in real-time; don't embed it again
       if (stderr.trim()) {
-        throw new CliError(`Agent exited with code ${exitCode}\n\nError output:\n${stderr.trim()}`)
+        const err = new CliError(`Agent exited with code ${exitCode}`)
+        err.displayed = true
+        throw err
       }
       throw new CliError(
         `Agent exited with code ${exitCode} (no output)\n\n` +
@@ -1950,7 +2048,13 @@ async function executeLocalFromDir(
     try {
       const result = JSON.parse(stdout.trim())
       if (exitCode !== 0 && typeof result === 'object' && result !== null && 'error' in result) {
-        throw new CliError(`Agent error: ${(result as { error: string }).error}`)
+        const errorText = String((result as { error: string }).error)
+        const err = new CliError(`Agent error: ${errorText}`)
+        // BUG-13: If stderr already showed this error during execution, don't print again
+        if (stderr.includes(errorText)) {
+          err.displayed = true
+        }
+        throw err
       }
       if (exitCode !== 0) {
         printJson(result)
@@ -1965,16 +2069,50 @@ async function executeLocalFromDir(
       }
     }
   } else if (exitCode !== 0) {
+    // BUG-13: stderr was already relayed to user in real-time; don't repeat
+    if (stderr.trim()) {
+      const err = new CliError(`Agent exited with code ${exitCode}`)
+      err.displayed = true
+      throw err
+    }
     throw new CliError(`Agent exited with code ${exitCode}`)
   }
 }
 
 // ─── Cloud execution path ───────────────────────────────────────────────────
 
-function renderProgress(event: Record<string, unknown>): void {
+export function renderProgress(event: Record<string, unknown>, verbose = false): void {
   switch (event.type) {
     case 'turn_start':
       process.stderr.write(chalk.gray(`  Turn ${event.turn}/${event.max_turns}\n`))
+      break
+    case 'sandbox_start':
+      process.stderr.write(chalk.gray('  Starting sandbox...\n'))
+      break
+    case 'setup_step': {
+      const name = String(event.name || 'setup')
+      const status = String(event.status || 'started')
+      const icon = status === 'completed' ? chalk.green('✓') : status === 'failed' ? chalk.red('x') : chalk.gray('·')
+      process.stderr.write(`  ${icon} ${chalk.gray(name)} ${chalk.gray(status)}\n`)
+      break
+    }
+    case 'stdout': {
+      if (!verbose) break
+      const text = typeof event.text === 'string' ? event.text : ''
+      if (text) process.stderr.write(chalk.gray(text))
+      break
+    }
+    case 'stderr': {
+      if (!verbose) break
+      const text = typeof event.text === 'string' ? event.text : ''
+      if (text) process.stderr.write(chalk.yellow(text))
+      break
+    }
+    case 'heartbeat':
+      // Keepalive for long-running silent steps; avoid noisy output.
+      break
+    case 'output_truncated':
+      process.stderr.write(chalk.yellow('  Live output truncated. Use `orch logs <run-id>` for full output.\n'))
       break
     case 'tool_call': {
       const icon =
@@ -1995,9 +2133,23 @@ function renderProgress(event: Record<string, unknown>): void {
       if (event.status === 'error')
         process.stderr.write(chalk.yellow(`      (error)\n`))
       break
-    case 'done':
+    case 'done': {
       process.stderr.write(chalk.green(`  Done\n`))
+      // In verbose mode, show exit code and execution time from done event
+      if (verbose) {
+        const parts: string[] = []
+        if (typeof event.exit_code === 'number' && event.exit_code !== 0) {
+          parts.push(`exit_code=${event.exit_code}`)
+        }
+        if (typeof event.execution_time_ms === 'number') {
+          parts.push(`${(event.execution_time_ms as number / 1000).toFixed(1)}s`)
+        }
+        if (parts.length > 0) {
+          process.stderr.write(chalk.gray(`  (${parts.join(', ')})\n`))
+        }
+      }
       break
+    }
     case 'error':
       process.stderr.write(chalk.red(`  Error: ${event.message}\n`))
       break
@@ -2072,6 +2224,46 @@ async function executeCloud(
         if (err instanceof CliError) throw err
         // Non-fatal: gateway will catch missing secrets at execution time
       }
+    }
+  }
+
+  // --estimate: show cost estimate before running and ask for confirmation
+  if (options.estimate) {
+    try {
+      const est = await getAgentCostEstimate(resolved, org, parsed.agent, parsed.version)
+      const e = est.estimate
+      if (e.sample_size === 0) {
+        process.stderr.write(chalk.yellow('\nNo run history available for cost estimation.\n'))
+        process.stderr.write(chalk.gray('This agent has not been run before — cost data will appear after first run.\n\n'))
+      } else {
+        const fmtUsd = (v: number): string => {
+          if (v < 0.001) return '<$0.001'
+          if (v < 0.01) return `$${v.toFixed(4)}`
+          if (v < 1) return `$${v.toFixed(3)}`
+          return `$${v.toFixed(2)}`
+        }
+        process.stderr.write('\n' + chalk.bold('Cost Estimate') + chalk.gray(` (${e.sample_size} runs, last ${e.period_days}d)`) + '\n')
+        process.stderr.write(`  Average: ${chalk.green(fmtUsd(e.avg_cost_usd!))}  ·  Median: ${chalk.green(fmtUsd(e.p50_cost_usd!))}  ·  95th pct: ${chalk.yellow(fmtUsd(e.p95_cost_usd!))}\n`)
+        if (e.provider_breakdown && e.provider_breakdown.length > 0) {
+          const parts = e.provider_breakdown.map(p => `${p.provider}: ${fmtUsd(p.avg_cost_usd)}`).join(', ')
+          process.stderr.write(chalk.gray(`  By provider: ${parts}\n`))
+        }
+        process.stderr.write('\n')
+      }
+      // Ask for confirmation
+      const rl = await import('readline')
+      const iface = rl.createInterface({ input: process.stdin, output: process.stderr })
+      const answer = await new Promise<string>(resolve => {
+        iface.question('Proceed with run? [Y/n] ', resolve)
+      })
+      iface.close()
+      if (answer.trim().toLowerCase() === 'n') {
+        process.stderr.write('Run cancelled.\n')
+        return
+      }
+    } catch {
+      // Non-fatal: if estimate fails, proceed with the run
+      process.stderr.write(chalk.gray('Could not fetch cost estimate. Proceeding...\n\n'))
     }
   }
 
@@ -2207,6 +2399,8 @@ async function executeCloud(
       mountArgs: options.mount,
       llmCredentials,
     })
+    const injectedObj = JSON.parse(injected.body) as Record<string, unknown>
+    warnInputSchemaErrors(injectedObj, agentMeta.input_schema as object | undefined)
     body = injected.body
     sourceLabel = injected.sourceLabel
     headers['Content-Type'] = 'application/json'
@@ -2246,6 +2440,7 @@ async function executeCloud(
         }
       }
       applySchemaDefaults(bodyObj, agentMeta.input_schema as object | undefined)
+      warnInputSchemaErrors(bodyObj, agentMeta.input_schema as object | undefined)
       if (llmCredentials) bodyObj.llm_credentials = llmCredentials
       body = JSON.stringify(bodyObj)
       headers['Content-Type'] = 'application/json'
@@ -2264,13 +2459,12 @@ async function executeCloud(
   } else if (options.data) {
     const resolvedBody = await resolveJsonBody(options.data)
     warnIfLocalPathReference(resolvedBody)
+    const parsedBody = JSON.parse(resolvedBody) as Record<string, unknown>
+    warnInputSchemaErrors(parsedBody, agentMeta.input_schema as object | undefined)
     if (llmCredentials) {
-      const bodyObj = JSON.parse(resolvedBody)
-      bodyObj.llm_credentials = llmCredentials
-      body = JSON.stringify(bodyObj)
-    } else {
-      body = resolvedBody
+      parsedBody.llm_credentials = llmCredentials
     }
+    body = JSON.stringify(parsedBody)
     headers['Content-Type'] = 'application/json'
   } else if ((filePaths.length > 0 || options.metadata) && cloudEngine !== 'code_runtime') {
     const fieldName = options.fileField || inferFileField(agentMeta.input_schema as object | undefined)
@@ -2310,6 +2504,7 @@ async function executeCloud(
       }
     }
     applySchemaDefaults(bodyObj, agentMeta.input_schema as object | undefined)
+    warnInputSchemaErrors(bodyObj, agentMeta.input_schema as object | undefined)
 
     if (llmCredentials) {
       bodyObj.llm_credentials = llmCredentials
@@ -2339,18 +2534,32 @@ async function executeCloud(
   const verboseQs = options.verbose ? '?verbose=true' : ''
   const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${parsed.agent}/${parsed.version}/${endpoint}${verboseQs}`
 
-  // Enable SSE streaming for managed-loop agents (unless --json or --no-stream or --output)
+  // Enable SSE streaming for sandbox-backed engines (unless --json or --no-stream or --output)
   const isManagedLoopAgent = cloudType === 'agent' && cloudEngine === 'managed_loop'
-  const wantStream = isManagedLoopAgent && !options.json && !options.noStream && !options.output
+  const isCodeRuntimeAgent = cloudEngine === 'code_runtime'
+  const streamCapable = isManagedLoopAgent || isCodeRuntimeAgent
+  const streamDisabled = options.stream === false || options.noStream === true
+  const wantStream = streamCapable && !options.json && !streamDisabled && !options.output
   if (wantStream) {
     headers['Accept'] = 'text/event-stream'
   }
 
-  const spinner = options.json ? null : createSpinner(`Running ${org}/${parsed.agent}@${parsed.version}...`)
+  // Print verbose debug info before request
+  if (options.verbose && !options.json) {
+    process.stderr.write(chalk.gray(
+      `\n[verbose] ${org}/${parsed.agent}@${parsed.version}\n` +
+      `[verbose] type=${cloudType}  engine=${cloudEngine}  endpoint=${endpoint}\n` +
+      `[verbose] stream=${wantStream ? 'yes' : 'no'}  url=${url}\n`
+    ))
+  }
+
+  const { spinner, dispose: disposeSpinner } = options.json
+    ? { spinner: null, dispose: () => {} }
+    : createElapsedSpinner(`Running ${org}/${parsed.agent}@${parsed.version}...`)
   spinner?.start()
 
-  // Managed-loop runs can take longer; use 10 min timeout for streaming.
-  const timeoutMs = isManagedLoopAgent ? 600000 : undefined
+  // Streamed sandbox runs can take longer; use 10 min timeout.
+  const timeoutMs = wantStream ? 600000 : undefined
 
   let response: Response
   try {
@@ -2388,7 +2597,7 @@ async function executeCloud(
       throw new CliError(
         `Your CLI version (${packageJson.version}) is too old.\n\n` +
         (minVersion ? `Minimum required: ${minVersion}\n` : '') +
-        'Update with: npm update -g @orchagent/cli'
+        'Update with: npm install -g @orchagent/cli@latest'
       )
     }
 
@@ -2435,6 +2644,18 @@ async function executeCloud(
           ? (payload as { error?: { hint?: string } }).error?.hint
           : undefined
 
+      // Read error category from gateway (UX-7)
+      const errorCategory =
+        typeof payload === 'object' && payload
+          ? (payload as { error?: { category?: string } }).error?.category
+          : undefined
+
+      // Read sandbox_exit_code for backward compat with older gateways
+      const sandboxExitCode =
+        typeof payload === 'object' && payload
+          ? (payload as { metadata?: { sandbox_exit_code?: number } }).metadata?.sandbox_exit_code
+          : undefined
+
       // Detect platform errors that surface as SANDBOX_ERROR (BUG-11)
       const lowerMessage = (message || '').toLowerCase()
       const isPlatformError =
@@ -2444,11 +2665,24 @@ async function executeCloud(
         lowerMessage.includes('orchagent_service_key') ||
         lowerMessage.includes('orchagent_billing_org')
 
-      const attribution = isPlatformError
-        ? `This may be a platform configuration issue, not an error in the agent's code.\n` +
+      // Categorize: platform > gateway category > exit_code heuristic > neutral
+      let attribution: string
+      if (isPlatformError) {
+        attribution =
+          `This may be a platform configuration issue, not an error in the agent's code.\n` +
           `If this persists, contact support with the ref below.`
-        : `This is an error in the agent's code, not the platform.\n` +
+      } else if (errorCategory === 'code_error' || (!errorCategory && sandboxExitCode != null && sandboxExitCode !== 0)) {
+        attribution =
+          `This is an error in the agent's code, not the platform.\n` +
           `Check the agent code and requirements, then republish.`
+      } else if (errorCategory === 'setup_error') {
+        attribution =
+          `The agent failed during setup. This may be a dependency or configuration issue.\n` +
+          `Check requirements.txt and environment configuration.`
+      } else {
+        // No category from gateway, no exit code — can't determine blame
+        attribution = `Agent execution failed. Check agent logs for details.`
+      }
 
       throw new CliError(
         `${message}\n\n` +
@@ -2526,12 +2760,23 @@ async function executeCloud(
     let finalPayload: unknown = null
     let hadError = false
 
-    process.stderr.write(chalk.gray(`\nStreaming ${org}/${parsed.agent}@${parsed.version}:\n`))
+    if (options.verbose) {
+      process.stderr.write(chalk.gray(`\nStreaming ${org}/${parsed.agent}@${parsed.version} (verbose):\n`))
+      process.stderr.write(chalk.gray(`  type=${cloudType}  engine=${cloudEngine}  endpoint=${endpoint}\n`))
+    } else {
+      process.stderr.write(chalk.gray(`\nStreaming ${org}/${parsed.agent}@${parsed.version}:\n`))
+    }
+
+    let progressErrorShown = false
 
     for await (const { event, data } of parseSSE(response.body)) {
       if (event === 'progress') {
         try {
-          renderProgress(JSON.parse(data))
+          const parsed = JSON.parse(data)
+          renderProgress(parsed, !!options.verbose)
+          if (parsed.type === 'error') {
+            progressErrorShown = true
+          }
         } catch {
           // ignore malformed progress events
         }
@@ -2565,7 +2810,12 @@ async function executeCloud(
         typeof finalPayload === 'object' && finalPayload
           ? (finalPayload as { error?: { message?: string } }).error?.message || 'Agent execution failed'
           : 'Agent execution failed'
-      throw new CliError(errMsg)
+      const err = new CliError(errMsg)
+      // BUG-13: Error was already displayed by renderProgress during streaming
+      if (progressErrorShown) {
+        err.displayed = true
+      }
+      throw err
     }
 
     if (finalPayload !== null) {
@@ -2808,6 +3058,7 @@ async function executeLocal(
     } catch {
       throw new CliError('Invalid JSON input')
     }
+    warnInputSchemaErrors(agentInputData, agentData.input_schema as object | undefined)
 
     // Write prompt to temp dir and run
     const tempAgentDir = path.join(os.tmpdir(), `orchagent-agent-${parsed.agent}-${Date.now()}`)
@@ -2961,6 +3212,7 @@ async function executeLocal(
       throw new CliError('Invalid JSON input')
     }
   }
+  warnInputSchemaErrors(inputData, agentData.input_schema as object | undefined)
 
   // Handle skill composition
   let skillPrompts: string[] = []
@@ -3001,9 +3253,11 @@ type RunOptions = {
   withDeps?: boolean
   json?: boolean
   verbose?: boolean
+  estimate?: boolean
   skills?: string
   skillsOnly?: string
   noSkills?: boolean
+  stream?: boolean
   noStream?: boolean
   here?: boolean
   path?: string
@@ -3027,14 +3281,15 @@ export function registerRunCommand(program: Command): void {
     .option('--data <json>', 'JSON payload (string or @file, @- for stdin)')
     .option('--input <json>', 'Alias for --data')
     .option('--json', 'Output raw JSON')
-    .option('--verbose', 'Show sandbox stdout/stderr output (cloud only)')
+    .option('--verbose', 'Show sandbox stdout/stderr and debug info (cloud only)')
+    .option('--estimate', 'Show cost estimate before running and ask for confirmation')
     .option('--provider <provider>', 'LLM provider (openai, anthropic, gemini, ollama)')
     .option('--model <model>', 'LLM model to use (overrides agent default)')
     .option('--key <key>', 'LLM API key (overrides env vars)')
     .option('--skills <skills>', 'Add skills (comma-separated)')
     .option('--skills-only <skills>', 'Use only these skills')
     .option('--no-skills', 'Ignore default skills')
-    .option('--no-stream', 'Disable real-time streaming for agent-type agents')
+    .option('--no-stream', 'Disable real-time streaming for stream-capable sandbox runs')
     // Cloud-only options
     .option('--endpoint <endpoint>', 'Override agent endpoint (cloud only)')
     .option('--tenant <tenant>', 'Tenant identifier for multi-tenant callers (cloud only)')

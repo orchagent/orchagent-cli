@@ -175,6 +175,30 @@ describe('update-notifier', () => {
       stderrSpy.mockRestore()
     })
 
+    it('shows correct install command (npm install -g @orchagent/cli@latest)', async () => {
+      const cache = JSON.stringify({
+        latest: '0.4.0',
+        checkedAt: Date.now(),
+      })
+      vi.mocked(fs.readFileSync).mockReturnValueOnce(cache)
+
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+
+      const { checkForUpdates, printUpdateNotification } = await loadModule()
+      checkForUpdates()
+      printUpdateNotification()
+
+      expect(stderrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('npm install -g @orchagent/cli@latest')
+      )
+      // Must NOT use the unreliable `npm update -g` command
+      expect(stderrSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('npm update -g')
+      )
+
+      stderrSpy.mockRestore()
+    })
+
     it('prints nothing when version is current', async () => {
       const cache = JSON.stringify({
         latest: '0.3.33',

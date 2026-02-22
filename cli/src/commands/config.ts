@@ -30,10 +30,16 @@ function isValidKey(key: string): key is ConfigKey {
   return SUPPORTED_KEYS.includes(key as ConfigKey)
 }
 
-async function setConfigValue(key: string, value: string): Promise<void> {
+export async function setConfigValue(key: string, value: string): Promise<void> {
   if (!isValidKey(key)) {
     throw new CliError(
       `Unknown config key: ${key}. Supported keys: ${SUPPORTED_KEYS.join(', ')}`
+    )
+  }
+
+  if (!value || !value.trim()) {
+    throw new CliError(
+      `Cannot set ${key} to an empty value. To clear this setting, use: orch config unset ${key}`
     )
   }
 

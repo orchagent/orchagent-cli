@@ -72,7 +72,7 @@ Examples:
       }
 
       // Check if confirmation is required
-      const deleteCheck = await checkAgentDelete(config, selectedAgent.id)
+      const deleteCheck = await checkAgentDelete(config, selectedAgent.id, workspaceId)
 
       // Show agent info
       process.stdout.write(`\n${chalk.bold('Agent:')} ${selectedAgent.name}@${selectedAgent.version}\n`)
@@ -110,7 +110,7 @@ Examples:
       // Perform deletion
       process.stdout.write('Deleting agent...\n')
       const confirmationName = deleteCheck.requires_confirmation ? selectedAgent.name : undefined
-      await deleteAgent(config, selectedAgent.id, confirmationName)
+      await deleteAgent(config, selectedAgent.id, confirmationName, workspaceId)
 
       await track('cli_delete', { agent_name: selectedAgent.name, version: selectedAgent.version })
       process.stdout.write(`✓ Deleted ${selectedAgent.name}@${selectedAgent.version}\n`)

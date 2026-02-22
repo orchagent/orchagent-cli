@@ -336,21 +336,27 @@ export function registerScheduleCommand(program: Command): void {
 
       const s = result.schedule
       process.stdout.write(chalk.green('\u2713') + ` Schedule created\n\n`)
-      process.stdout.write(`  ID:     ${s.id}\n`)
-      process.stdout.write(`  Agent:  ${s.agent_name}@${s.agent_version}\n`)
-      process.stdout.write(`  Type:   ${s.schedule_type}\n`)
+      process.stdout.write(`  ID:          ${s.id}\n`)
+      process.stdout.write(`  Agent:       ${s.agent_name}@${s.agent_version}\n`)
+      process.stdout.write(`  Type:        ${s.schedule_type}\n`)
+      process.stdout.write(`  Enabled:     ${chalk.green('yes')}\n`)
+      process.stdout.write(`  Auto-update: ${s.auto_update === false ? chalk.yellow('no (pinned)') : chalk.green('yes')}\n`)
 
       if (s.schedule_type === 'cron') {
-        process.stdout.write(`  Cron:   ${s.cron_expression}\n`)
-        process.stdout.write(`  TZ:     ${s.timezone}\n`)
+        process.stdout.write(`  Cron:        ${s.cron_expression}\n`)
+        process.stdout.write(`  Timezone:    ${s.timezone}\n`)
         if (s.next_run_at) {
-          process.stdout.write(`  Next:   ${formatDate(s.next_run_at)}\n`)
+          process.stdout.write(`  Next run:    ${formatDate(s.next_run_at)}\n`)
         }
       } else {
         if (s.webhook_url) {
           process.stdout.write(`\n  ${chalk.bold('Webhook URL')} (save this — secret shown once):\n`)
           process.stdout.write(`  ${s.webhook_url}\n`)
         }
+      }
+
+      if (s.llm_provider) {
+        process.stdout.write(`  Provider:    ${s.llm_provider}\n`)
       }
 
       process.stdout.write('\n')

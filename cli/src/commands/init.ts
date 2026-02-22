@@ -424,11 +424,398 @@ DISCORD_CHANNEL_IDS=
 # MAX_TOKENS=1024
 `
 
+// ---------------------------------------------------------------------------
+// Orchestration templates: fan-out, pipeline, map-reduce
+// ---------------------------------------------------------------------------
+
+const FANOUT_MAIN_PY = `"""
+orchagent fan-out orchestrator.
+
+Calls multiple agents in parallel, combines their results.
+
+Usage:
+  echo '{"task": "analyze this"}' | python main.py
+"""
+
+import asyncio
+import json
+import sys
+
+from orchagent import AgentClient
+
+
+async def run():
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON input"}))
+        sys.exit(1)
+
+    task = data.get("task", "")
+    client = AgentClient()
+
+    # Fan-out: call all agents in parallel
+    # Replace these with your actual dependencies (must match manifest.dependencies)
+    agent_a, agent_b, agent_c = await asyncio.gather(
+        client.call("org/agent-a@v1", {"task": task}),
+        client.call("org/agent-b@v1", {"task": task}),
+        client.call("org/agent-c@v1", {"task": task}),
+    )
+
+    # Combine results
+    print(json.dumps({
+        "results": [agent_a, agent_b, agent_c],
+        "summary": f"Collected results from 3 agents",
+        "success": True,
+    }))
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
+`
+
+const FANOUT_MAIN_JS = `/**
+ * orchagent fan-out orchestrator.
+ *
+ * Calls multiple agents in parallel, combines their results.
+ *
+ * Usage:
+ *   echo '{"task": "analyze this"}' | node main.js
+ */
+
+const fs = require('fs');
+const { AgentClient } = require('orchagent-sdk');
+
+async function main() {
+  const raw = fs.readFileSync('/dev/stdin', 'utf-8');
+  let data;
+  try {
+    data = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    console.log(JSON.stringify({ error: 'Invalid JSON input' }));
+    process.exit(1);
+  }
+
+  const task = data.task || '';
+  const client = new AgentClient();
+
+  // Fan-out: call all agents in parallel
+  // Replace these with your actual dependencies (must match manifest.dependencies)
+  const [agentA, agentB, agentC] = await Promise.all([
+    client.call('org/agent-a@v1', { task }),
+    client.call('org/agent-b@v1', { task }),
+    client.call('org/agent-c@v1', { task }),
+  ]);
+
+  console.log(JSON.stringify({
+    results: [agentA, agentB, agentC],
+    summary: 'Collected results from 3 agents',
+    success: true,
+  }));
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+`
+
+const PIPELINE_MAIN_PY = `"""
+orchagent pipeline orchestrator.
+
+Calls agents sequentially — each step's output feeds into the next.
+
+Usage:
+  echo '{"task": "process this data"}' | python main.py
+"""
+
+import asyncio
+import json
+import sys
+
+from orchagent import AgentClient
+
+
+async def run():
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON input"}))
+        sys.exit(1)
+
+    task = data.get("task", "")
+    client = AgentClient()
+
+    # Pipeline: each step feeds into the next
+    # Replace these with your actual dependencies (must match manifest.dependencies)
+    step1 = await client.call("org/parser@v1", {"input": task})
+    step2 = await client.call("org/analyzer@v1", {"input": step1})
+    step3 = await client.call("org/reporter@v1", {"input": step2})
+
+    print(json.dumps({
+        "result": step3,
+        "steps_completed": 3,
+        "success": True,
+    }))
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
+`
+
+const PIPELINE_MAIN_JS = `/**
+ * orchagent pipeline orchestrator.
+ *
+ * Calls agents sequentially — each step's output feeds into the next.
+ *
+ * Usage:
+ *   echo '{"task": "process this data"}' | node main.js
+ */
+
+const fs = require('fs');
+const { AgentClient } = require('orchagent-sdk');
+
+async function main() {
+  const raw = fs.readFileSync('/dev/stdin', 'utf-8');
+  let data;
+  try {
+    data = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    console.log(JSON.stringify({ error: 'Invalid JSON input' }));
+    process.exit(1);
+  }
+
+  const task = data.task || '';
+  const client = new AgentClient();
+
+  // Pipeline: each step feeds into the next
+  // Replace these with your actual dependencies (must match manifest.dependencies)
+  const step1 = await client.call('org/parser@v1', { input: task });
+  const step2 = await client.call('org/analyzer@v1', { input: step1 });
+  const step3 = await client.call('org/reporter@v1', { input: step2 });
+
+  console.log(JSON.stringify({
+    result: step3,
+    steps_completed: 3,
+    success: true,
+  }));
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+`
+
+const MAPREDUCE_MAIN_PY = `"""
+orchagent map-reduce orchestrator.
+
+Splits input into chunks, processes each in parallel (map), then aggregates (reduce).
+
+Usage:
+  echo '{"items": ["item1", "item2", "item3"]}' | python main.py
+"""
+
+import asyncio
+import json
+import sys
+
+from orchagent import AgentClient
+
+
+async def run():
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON input"}))
+        sys.exit(1)
+
+    items = data.get("items", [])
+    if not items:
+        print(json.dumps({"error": "No items to process", "success": False}))
+        sys.exit(1)
+
+    client = AgentClient()
+
+    # Map: process each item in parallel
+    # Replace with your actual dependency (must match manifest.dependencies)
+    mapped = await asyncio.gather(
+        *[client.call("org/processor@v1", {"item": item}) for item in items]
+    )
+
+    # Reduce: aggregate results into a single output
+    # Replace with your actual dependency (must match manifest.dependencies)
+    reduced = await client.call("org/aggregator@v1", {"results": mapped})
+
+    print(json.dumps({
+        "result": reduced,
+        "items_processed": len(items),
+        "success": True,
+    }))
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
+`
+
+const MAPREDUCE_MAIN_JS = `/**
+ * orchagent map-reduce orchestrator.
+ *
+ * Splits input into chunks, processes each in parallel (map), then aggregates (reduce).
+ *
+ * Usage:
+ *   echo '{"items": ["item1", "item2", "item3"]}' | node main.js
+ */
+
+const fs = require('fs');
+const { AgentClient } = require('orchagent-sdk');
+
+async function main() {
+  const raw = fs.readFileSync('/dev/stdin', 'utf-8');
+  let data;
+  try {
+    data = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    console.log(JSON.stringify({ error: 'Invalid JSON input' }));
+    process.exit(1);
+  }
+
+  const items = data.items || [];
+  if (!items.length) {
+    console.log(JSON.stringify({ error: 'No items to process', success: false }));
+    process.exit(1);
+  }
+
+  const client = new AgentClient();
+
+  // Map: process each item in parallel
+  // Replace with your actual dependency (must match manifest.dependencies)
+  const mapped = await Promise.all(
+    items.map(item => client.call('org/processor@v1', { item }))
+  );
+
+  // Reduce: aggregate results into a single output
+  // Replace with your actual dependency (must match manifest.dependencies)
+  const reduced = await client.call('org/aggregator@v1', { results: mapped });
+
+  console.log(JSON.stringify({
+    result: reduced,
+    items_processed: items.length,
+    success: true,
+  }));
+}
+
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
+`
+
+const FANOUT_SCHEMA = `{
+  "input": {
+    "type": "object",
+    "properties": {
+      "task": {
+        "type": "string",
+        "description": "The task to fan out to all agents"
+      }
+    },
+    "required": ["task"]
+  },
+  "output": {
+    "type": "object",
+    "properties": {
+      "results": {
+        "type": "array",
+        "description": "Results from each agent"
+      },
+      "summary": {
+        "type": "string",
+        "description": "Summary of combined results"
+      },
+      "success": {
+        "type": "boolean",
+        "description": "Whether all agents completed successfully"
+      }
+    },
+    "required": ["results", "success"]
+  }
+}
+`
+
+const PIPELINE_SCHEMA = `{
+  "input": {
+    "type": "object",
+    "properties": {
+      "task": {
+        "type": "string",
+        "description": "The input to feed into the pipeline"
+      }
+    },
+    "required": ["task"]
+  },
+  "output": {
+    "type": "object",
+    "properties": {
+      "result": {
+        "type": "object",
+        "description": "Final output from the last pipeline step"
+      },
+      "steps_completed": {
+        "type": "integer",
+        "description": "Number of pipeline steps completed"
+      },
+      "success": {
+        "type": "boolean",
+        "description": "Whether the pipeline completed successfully"
+      }
+    },
+    "required": ["result", "success"]
+  }
+}
+`
+
+const MAPREDUCE_SCHEMA = `{
+  "input": {
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Items to process in parallel"
+      }
+    },
+    "required": ["items"]
+  },
+  "output": {
+    "type": "object",
+    "properties": {
+      "result": {
+        "type": "object",
+        "description": "Aggregated result from all processed items"
+      },
+      "items_processed": {
+        "type": "integer",
+        "description": "Number of items processed"
+      },
+      "success": {
+        "type": "boolean",
+        "description": "Whether all items were processed successfully"
+      }
+    },
+    "required": ["result", "success"]
+  }
+}
+`
+
 const AGENT_BUILDER_HINT = `\n  Tip: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`
 
-type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'discord_js' | 'support_agent' | 'github_weekly_summary'
+type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'discord_js' | 'support_agent' | 'github_weekly_summary' | 'fan_out' | 'pipeline' | 'map_reduce'
 
-function readmeTemplate(agentName: string, flavor: InitFlavor): string {
+function readmeTemplate(agentName: string, flavor: InitFlavor, type?: string): string {
   if (flavor === 'support_agent') {
     return `# ${agentName}
 
@@ -593,16 +980,11 @@ Edit \`main.js\` to customize:
 `
   }
 
-  const inputField = flavor === 'managed_loop' || flavor === 'orchestrator' ? 'task' : 'input'
-  const inputDescription = flavor === 'managed_loop' || flavor === 'orchestrator' ? 'The task to perform' : 'The input to process'
-  const cloudExample =
-    flavor === 'code_runtime'
-      ? `orchagent run ${agentName} --data '{"input": "Hello world"}'`
-      : `orchagent run ${agentName} --data '{"${inputField}": "Hello world"}'`
-  const localExample =
-    flavor === 'code_runtime'
-      ? `orchagent run ${agentName} --local --data '{"input": "Hello world"}'`
-      : `orchagent run ${agentName} --local --data '{"${inputField}": "Hello world"}'`
+  const usesTask = flavor === 'managed_loop' || flavor === 'orchestrator' || type === 'agent'
+  const inputField = usesTask ? 'task' : 'input'
+  const inputDescription = usesTask ? 'The task to perform' : 'The input to process'
+  const cloudExample = `orchagent run ${agentName} --data '{"${inputField}": "Hello world"}'`
+  const localExample = `orchagent run ${agentName} --local --data '{"${inputField}": "Hello world"}'`
 
   let readme = `# ${agentName}
 
@@ -649,8 +1031,188 @@ This orchestrator calls other agents. Update \`manifest.dependencies\` in \`orch
 `
   }
 
+  if (flavor === 'fan_out') {
+    readme += `
+## Pattern: Fan-Out
+
+This orchestrator calls multiple agents **in parallel** and combines their results. Use this when you have independent tasks that can run concurrently.
+
+\`\`\`
+Input ──┬──> Agent A ──┐
+        ├──> Agent B ──┼──> Combined Results
+        └──> Agent C ──┘
+\`\`\`
+
+## Dependencies
+
+Update \`manifest.dependencies\` in \`orchagent.json\` with your actual agents.
+
+**Publish order:** Publish dependency agents first, then this orchestrator.
+
+| Dependency | Version | Description |
+|------------|---------|-------------|
+| \`org/agent-a\` | v1 | TODO: describe |
+| \`org/agent-b\` | v1 | TODO: describe |
+| \`org/agent-c\` | v1 | TODO: describe |
+`
+  }
+
+  if (flavor === 'pipeline') {
+    readme += `
+## Pattern: Pipeline
+
+This orchestrator calls agents **sequentially** — each step's output feeds into the next. Use this when data must flow through ordered processing stages.
+
+\`\`\`
+Input ──> Parser ──> Analyzer ──> Reporter ──> Output
+\`\`\`
+
+## Dependencies
+
+Update \`manifest.dependencies\` in \`orchagent.json\` with your actual agents.
+
+**Publish order:** Publish dependency agents first, then this orchestrator.
+
+| Dependency | Version | Description |
+|------------|---------|-------------|
+| \`org/parser\` | v1 | TODO: describe |
+| \`org/analyzer\` | v1 | TODO: describe |
+| \`org/reporter\` | v1 | TODO: describe |
+`
+  }
+
+  if (flavor === 'map_reduce') {
+    readme += `
+## Pattern: Map-Reduce
+
+This orchestrator **splits input** into items, processes each in **parallel** (map), then **aggregates** the results (reduce).
+
+\`\`\`
+Items ──┬──> Processor (item 1) ──┐
+        ├──> Processor (item 2) ──┼──> Aggregator ──> Output
+        └──> Processor (item N) ──┘
+\`\`\`
+
+## Dependencies
+
+Update \`manifest.dependencies\` in \`orchagent.json\` with your actual agents.
+
+**Publish order:** Publish dependency agents first, then this orchestrator.
+
+| Dependency | Version | Description |
+|------------|---------|-------------|
+| \`org/processor\` | v1 | Processes individual items |
+| \`org/aggregator\` | v1 | Combines processed results |
+`
+  }
+
   return readme
 }
+
+const AGENT_CODE_TEMPLATE_PY = `"""
+orchagent agent entrypoint.
+
+Reads JSON input from stdin, processes the task, and writes JSON output to stdout.
+This is a code-runtime agent — you control the logic and can call any LLM provider.
+
+Usage:
+  echo '{"task": "summarize this text"}' | python main.py
+"""
+
+import json
+import sys
+
+
+def main():
+    # Read JSON input from stdin
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON input", "success": False}))
+        sys.exit(1)
+
+    task = data.get("task", "")
+
+    # --- Your agent logic here ---
+    # This is a code-runtime agent. You write the logic — call any LLM provider,
+    # use any library, chain multiple steps, etc.
+    #
+    # Example (Anthropic):
+    #   pip install anthropic
+    #   import anthropic
+    #   client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    #   response = client.messages.create(model="claude-sonnet-4-5-20250929", ...)
+    #
+    # Example (OpenAI):
+    #   pip install openai
+    #   import openai
+    #   client = openai.OpenAI()  # reads OPENAI_API_KEY from env
+    #   response = client.chat.completions.create(model="gpt-4o", ...)
+    #
+    # To use workspace secrets, add them to "required_secrets" in orchagent.json:
+    #   "required_secrets": ["ANTHROPIC_API_KEY"]
+    # Then access via: os.environ["ANTHROPIC_API_KEY"]
+    result = f"Received task: {task}"
+    # --- End your logic ---
+
+    # Write JSON output to stdout
+    print(json.dumps({"result": result, "success": True}))
+
+
+if __name__ == "__main__":
+    main()
+`
+
+const AGENT_CODE_TEMPLATE_JS = `/**
+ * orchagent agent entrypoint.
+ *
+ * Reads JSON input from stdin, processes the task, and writes JSON output to stdout.
+ * This is a code-runtime agent — you control the logic and can call any LLM provider.
+ *
+ * Usage:
+ *   echo '{"task": "summarize this text"}' | node main.js
+ */
+
+const fs = require('fs');
+
+function main() {
+  const raw = fs.readFileSync('/dev/stdin', 'utf-8');
+  let data;
+  try {
+    data = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    console.log(JSON.stringify({ error: 'Invalid JSON input', success: false }));
+    process.exit(1);
+  }
+
+  const task = data.task || '';
+
+  // --- Your agent logic here ---
+  // This is a code-runtime agent. You write the logic — call any LLM provider,
+  // use any library, chain multiple steps, etc.
+  //
+  // Example (Anthropic):
+  //   npm install @anthropic-ai/sdk
+  //   const Anthropic = require('@anthropic-ai/sdk');
+  //   const client = new Anthropic();  // reads ANTHROPIC_API_KEY from env
+  //
+  // Example (OpenAI):
+  //   npm install openai
+  //   const OpenAI = require('openai');
+  //   const client = new OpenAI();  // reads OPENAI_API_KEY from env
+  //
+  // To use workspace secrets, add them to "required_secrets" in orchagent.json:
+  //   "required_secrets": ["ANTHROPIC_API_KEY"]
+  // Then access via: process.env.ANTHROPIC_API_KEY
+  const result = \`Received task: \${task}\`;
+  // --- End your logic ---
+
+  console.log(JSON.stringify({ result, success: true }));
+}
+
+main();
+`
 
 const AGENT_PROMPT_TEMPLATE = `You are a helpful AI agent.
 
@@ -992,7 +1554,7 @@ function resolveInitFlavor(typeOption: string): { type: 'prompt' | 'tool' | 'age
     return { type: 'prompt', flavor: 'direct_llm' }
   }
   if (normalized === 'agent' || normalized === 'agentic') {
-    return { type: 'agent', flavor: 'managed_loop' }
+    return { type: 'agent', flavor: 'code_runtime' }
   }
   if (normalized === 'tool' || normalized === 'code') {
     return { type: 'tool', flavor: 'code_runtime' }
@@ -1012,8 +1574,9 @@ export function registerInitCommand(program: Command): void {
     .option('--orchestrator', 'Create an orchestrator agent with dependency scaffolding and SDK boilerplate')
     .option('--run-mode <mode>', 'Run mode for agents: on_demand or always_on', 'on_demand')
     .option('--language <lang>', 'Language: python or javascript (default: python)', 'python')
-    .option('--template <name>', 'Start from a template (available: support-agent, discord, discord-js, github-weekly-summary)')
-    .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; runMode: string; language: string; template?: string }) => {
+    .option('--loop', 'Use platform-managed LLM loop instead of code runtime (requires --type agent)')
+    .option('--template <name>', 'Start from a template (available: fan-out, pipeline, map-reduce, support-agent, discord, discord-js, github-weekly-summary)')
+    .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; loop?: boolean; runMode: string; language: string; template?: string }) => {
       const cwd = process.cwd()
       let runMode = (options.runMode || 'on_demand').trim().toLowerCase()
       if (!['on_demand', 'always_on'].includes(runMode)) {
@@ -1028,30 +1591,19 @@ export function registerInitCommand(program: Command): void {
         initMode = { type: 'agent', flavor: 'orchestrator' }
       }
 
-      // Validate --language option
-      const language = (options.language || 'python').trim().toLowerCase()
-      if (!['python', 'javascript', 'js', 'typescript', 'ts'].includes(language)) {
-        throw new CliError(`Invalid --language '${options.language}'. Use 'python' or 'javascript'.`)
-      }
-      const isJavaScript = ['javascript', 'js', 'typescript', 'ts'].includes(language)
-
-      // Block unsupported JS flavors
-      if (isJavaScript && initMode.flavor === 'managed_loop') {
-        throw new CliError('JavaScript agent-type agents are not yet supported. Use --type tool for JavaScript agents.')
-      }
-      // JS orchestrators are now supported via the orchagent-sdk npm package
-
-      // Block --language for types that don't create runtime files
-      if (isJavaScript && (initMode.type === 'prompt' || initMode.type === 'skill')) {
-        throw new CliError(
-          `The --language flag has no effect for ${initMode.type} types (no runtime files are created). ` +
-          'Use --type tool or --type agent to create a project with runtime scaffolding.'
-        )
+      if (options.loop) {
+        if (options.orchestrator) {
+          throw new CliError('Cannot use --loop with --orchestrator. Orchestrators use code runtime with SDK calls.')
+        }
+        if (initMode.type !== 'agent') {
+          throw new CliError('The --loop flag requires --type agent. It enables platform-managed LLM loop execution.')
+        }
+        initMode = { type: 'agent', flavor: 'managed_loop' }
       }
 
       if (options.template) {
         const template = options.template.trim().toLowerCase()
-        const validTemplates = ['support-agent', 'discord', 'discord-js', 'github-weekly-summary']
+        const validTemplates = ['fan-out', 'pipeline', 'map-reduce', 'support-agent', 'discord', 'discord-js', 'github-weekly-summary']
         if (!validTemplates.includes(template)) {
           throw new CliError(`Unknown --template '${template}'. Available templates: ${validTemplates.join(', ')}`)
         }
@@ -1061,7 +1613,13 @@ export function registerInitCommand(program: Command): void {
         if (initMode.type === 'skill') {
           throw new CliError('Cannot use --template with --type skill.')
         }
-        if (template === 'support-agent') {
+        if (template === 'fan-out') {
+          initMode = { type: 'agent', flavor: 'fan_out' }
+        } else if (template === 'pipeline') {
+          initMode = { type: 'agent', flavor: 'pipeline' }
+        } else if (template === 'map-reduce') {
+          initMode = { type: 'agent', flavor: 'map_reduce' }
+        } else if (template === 'support-agent') {
           initMode = { type: 'agent', flavor: 'support_agent' }
           runMode = 'always_on'
         } else if (template === 'discord') {
@@ -1073,6 +1631,27 @@ export function registerInitCommand(program: Command): void {
         } else if (template === 'github-weekly-summary') {
           initMode = { type: 'agent', flavor: 'github_weekly_summary' }
         }
+      }
+
+      // Validate --language option
+      const language = (options.language || 'python').trim().toLowerCase()
+      if (!['python', 'javascript', 'js', 'typescript', 'ts'].includes(language)) {
+        throw new CliError(`Invalid --language '${options.language}'. Use 'python' or 'javascript'.`)
+      }
+      const isJavaScript = ['javascript', 'js', 'typescript', 'ts'].includes(language)
+
+      // Block unsupported JS flavors
+      if (isJavaScript && initMode.flavor === 'managed_loop') {
+        throw new CliError('JavaScript is not supported for --loop (managed loop). Use --type agent without --loop for a code-runtime agent.')
+      }
+      // JS orchestrators are now supported via the orchagent-sdk npm package
+
+      // Block --language for types that don't create runtime files
+      if (isJavaScript && (initMode.type === 'prompt' || initMode.type === 'skill')) {
+        throw new CliError(
+          `The --language flag has no effect for ${initMode.type} types (no runtime files are created). ` +
+          'Use --type tool or --type agent to create a project with runtime scaffolding.'
+        )
       }
 
       // When a name is provided, create a subdirectory for the project
@@ -1312,6 +1891,124 @@ export function registerInitCommand(program: Command): void {
         return
       }
 
+      // Handle orchestration templates (fan-out, pipeline, map-reduce)
+      if (initMode.flavor === 'fan_out' || initMode.flavor === 'pipeline' || initMode.flavor === 'map_reduce') {
+        const manifestPath = path.join(targetDir, 'orchagent.json')
+
+        try {
+          await fs.access(manifestPath)
+          throw new CliError(`Already initialized (orchagent.json exists in ${name ? name + '/' : 'current directory'})`)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw err
+          }
+        }
+
+        // Build dependencies based on template
+        let dependencies: { id: string; version: string }[]
+        let mainPy: string
+        let mainJs: string
+        let schema: string
+        let templateLabel: string
+        let maxHops: number
+
+        if (initMode.flavor === 'fan_out') {
+          dependencies = [
+            { id: 'org/agent-a', version: 'v1' },
+            { id: 'org/agent-b', version: 'v1' },
+            { id: 'org/agent-c', version: 'v1' },
+          ]
+          mainPy = FANOUT_MAIN_PY
+          mainJs = FANOUT_MAIN_JS
+          schema = FANOUT_SCHEMA
+          templateLabel = 'fan-out'
+          maxHops = 2
+        } else if (initMode.flavor === 'pipeline') {
+          dependencies = [
+            { id: 'org/parser', version: 'v1' },
+            { id: 'org/analyzer', version: 'v1' },
+            { id: 'org/reporter', version: 'v1' },
+          ]
+          mainPy = PIPELINE_MAIN_PY
+          mainJs = PIPELINE_MAIN_JS
+          schema = PIPELINE_SCHEMA
+          templateLabel = 'pipeline'
+          maxHops = 2
+        } else {
+          dependencies = [
+            { id: 'org/processor', version: 'v1' },
+            { id: 'org/aggregator', version: 'v1' },
+          ]
+          mainPy = MAPREDUCE_MAIN_PY
+          mainJs = MAPREDUCE_MAIN_JS
+          schema = MAPREDUCE_SCHEMA
+          templateLabel = 'map-reduce'
+          maxHops = 2
+        }
+
+        const manifest: Record<string, unknown> = {
+          name: agentName,
+          type: 'agent',
+          description: `A ${templateLabel} orchestrator agent`,
+          run_mode: runMode,
+          runtime: { command: isJavaScript ? 'node main.js' : 'python main.py' },
+          manifest: {
+            manifest_version: 1,
+            dependencies,
+            max_hops: maxHops,
+            timeout_ms: 120000,
+            per_call_downstream_cap: 50,
+          },
+          required_secrets: [],
+        }
+        if (isJavaScript) {
+          manifest.entrypoint = 'main.js'
+        }
+
+        await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+
+        if (isJavaScript) {
+          await fs.writeFile(path.join(targetDir, 'main.js'), mainJs)
+          await fs.writeFile(path.join(targetDir, 'package.json'), ORCHESTRATOR_PACKAGE_JSON)
+        } else {
+          await fs.writeFile(path.join(targetDir, 'main.py'), mainPy)
+          await fs.writeFile(path.join(targetDir, 'requirements.txt'), ORCHESTRATOR_REQUIREMENTS)
+        }
+        await fs.writeFile(path.join(targetDir, 'schema.json'), schema)
+        await fs.writeFile(path.join(targetDir, 'README.md'), readmeTemplate(agentName, initMode.flavor))
+
+        const prefix = name ? name + '/' : ''
+        process.stdout.write(`Initialized ${templateLabel} orchestrator "${agentName}" in ${targetDir}\n`)
+        process.stdout.write(`\nFiles created:\n`)
+        process.stdout.write(`  ${prefix}orchagent.json    - Agent configuration (${templateLabel} pattern)\n`)
+        if (isJavaScript) {
+          process.stdout.write(`  ${prefix}main.js           - ${templateLabel} orchestrator entrypoint\n`)
+          process.stdout.write(`  ${prefix}package.json      - npm dependencies (orchagent-sdk)\n`)
+        } else {
+          process.stdout.write(`  ${prefix}main.py           - ${templateLabel} orchestrator entrypoint\n`)
+          process.stdout.write(`  ${prefix}requirements.txt  - Python dependencies (orchagent-sdk)\n`)
+        }
+        process.stdout.write(`  ${prefix}schema.json       - Input/output schemas\n`)
+        process.stdout.write(`  ${prefix}README.md         - Agent documentation\n`)
+        process.stdout.write(`  Run mode: ${runMode}\n`)
+        process.stdout.write(`  Execution: code_runtime (${templateLabel})\n`)
+
+        process.stdout.write(`\nNext steps:\n`)
+        const stepNum = name ? 2 : 1
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+        }
+        process.stdout.write(`  ${stepNum}. Update manifest.dependencies in orchagent.json with your actual agents\n`)
+        if (isJavaScript) {
+          process.stdout.write(`  ${stepNum + 1}. Edit main.js with your orchestration logic\n`)
+        } else {
+          process.stdout.write(`  ${stepNum + 1}. Edit main.py with your orchestration logic\n`)
+        }
+        process.stdout.write(`  ${stepNum + 2}. Publish dependency agents first, then: orchagent publish\n`)
+        process.stdout.write(AGENT_BUILDER_HINT)
+        return
+      }
+
       const manifestPath = path.join(targetDir, 'orchagent.json')
       const promptPath = path.join(targetDir, 'prompt.md')
       const schemaPath = path.join(targetDir, 'schema.json')
@@ -1355,8 +2052,8 @@ export function registerInitCommand(program: Command): void {
         }
         manifest.required_secrets = []
       } else if (initMode.flavor === 'managed_loop') {
-        manifest.description = 'An AI agent with tool use'
-        manifest.supported_providers = ['anthropic']
+        manifest.description = 'An AI agent with tool use (managed loop)'
+        manifest.supported_providers = ['any']
         manifest.loop = { max_turns: 25 }
         manifest.required_secrets = []
       } else if (initMode.flavor === 'discord') {
@@ -1366,7 +2063,7 @@ export function registerInitCommand(program: Command): void {
         manifest.required_secrets = ['ANTHROPIC_API_KEY', 'DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS']
         manifest.tags = ['discord', 'always-on']
       } else if (initMode.flavor === 'code_runtime') {
-        manifest.description = 'A code-runtime agent'
+        manifest.description = initMode.type === 'agent' ? 'An AI agent' : 'A code-runtime tool'
         if (isJavaScript) {
           manifest.runtime = { command: 'node main.js' }
           manifest.entrypoint = 'main.js'
@@ -1395,8 +2092,11 @@ export function registerInitCommand(program: Command): void {
         await fs.writeFile(requirementsPath, DISCORD_REQUIREMENTS)
         await fs.writeFile(envExamplePath, DISCORD_ENV_EXAMPLE)
       } else if (initMode.flavor === 'code_runtime') {
+        const isAgent = initMode.type === 'agent'
         if (isJavaScript) {
-          await fs.writeFile(path.join(targetDir, 'main.js'), runMode === 'always_on' ? ALWAYS_ON_TEMPLATE_JS : CODE_TEMPLATE_JS)
+          const template = runMode === 'always_on' ? ALWAYS_ON_TEMPLATE_JS
+            : isAgent ? AGENT_CODE_TEMPLATE_JS : CODE_TEMPLATE_JS
+          await fs.writeFile(path.join(targetDir, 'main.js'), template)
           await fs.writeFile(path.join(targetDir, 'package.json'), JSON.stringify({
             name: agentName,
             private: true,
@@ -1404,9 +2104,11 @@ export function registerInitCommand(program: Command): void {
             dependencies: {},
           }, null, 2) + '\n')
         } else {
-          await fs.writeFile(path.join(targetDir, 'main.py'), runMode === 'always_on' ? ALWAYS_ON_TEMPLATE_PY : CODE_TEMPLATE_PY)
+          const template = runMode === 'always_on' ? ALWAYS_ON_TEMPLATE_PY
+            : isAgent ? AGENT_CODE_TEMPLATE_PY : CODE_TEMPLATE_PY
+          await fs.writeFile(path.join(targetDir, 'main.py'), template)
         }
-        await fs.writeFile(schemaPath, SCHEMA_TEMPLATE)
+        await fs.writeFile(schemaPath, isAgent ? AGENT_SCHEMA_TEMPLATE : SCHEMA_TEMPLATE)
       } else if (initMode.flavor === 'managed_loop') {
         await fs.writeFile(promptPath, AGENT_PROMPT_TEMPLATE)
         await fs.writeFile(schemaPath, AGENT_SCHEMA_TEMPLATE)
@@ -1417,7 +2119,7 @@ export function registerInitCommand(program: Command): void {
 
       // Create README
       const readmePath = path.join(targetDir, 'README.md')
-      await fs.writeFile(readmePath, readmeTemplate(agentName, initMode.flavor || 'direct_llm'))
+      await fs.writeFile(readmePath, readmeTemplate(agentName, initMode.flavor || 'direct_llm', initMode.type))
 
       process.stdout.write(`Initialized agent "${agentName}" in ${targetDir}\n`)
       process.stdout.write(`\nFiles created:\n`)
@@ -1436,7 +2138,8 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${prefix}requirements.txt  - Python dependencies\n`)
         process.stdout.write(`  ${prefix}.env.example      - Environment variables template\n`)
       } else if (initMode.flavor === 'code_runtime') {
-        const entrypointDesc = runMode === 'always_on' ? 'Always-on HTTP server' : 'Agent entrypoint (stdin/stdout JSON)'
+        const entrypointDesc = runMode === 'always_on' ? 'Always-on HTTP server'
+          : initMode.type === 'agent' ? 'Agent entrypoint (your code)' : 'Tool entrypoint (stdin/stdout JSON)'
         if (isJavaScript) {
           process.stdout.write(`  ${prefix}main.js           - ${entrypointDesc}\n`)
           process.stdout.write(`  ${prefix}package.json      - npm dependencies\n`)
@@ -1488,14 +2191,16 @@ export function registerInitCommand(program: Command): void {
           process.stdout.write(`  ${stepNum + 2}. Publish: orch publish\n`)
           process.stdout.write(`  ${stepNum + 3}. Deploy: orch service deploy\n`)
         } else if (isJavaScript) {
+          const inputField = initMode.type === 'agent' ? 'task' : 'input'
           process.stdout.write(`  ${stepNum}. Edit main.js with your agent logic\n`)
           process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
-          process.stdout.write(`  ${stepNum + 2}. Test: echo '{"input": "test"}' | node main.js\n`)
+          process.stdout.write(`  ${stepNum + 2}. Test: echo '{"${inputField}": "test"}' | node main.js\n`)
           process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
         } else {
+          const inputField = initMode.type === 'agent' ? 'task' : 'input'
           process.stdout.write(`  ${stepNum}. Edit main.py with your agent logic\n`)
           process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
-          process.stdout.write(`  ${stepNum + 2}. Test: echo '{"input": "test"}' | python main.py\n`)
+          process.stdout.write(`  ${stepNum + 2}. Test: echo '{"${inputField}": "test"}' | python main.py\n`)
           process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
         }
       } else {
