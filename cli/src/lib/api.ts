@@ -56,8 +56,6 @@ export async function safeFetchWithRetryForCalls(
         const bodyText = await response.text().catch(() => '')
         let parsed: Record<string, unknown> | null = null
         try { parsed = JSON.parse(bodyText) } catch { /* ignore */ }
-        const detail = (parsed?.error as Record<string, unknown>)?.message as string ||
-          (parsed as Record<string, unknown>)?.message as string || ''
         const isRetryable = (parsed?.error as Record<string, unknown>)?.is_retryable
 
         // Don't retry if server explicitly says error is not retryable
@@ -72,8 +70,7 @@ export async function safeFetchWithRetryForCalls(
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1)
           const jitter = Math.random() * 500
-          const detailSuffix = detail ? `: ${detail}` : ''
-          process.stderr.write(`Request failed (${response.status}${detailSuffix}), retrying in ${Math.round((delay + jitter) / 1000)}s...\n`)
+          process.stderr.write(`Server error (${response.status}), retrying in ${Math.round((delay + jitter) / 1000)}s...\n`)
           await new Promise(r => setTimeout(r, delay + jitter))
           continue
         }
@@ -122,8 +119,6 @@ async function safeFetchWithRetry(
         const bodyText = await response.text().catch(() => '')
         let parsed: Record<string, unknown> | null = null
         try { parsed = JSON.parse(bodyText) } catch { /* ignore */ }
-        const detail = (parsed?.error as Record<string, unknown>)?.message as string ||
-          (parsed as Record<string, unknown>)?.message as string || ''
         const isRetryable = (parsed?.error as Record<string, unknown>)?.is_retryable
 
         // Don't retry if server explicitly says error is not retryable
@@ -138,8 +133,7 @@ async function safeFetchWithRetry(
         if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1)
           const jitter = Math.random() * 500
-          const detailSuffix = detail ? `: ${detail}` : ''
-          process.stderr.write(`Request failed (${response.status}${detailSuffix}), retrying in ${Math.round((delay + jitter) / 1000)}s...\n`)
+          process.stderr.write(`Server error (${response.status}), retrying in ${Math.round((delay + jitter) / 1000)}s...\n`)
           await new Promise(r => setTimeout(r, delay + jitter))
           continue
         }

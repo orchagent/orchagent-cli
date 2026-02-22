@@ -351,6 +351,53 @@ describe('safeFetchWithRetryForCalls', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2)
     expect(response.ok).toBe(true)
   })
+
+  it('does not include error detail in retry messages (BUG-4)', async () => {
+    // BUG-4: retry messages included error detail (e.g. "Request failed (500: Internal error)")
+    // which duplicated the error text that appears in the final CliError message.
+    const errorBody = JSON.stringify({
+      error: { message: 'Agent execution failed: ModuleNotFoundError' },
+    })
+    const stderrSpy = vi.spyOn(process.stderr, 'write')
+
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        text: () => Promise.resolve(errorBody),
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        text: () => Promise.resolve(errorBody),
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        text: () => Promise.resolve(errorBody),
+        headers: new Headers(),
+      })
+
+    const response = await safeFetchWithRetryForCalls('https://api.test.com/run')
+    expect(response.status).toBe(500)
+
+    // Retry messages should NOT contain the error detail text
+    const retryMessages = stderrSpy.mock.calls
+      .map(c => String(c[0]))
+      .filter(m => m.includes('retrying'))
+    expect(retryMessages.length).toBeGreaterThan(0)
+    for (const msg of retryMessages) {
+      expect(msg).not.toContain('Agent execution failed')
+      expect(msg).not.toContain('ModuleNotFoundError')
+      // Should still contain the status code
+      expect(msg).toContain('500')
+    }
+  })
 })
 
 describe('resolveWorkspaceIdForOrg', () => {

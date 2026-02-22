@@ -119,7 +119,9 @@ describe('checkDualInstallation', () => {
     expect(result.message).toContain('Multiple CLI versions found')
     expect(result.message).toContain('v0.3.84')
     expect(result.message).toContain('v0.3.45')
-    expect(result.fix).toContain('which -a')
+    // BUG-6: fix message should include the specific stale path and rm command
+    expect(result.fix).toContain('rm /usr/local/bin/orchagent')
+    expect(result.fix).toContain('v0.3.45')
     expect(result.details?.versionMismatch).toBe(true)
     expect(result.details?.installationCount).toBe(2)
   })
@@ -180,7 +182,9 @@ describe('checkDualInstallation', () => {
     expect(result.status).toBe('warning')
     expect(result.message).toContain('0.3.84')
     expect(result.message).toContain('0.3.45')
-    expect(result.fix).toBeDefined()
+    // BUG-6: fix message should name the specific stale path
+    expect(result.fix).toContain('rm /usr/local/bin/orchagent')
+    expect(result.fix).toContain('v0.3.45')
   })
 
   it('handles neither binary found in PATH', async () => {
@@ -296,6 +300,29 @@ describe('checkDualInstallation', () => {
     expect(result.status).toBe('warning')
     expect(result.details?.installationCount).toBe(3)
     expect(result.details?.versionMismatch).toBe(true)
+    // BUG-6: should list both stale paths in the rm command
+    expect(result.fix).toContain('/usr/local/bin/orch')
+    expect(result.fix).toContain('/opt/homebrew/bin/orchagent')
+    // Should NOT suggest removing the newest
+    expect(result.fix).not.toContain('/home/user/.npm-global/bin/orch')
+  })
+
+  it('fix message handles unknown version as stale', async () => {
+    mockWhichResults({
+      orch: ['/usr/local/bin/orch'],
+      orchagent: ['/opt/bin/orchagent'],
+    })
+    mockRealpathSync.mockImplementation((p: unknown) => String(p))
+    mockExecFileSync.mockImplementation((cmd: unknown) => {
+      if (String(cmd) === '/usr/local/bin/orch') return 'orchagent/0.3.84'
+      throw new Error('segfault')
+    })
+
+    const result = await checkDualInstallation()
+
+    expect(result.status).toBe('warning')
+    // Unknown-version binary should be flagged in the fix
+    expect(result.fix).toContain('/opt/bin/orchagent')
   })
 
   it('handles version string in different formats', async () => {

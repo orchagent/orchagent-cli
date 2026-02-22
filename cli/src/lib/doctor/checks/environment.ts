@@ -202,6 +202,39 @@ function safeRealpathSync(p: string): string {
   }
 }
 
+/**
+ * Parse a version string into a comparable numeric tuple.
+ * Returns [-1, -1, -1] for unparseable versions (sorts below all valid versions).
+ */
+function parseVersion(version: string): [number, number, number] {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/)
+  if (!match) return [-1, -1, -1]
+  return [parseInt(match[1], 10), parseInt(match[2], 10), parseInt(match[3], 10)]
+}
+
+/**
+ * Find the latest (highest) version from a list of version strings.
+ * Unparseable versions (e.g. "unknown") sort below all valid versions.
+ */
+function findLatestVersion(versions: string[]): string {
+  let latest = versions[0]
+  let latestParts = parseVersion(latest)
+
+  for (let i = 1; i < versions.length; i++) {
+    const parts = parseVersion(versions[i])
+    for (let j = 0; j < 3; j++) {
+      if (parts[j] > latestParts[j]) {
+        latest = versions[i]
+        latestParts = parts
+        break
+      }
+      if (parts[j] < latestParts[j]) break
+    }
+  }
+
+  return latest
+}
+
 interface InstallationInfo {
   path: string
   realPath: string
@@ -275,12 +308,26 @@ export async function checkDualInstallation(): Promise<CheckResult> {
       .join(', ')
 
     if (versionsDiffer) {
+      // Find the latest version and build a specific rm command for stale paths
+      const latestVersion = findLatestVersion(allInstalls.map((i) => i.version))
+      const stalePaths = allInstalls
+        .filter((i) => i.version !== latestVersion)
+        .map((i) => i.path)
+      const staleList = allInstalls
+        .filter((i) => i.version !== latestVersion)
+        .map((i) => `${i.path} (v${i.version})`)
+        .join(', ')
+
+      const fix = stalePaths.length === 1
+        ? `Remove outdated ${staleList}: run \`rm ${stalePaths[0]}\``
+        : `Remove outdated installations (${staleList}): run \`rm ${stalePaths.join(' ')}\``
+
       return {
         category: 'environment',
         name: 'dual_installation',
         status: 'warning',
         message: `Multiple CLI versions found: ${pathList}`,
-        fix: 'Remove the outdated installation. Run `which -a orch orchagent` to see all paths, then remove the older binary',
+        fix,
         details: {
           installationCount: installations.size,
           versionMismatch: true,
