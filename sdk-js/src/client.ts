@@ -39,9 +39,11 @@ const AGENT_REF_RE =
 // Default gateway URL
 const DEFAULT_GATEWAY_URL = "https://api.orchagent.io";
 
-// Environment variable names
+// Environment variable names (must match gateway orchestration contract v1)
 const LOCAL_EXECUTION_ENV = "ORCHAGENT_LOCAL_EXECUTION";
 const AGENTS_DIR_ENV = "ORCHAGENT_AGENTS_DIR";
+const SERVICE_KEY_ENV = "ORCHAGENT_SERVICE_KEY";
+const GATEWAY_URL_ENV = "ORCHAGENT_GATEWAY_URL";
 const CALL_CHAIN_ENV = "ORCHAGENT_CALL_CHAIN";
 const CALL_CHAIN_SIG_ENV = "ORCHAGENT_CALL_CHAIN_SIG";
 const DEADLINE_ENV = "ORCHAGENT_DEADLINE_MS";
@@ -50,6 +52,7 @@ const DOWNSTREAM_REMAINING_ENV = "ORCHAGENT_DOWNSTREAM_REMAINING";
 const BILLING_ORG_ENV = "ORCHAGENT_BILLING_ORG_ID";
 const BILLING_ORG_SIG_ENV = "ORCHAGENT_BILLING_ORG_SIG";
 const ROOT_RUN_ID_ENV = "ORCHAGENT_ROOT_RUN_ID";
+const REQUEST_ID_ENV = "ORCHAGENT_REQUEST_ID";
 
 export interface AgentClientOptions {
   serviceKey?: string;
@@ -106,7 +109,7 @@ export class AgentClient {
       process.env[AGENTS_DIR_ENV] || join(homedir(), ".orchagent", "agents");
 
     // Service key — optional in local mode
-    this.serviceKey = options.serviceKey || process.env.ORCHAGENT_SERVICE_KEY;
+    this.serviceKey = options.serviceKey || process.env[SERVICE_KEY_ENV];
     if (!this._localExecution && !this.serviceKey) {
       throw new AgentClientError(
         "No service key provided. Set ORCHAGENT_SERVICE_KEY env var or pass serviceKey option.",
@@ -115,7 +118,7 @@ export class AgentClient {
 
     this.gatewayUrl =
       options.gatewayUrl ||
-      process.env.ORCHAGENT_GATEWAY_URL ||
+      process.env[GATEWAY_URL_ENV] ||
       DEFAULT_GATEWAY_URL;
 
     // Load call chain from env var if not provided
@@ -160,7 +163,7 @@ export class AgentClient {
       this.downstreamRemaining = null;
     }
 
-    this.requestId = options.requestId || process.env.ORCHAGENT_REQUEST_ID || null;
+    this.requestId = options.requestId || process.env[REQUEST_ID_ENV] || null;
 
     // Load billing org from env var if not provided
     if (options.billingOrgId !== undefined) {
