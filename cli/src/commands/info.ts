@@ -1,9 +1,10 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 
-import { getResolvedConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig } from '../lib/config'
 import { ApiError, getOrg, listMyAgents, getPublicAgent, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
+import { CliError } from '../lib/errors'
 import type { AgentTypeValue } from '../types'
 
 type SchemaProperty = {
@@ -217,7 +218,13 @@ export function registerInfoCommand(program: Command): void {
     .option('--json', 'Output as JSON')
     .action(async (agentArg: string, options: { json?: boolean }) => {
       const config = await getResolvedConfig()
-      const { org, agent, version } = parseAgentRef(agentArg)
+      const parsed = parseAgentRef(agentArg)
+      const configFile = await loadConfig()
+      const org = parsed.org ?? configFile.workspace ?? config.defaultOrg
+      if (!org) {
+        throw new CliError('Missing org. Use org/agent format or set default org.')
+      }
+      const { agent, version } = parsed
 
       // Resolve workspace context for the target org
       const workspaceId = await resolveWorkspaceIdForOrg(config, org)

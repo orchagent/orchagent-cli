@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import readline from 'readline/promises'
 import chalk from 'chalk'
 
-import { getResolvedConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig } from '../lib/config'
 import { listMyAgents, checkAgentDelete, deleteAgent, resolveWorkspaceIdForOrg } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { parseAgentRef } from '../lib/agent-ref'
@@ -42,19 +42,25 @@ Examples:
         throw new CliError('Not logged in. Run `orchagent login` first.')
       }
 
+      const configFile = await loadConfig()
+      const org = ref.org ?? configFile.workspace ?? config.defaultOrg
+      if (!org) {
+        throw new CliError('Missing org. Use org/agent format or set default org.')
+      }
+
       // Resolve workspace context for the target org
-      const workspaceId = await resolveWorkspaceIdForOrg(config, ref.org)
+      const workspaceId = await resolveWorkspaceIdForOrg(config, org)
 
       process.stdout.write('Finding agent...\n')
 
       // Find the agent by name, filtering by org if provided
       const agents = await listMyAgents(config, workspaceId)
       const matching = agents.filter(a =>
-        a.name === ref.agent && (!a.org_slug || a.org_slug === ref.org)
+        a.name === ref.agent && (!a.org_slug || a.org_slug === org)
       )
 
       if (matching.length === 0) {
-        throw new CliError(`Agent '${ref.org}/${ref.agent}' not found`)
+        throw new CliError(`Agent '${org}/${ref.agent}' not found`)
       }
 
       // Select version
@@ -62,7 +68,7 @@ Examples:
       if (ref.version !== 'latest') {
         selectedAgent = matching.find(a => a.version === ref.version)
         if (!selectedAgent) {
-          throw new CliError(`Version '${ref.version}' not found for agent '${ref.org}/${ref.agent}'`)
+          throw new CliError(`Version '${ref.version}' not found for agent '${org}/${ref.agent}'`)
         }
       } else {
         // Get latest version

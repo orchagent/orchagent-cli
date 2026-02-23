@@ -70,20 +70,30 @@ async function resolveWorkspaceId(
   const configFile = await loadConfig()
   const targetSlug = slug ?? configFile.workspace
 
-  if (!targetSlug) {
-    throw new CliError(
-      'No workspace specified. Use --workspace <slug> or run `orch workspace use <slug>` first.'
-    )
-  }
-
   const response = await request<WorkspacesResponse>(config, 'GET', '/workspaces')
-  const workspace = response.workspaces.find((w) => w.slug === targetSlug)
 
-  if (!workspace) {
-    throw new CliError(`Workspace '${targetSlug}' not found.`)
+  if (targetSlug) {
+    const workspace = response.workspaces.find((w) => w.slug === targetSlug)
+    if (!workspace) {
+      throw new CliError(`Workspace '${targetSlug}' not found.`)
+    }
+    return workspace.id
   }
 
-  return workspace.id
+  // No workspace specified — auto-select if user has exactly one
+  if (response.workspaces.length === 0) {
+    throw new CliError('No workspaces found. Create one with `orch workspace create <name>`.')
+  }
+
+  if (response.workspaces.length === 1) {
+    return response.workspaces[0].id
+  }
+
+  const slugs = response.workspaces.map((w) => w.slug).join(', ')
+  throw new CliError(
+    `Multiple workspaces available: ${slugs}\n` +
+    'Specify one with --workspace <slug> or run `orch workspace use <slug>`.'
+  )
 }
 
 function formatDuration(ms: number): string {

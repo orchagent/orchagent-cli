@@ -86,6 +86,7 @@ async function waitForCallback(port: number, timeoutMs: number): Promise<string>
 
     const cleanup = () => {
       if (server) {
+        server.closeAllConnections()
         server.close()
         server = null
       }

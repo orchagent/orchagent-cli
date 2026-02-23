@@ -170,12 +170,13 @@ describe('secrets command', () => {
       ).rejects.toThrow('Missing API key')
     })
 
-    it('throws when no workspace configured', async () => {
+    it('lists available workspaces when no workspace configured and multiple exist', async () => {
       mockLoadConfig.mockResolvedValue({})
+      mockRequest.mockResolvedValueOnce(mockWorkspaces as any)
 
       await expect(
         program.parseAsync(['node', 'test', 'secrets', 'list'])
-      ).rejects.toThrow('No workspace specified')
+      ).rejects.toThrow('Multiple workspaces available')
     })
 
     it('throws when workspace not found', async () => {

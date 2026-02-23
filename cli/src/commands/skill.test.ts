@@ -58,11 +58,15 @@ vi.mock('../lib/installed', () => ({
   trackInstall: vi.fn().mockResolvedValue(undefined),
   computeHash: vi.fn().mockReturnValue('hash123'),
   untrackInstall: vi.fn().mockResolvedValue(undefined),
+  getInstalled: vi.fn().mockResolvedValue([]),
 }))
 
 import { registerSkillCommand } from './skill'
-import { getPublicAgent, publicRequest, reportInstall } from '../lib/api'
+import { getPublicAgent, publicRequest, reportInstall, listMyAgents } from '../lib/api'
 import { getResolvedConfig, getDefaultFormats, getDefaultScope, loadConfig } from '../lib/config'
+import { getInstalled } from '../lib/installed'
+import type { Agent } from '../types'
+import type { InstalledAgent } from '../lib/installed'
 
 const mockFs = vi.mocked(fs)
 const mockGetPublicAgent = vi.mocked(getPublicAgent)
@@ -72,6 +76,8 @@ const mockGetDefaultFormats = vi.mocked(getDefaultFormats)
 const mockGetDefaultScope = vi.mocked(getDefaultScope)
 const mockLoadConfig = vi.mocked(loadConfig)
 const mockReportInstall = vi.mocked(reportInstall)
+const mockListMyAgents = vi.mocked(listMyAgents)
+const mockGetInstalled = vi.mocked(getInstalled)
 
 describe('Bug 8: Skill install - duplicate frontmatter stripping', () => {
   let program: Command
@@ -186,10 +192,22 @@ describe('Bug 8: Skill install - duplicate frontmatter stripping', () => {
   })
 })
 
-describe('UX-11: Skill list — no dead marketplace references', () => {
+describe('BUG-C: orch skill list', () => {
   let program: Command
   let stdoutSpy: ReturnType<typeof vi.spyOn>
-  let exitSpy: ReturnType<typeof vi.spyOn>
+
+  function allStdout(): string {
+    return stdoutSpy.mock.calls.map(c => c[0]).join('')
+  }
+
+  function makeSkillAgent(overrides: Partial<Agent> & { name: string; version: string }): Agent {
+    return {
+      id: `id-${overrides.name}-${overrides.version}`,
+      type: 'skill',
+      created_at: '2026-02-01T00:00:00Z',
+      ...overrides,
+    } as Agent
+  }
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -197,35 +215,151 @@ describe('UX-11: Skill list — no dead marketplace references', () => {
     program.exitOverride()
     registerSkillCommand(program)
     stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit') })
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockListMyAgents.mockResolvedValue([])
+    mockGetInstalled.mockResolvedValue([])
   })
 
   afterEach(() => {
     stdoutSpy.mockRestore()
-    exitSpy.mockRestore()
     vi.restoreAllMocks()
   })
 
-  it('does not reference /explore page in skill list output', async () => {
-    try {
-      await program.parseAsync(['node', 'test', 'skill', 'list'])
-    } catch {
-      // Expected — process.exit mock throws
-    }
+  it('lists published skills from API', async () => {
+    mockListMyAgents.mockResolvedValue([
+      makeSkillAgent({ name: 'scan-rules', version: 'v1', description: 'Security scanning rules' }),
+      makeSkillAgent({ name: 'code-style', version: 'v2', description: 'Code style guidelines' }),
+      // Non-skill agent should be filtered out
+      { id: 'agent-1', name: 'my-agent', version: 'v1', type: 'agent', created_at: '2026-02-01T00:00:00Z' } as Agent,
+    ])
 
-    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
-    expect(output).not.toContain('/explore')
-    expect(output).not.toContain('discover')
+    await program.parseAsync(['node', 'test', 'skill', 'list'])
+
+    const output = allStdout()
+    expect(output).toContain('scan-rules')
+    expect(output).toContain('code-style')
+    expect(output).not.toContain('my-agent')
   })
 
-  it('shows install instructions in skill list output', async () => {
-    try {
-      await program.parseAsync(['node', 'test', 'skill', 'list'])
-    } catch {
-      // Expected — process.exit mock throws
-    }
+  it('shows locally installed skills', async () => {
+    const installed: InstalledAgent[] = [
+      {
+        agent: 'joe/scan-rules',
+        version: 'v1',
+        format: 'claude-code',
+        scope: 'project',
+        path: '/project/.claude/skills/scan-rules.md',
+        installedAt: '2026-02-20T10:00:00Z',
+        adapterVersion: '0.3.90',
+        contentHash: 'abc123',
+      },
+    ]
+    mockGetInstalled.mockResolvedValue(installed)
 
-    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    await program.parseAsync(['node', 'test', 'skill', 'list'])
+
+    const output = allStdout()
+    expect(output).toContain('scan-rules')
+    expect(output).toContain('Installed')
+  })
+
+  it('shows empty state with helpful message when no skills exist', async () => {
+    await program.parseAsync(['node', 'test', 'skill', 'list'])
+
+    const output = allStdout()
+    expect(output).toContain('No skills')
     expect(output).toContain('orch skill install')
+  })
+
+  it('supports --json flag with published skills', async () => {
+    mockListMyAgents.mockResolvedValue([
+      makeSkillAgent({ name: 'scan-rules', version: 'v1', description: 'Security rules' }),
+    ])
+
+    await program.parseAsync(['node', 'test', 'skill', 'list', '--json'])
+
+    const output = allStdout()
+    const parsed = JSON.parse(output)
+    expect(parsed.published).toHaveLength(1)
+    expect(parsed.published[0].name).toBe('scan-rules')
+  })
+
+  it('supports --json flag with installed skills', async () => {
+    const installed: InstalledAgent[] = [
+      {
+        agent: 'joe/scan-rules',
+        version: 'v1',
+        format: 'claude-code',
+        scope: 'project',
+        path: '/project/.claude/skills/scan-rules.md',
+        installedAt: '2026-02-20T10:00:00Z',
+        adapterVersion: '0.3.90',
+        contentHash: 'abc123',
+      },
+    ]
+    mockGetInstalled.mockResolvedValue(installed)
+
+    await program.parseAsync(['node', 'test', 'skill', 'list', '--json'])
+
+    const output = allStdout()
+    const parsed = JSON.parse(output)
+    expect(parsed.installed).toHaveLength(1)
+    expect(parsed.installed[0].agent).toBe('joe/scan-rules')
+  })
+
+  it('does not crash when not authenticated (no apiKey)', async () => {
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: '',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: '',
+    })
+    const installed: InstalledAgent[] = [
+      {
+        agent: 'joe/scan-rules',
+        version: 'v1',
+        format: 'claude-code',
+        scope: 'user',
+        path: '/home/.claude/skills/scan-rules.md',
+        installedAt: '2026-02-20T10:00:00Z',
+        adapterVersion: '0.3.90',
+        contentHash: 'abc123',
+      },
+    ]
+    mockGetInstalled.mockResolvedValue(installed)
+
+    await program.parseAsync(['node', 'test', 'skill', 'list'])
+
+    const output = allStdout()
+    // Should still show installed skills without API call
+    expect(output).toContain('scan-rules')
+    expect(mockListMyAgents).not.toHaveBeenCalled()
+  })
+
+  it('deduplicates to latest version per skill name', async () => {
+    mockListMyAgents.mockResolvedValue([
+      makeSkillAgent({ name: 'scan-rules', version: 'v1', created_at: '2026-01-01T00:00:00Z' }),
+      makeSkillAgent({ name: 'scan-rules', version: 'v2', created_at: '2026-02-01T00:00:00Z' }),
+      makeSkillAgent({ name: 'scan-rules', version: 'v3', created_at: '2026-03-01T00:00:00Z' }),
+    ])
+
+    await program.parseAsync(['node', 'test', 'skill', 'list'])
+
+    const output = allStdout()
+    expect(output).toContain('v3')
+    // Should show version count
+    expect(output).toContain('3 total')
+  })
+
+  it('does not reference /explore page', async () => {
+    await program.parseAsync(['node', 'test', 'skill', 'list'])
+
+    const output = allStdout()
+    expect(output).not.toContain('/explore')
+    expect(output).not.toContain('discover')
   })
 })

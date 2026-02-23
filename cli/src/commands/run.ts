@@ -316,6 +316,25 @@ async function readStdin(): Promise<Buffer | null> {
   return Buffer.concat(chunks)
 }
 
+/**
+ * Try to parse a Buffer as a JSON object (not array).
+ * Returns the parsed object on success, null on failure or if the content
+ * is not a JSON object (e.g. array, string, number).
+ */
+export function tryParseJsonObject(buf: Buffer): Record<string, unknown> | null {
+  const text = buf.toString('utf8').trim()
+  if (!text.startsWith('{')) return null
+  try {
+    const parsed = JSON.parse(text)
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 async function buildMultipartBody(
   filePaths: string[] | undefined,
   metadata?: string
@@ -2522,12 +2541,36 @@ async function executeCloud(
     body = multipart.body
     sourceLabel = multipart.sourceLabel
   } else if (llmCredentials) {
-    body = JSON.stringify({ llm_credentials: llmCredentials })
+    // Check for piped JSON stdin to merge with credentials
+    const stdinData = await readStdin()
+    const stdinJson = stdinData ? tryParseJsonObject(stdinData) : null
+    if (stdinJson) {
+      stdinJson.llm_credentials = llmCredentials
+      warnInputSchemaErrors(stdinJson, agentMeta.input_schema as object | undefined)
+      body = JSON.stringify(stdinJson)
+      sourceLabel = 'stdin'
+    } else {
+      body = JSON.stringify({ llm_credentials: llmCredentials })
+    }
     headers['Content-Type'] = 'application/json'
   } else {
-    const multipart = await buildMultipartBody(undefined, options.metadata)
-    body = multipart.body
-    sourceLabel = multipart.sourceLabel
+    // No --data, no --file, no --metadata — check for piped JSON stdin
+    const stdinData = await readStdin()
+    if (stdinData) {
+      const stdinJson = tryParseJsonObject(stdinData)
+      if (stdinJson) {
+        warnInputSchemaErrors(stdinJson, agentMeta.input_schema as object | undefined)
+        body = JSON.stringify(stdinJson)
+        headers['Content-Type'] = 'application/json'
+        sourceLabel = 'stdin'
+      } else {
+        // Non-JSON stdin — send as binary file attachment
+        const form = new FormData()
+        form.append('files[]', new Blob([new Uint8Array(stdinData)]), 'stdin')
+        body = form
+        sourceLabel = 'stdin'
+      }
+    }
   }
   } // end of non-injection path
 

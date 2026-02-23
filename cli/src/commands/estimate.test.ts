@@ -7,6 +7,7 @@ import { Command } from 'commander'
 
 vi.mock('../lib/config', () => ({
   getResolvedConfig: vi.fn(),
+  loadConfig: vi.fn().mockResolvedValue({}),
 }))
 vi.mock('../lib/api', () => {
   const ApiError = class extends Error {

@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
-import { getResolvedConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
@@ -42,7 +42,13 @@ export function registerTreeCommand(program: Command): void {
         throw new CliError('Authentication required. Run: orch login')
       }
 
-      const { org, agent, version } = parseAgentRef(agentArg)
+      const parsed = parseAgentRef(agentArg)
+      const configFile = await loadConfig()
+      const org = parsed.org ?? configFile.workspace ?? config.defaultOrg
+      if (!org) {
+        throw new CliError('Missing org. Use org/agent format or set default org.')
+      }
+      const { agent, version } = parsed
 
       const tree = await request<TreeResponse>(
         config,

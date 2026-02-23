@@ -1,9 +1,10 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 
-import { getResolvedConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig } from '../lib/config'
 import { ApiError, getOrg, listMyAgents, getPublicAgent, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
+import { CliError } from '../lib/errors'
 import { withSpinner } from '../lib/spinner'
 import type { AgentTypeValue } from '../types'
 
@@ -449,7 +450,8 @@ function printDiffs(
 function parseSecondRef(value: string, firstOrg: string, firstName: string): { org: string; agent: string; version: string } {
   // If it contains '/', treat as full ref
   if (value.includes('/')) {
-    return parseAgentRef(value)
+    const parsed = parseAgentRef(value)
+    return { org: parsed.org ?? firstOrg, agent: parsed.agent, version: parsed.version }
   }
   // Otherwise treat as a version shorthand for the same agent
   return { org: firstOrg, agent: firstName, version: value }
@@ -464,7 +466,13 @@ export function registerDiffCommand(program: Command): void {
     .option('--json', 'Output as JSON')
     .action(async (ref1Arg: string, ref2Arg: string | undefined, options: { json?: boolean }) => {
       const config = await getResolvedConfig()
-      const ref1 = parseAgentRef(ref1Arg)
+      const ref1Raw = parseAgentRef(ref1Arg)
+      const configFile = await loadConfig()
+      const ref1Org = ref1Raw.org ?? configFile.workspace ?? config.defaultOrg
+      if (!ref1Org) {
+        throw new CliError('Missing org. Use org/agent format or set default org.')
+      }
+      const ref1 = { org: ref1Org, agent: ref1Raw.agent, version: ref1Raw.version }
 
       let ref2: { org: string; agent: string; version: string }
       if (ref2Arg) {

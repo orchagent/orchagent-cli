@@ -106,20 +106,30 @@ async function resolveWorkspaceId(
   const configFile = await loadConfig()
   const targetSlug = slug ?? configFile.workspace
 
-  if (!targetSlug) {
-    throw new CliError(
-      'No workspace specified. Use --workspace <slug> or run `orch workspace use <slug>` first.'
-    )
-  }
-
   const response = await request<WorkspacesResponse>(config, 'GET', '/workspaces')
-  const workspace = response.workspaces.find((w) => w.slug === targetSlug)
 
-  if (!workspace) {
-    throw new CliError(`Workspace '${targetSlug}' not found.`)
+  if (targetSlug) {
+    const workspace = response.workspaces.find((w) => w.slug === targetSlug)
+    if (!workspace) {
+      throw new CliError(`Workspace '${targetSlug}' not found.`)
+    }
+    return workspace.id
   }
 
-  return workspace.id
+  // No workspace specified — auto-select if user has exactly one
+  if (response.workspaces.length === 0) {
+    throw new CliError('No workspaces found. Create one with `orch workspace create <name>`.')
+  }
+
+  if (response.workspaces.length === 1) {
+    return response.workspaces[0].id
+  }
+
+  const slugs = response.workspaces.map((w) => w.slug).join(', ')
+  throw new CliError(
+    `Multiple workspaces available: ${slugs}\n` +
+    'Specify one with --workspace <slug> or run `orch workspace use <slug>`.'
+  )
 }
 
 function formatDate(iso: string | null): string {
@@ -270,6 +280,8 @@ export function registerScheduleCommand(program: Command): void {
     .option('--input <json>', 'Input data as JSON string')
     .option('--provider <provider>', 'LLM provider (anthropic, openai, gemini)')
     .option('--pin-version', 'Pin to this version (disable auto-update on publish)')
+    .option('--alert-webhook <url>', 'Webhook URL to POST on failure (HTTPS required)')
+    .option('--alert-on-failure-count <n>', 'Number of consecutive failures before alerting (default: 3)', parseInt)
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .action(async (agentArg: string, options: {
       cron?: string
@@ -278,6 +290,8 @@ export function registerScheduleCommand(program: Command): void {
       input?: string
       provider?: string
       pinVersion?: boolean
+      alertWebhook?: string
+      alertOnFailureCount?: number
       workspace?: string
     }) => {
       const config = await getResolvedConfig()
@@ -295,9 +309,14 @@ export function registerScheduleCommand(program: Command): void {
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const ref = parseAgentRef(agentArg)
+      const configFile = await loadConfig()
+      const org = ref.org ?? configFile.workspace ?? config.defaultOrg
+      if (!org) {
+        throw new CliError('Missing org. Use org/agent format or set default org.')
+      }
 
       // Resolve agent to get the ID (pass workspace context for private agents)
-      const agent = await getAgentWithFallback(config, ref.org, ref.agent, ref.version, workspaceId)
+      const agent = await getAgentWithFallback(config, org, ref.agent, ref.version, workspaceId)
 
       // Parse input data
       let inputData: Record<string, unknown> | undefined
@@ -323,6 +342,8 @@ export function registerScheduleCommand(program: Command): void {
       if (inputData) body.input_data = inputData
       if (options.provider) body.llm_provider = options.provider
       if (options.pinVersion) body.auto_update = false
+      if (options.alertWebhook) body.alert_webhook_url = options.alertWebhook
+      if (options.alertOnFailureCount) body.alert_on_failure_count = options.alertOnFailureCount
 
       const result = await request<ScheduleResponse>(
         config,
@@ -359,6 +380,11 @@ export function registerScheduleCommand(program: Command): void {
         process.stdout.write(`  Provider:    ${s.llm_provider}\n`)
       }
 
+      if (s.alert_webhook_url) {
+        process.stdout.write(`  Alert URL:   ${s.alert_webhook_url}\n`)
+        process.stdout.write(`  Alert after: ${s.alert_on_failure_count ?? 3} consecutive failures\n`)
+      }
+
       process.stdout.write('\n')
     })
 
@@ -374,6 +400,9 @@ export function registerScheduleCommand(program: Command): void {
     .option('--disable', 'Disable the schedule')
     .option('--auto-update', 'Enable auto-update on publish')
     .option('--pin-version', 'Pin to current version (disable auto-update)')
+    .option('--alert-webhook <url>', 'Webhook URL to POST on failure (HTTPS required)')
+    .option('--alert-on-failure-count <n>', 'Number of consecutive failures before alerting', parseInt)
+    .option('--clear-alert-webhook', 'Remove the alert webhook URL')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .action(async (scheduleId: string, options: {
       cron?: string
@@ -384,6 +413,9 @@ export function registerScheduleCommand(program: Command): void {
       disable?: boolean
       autoUpdate?: boolean
       pinVersion?: boolean
+      alertWebhook?: string
+      alertOnFailureCount?: number
+      clearAlertWebhook?: boolean
       workspace?: string
     }) => {
       const config = await getResolvedConfig()
@@ -397,6 +429,9 @@ export function registerScheduleCommand(program: Command): void {
       if (options.autoUpdate && options.pinVersion) {
         throw new CliError('Cannot use both --auto-update and --pin-version')
       }
+      if (options.alertWebhook && options.clearAlertWebhook) {
+        throw new CliError('Cannot use both --alert-webhook and --clear-alert-webhook')
+      }
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
 
@@ -408,6 +443,9 @@ export function registerScheduleCommand(program: Command): void {
       if (options.disable) updates.enabled = false
       if (options.autoUpdate) updates.auto_update = true
       if (options.pinVersion) updates.auto_update = false
+      if (options.alertWebhook) updates.alert_webhook_url = options.alertWebhook
+      if (options.alertOnFailureCount) updates.alert_on_failure_count = options.alertOnFailureCount
+      if (options.clearAlertWebhook) updates.alert_webhook_url = ''
 
       if (options.input) {
         try {
@@ -441,6 +479,12 @@ export function registerScheduleCommand(program: Command): void {
       }
       if (s.next_run_at) {
         process.stdout.write(`  Next:    ${formatDate(s.next_run_at)}\n`)
+      }
+      if (s.alert_webhook_url) {
+        process.stdout.write(`  Alert:   ${s.alert_webhook_url}\n`)
+        process.stdout.write(`  After:   ${s.alert_on_failure_count ?? 3} failures\n`)
+      } else if (options.clearAlertWebhook) {
+        process.stdout.write(`  Alert:   ${chalk.gray('removed')}\n`)
       }
       process.stdout.write('\n')
     })
@@ -700,5 +744,34 @@ export function registerScheduleCommand(program: Command): void {
 
       process.stdout.write(`${table.toString()}\n`)
       process.stdout.write(chalk.gray(`\n${result.total} run${result.total !== 1 ? 's' : ''} total\n`))
+    })
+
+  // orch schedule test-alert <schedule-id>
+  schedule
+    .command('test-alert <schedule-id>')
+    .description('Send a test alert to the schedule\'s configured webhook URL')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .action(async (partialScheduleId: string, options: { workspace?: string }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+      const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
+
+      process.stdout.write('Sending test alert...\n')
+
+      const result = await request<{ success: boolean }>(
+        config,
+        'POST',
+        `/workspaces/${workspaceId}/schedules/${scheduleId}/test-alert`,
+      )
+
+      if (result.success) {
+        process.stdout.write(chalk.green('\u2713') + ' Test alert delivered successfully\n')
+      } else {
+        process.stdout.write(chalk.red('\u2717') + ' Test alert delivery failed\n')
+      }
     })
 }

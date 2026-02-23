@@ -20,7 +20,7 @@ vi.mock('../lib/analytics', () => ({
 }))
 
 import fs from 'fs/promises'
-import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema } from './run'
+import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema, tryParseJsonObject } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import {
@@ -3411,5 +3411,65 @@ describe('UX-007: --verbose flag in streaming mode', () => {
     const output = stderrOutput()
     // Pre-request verbose header is suppressed in --json mode
     expect(output).not.toContain('[verbose]')
+  })
+})
+
+describe('BUG-D: tryParseJsonObject — piped JSON stdin auto-detection', () => {
+  it('parses a valid JSON object', () => {
+    const buf = Buffer.from('{"text": "hello", "count": 42}')
+    const result = tryParseJsonObject(buf)
+    expect(result).toEqual({ text: 'hello', count: 42 })
+  })
+
+  it('parses JSON object with leading/trailing whitespace', () => {
+    const buf = Buffer.from('  \n  {"key": "value"}  \n  ')
+    const result = tryParseJsonObject(buf)
+    expect(result).toEqual({ key: 'value' })
+  })
+
+  it('returns null for JSON arrays', () => {
+    const buf = Buffer.from('[1, 2, 3]')
+    expect(tryParseJsonObject(buf)).toBeNull()
+  })
+
+  it('returns null for plain strings', () => {
+    const buf = Buffer.from('"just a string"')
+    expect(tryParseJsonObject(buf)).toBeNull()
+  })
+
+  it('returns null for numbers', () => {
+    const buf = Buffer.from('42')
+    expect(tryParseJsonObject(buf)).toBeNull()
+  })
+
+  it('returns null for invalid JSON starting with {', () => {
+    const buf = Buffer.from('{not valid json}')
+    expect(tryParseJsonObject(buf)).toBeNull()
+  })
+
+  it('returns null for binary data', () => {
+    const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47]) // PNG header
+    expect(tryParseJsonObject(buf)).toBeNull()
+  })
+
+  it('returns null for empty buffer', () => {
+    const buf = Buffer.from('')
+    expect(tryParseJsonObject(buf)).toBeNull()
+  })
+
+  it('returns null for whitespace-only buffer', () => {
+    const buf = Buffer.from('   \n\t  ')
+    expect(tryParseJsonObject(buf)).toBeNull()
+  })
+
+  it('parses nested JSON objects', () => {
+    const buf = Buffer.from('{"task": "analyze", "options": {"verbose": true}}')
+    const result = tryParseJsonObject(buf)
+    expect(result).toEqual({ task: 'analyze', options: { verbose: true } })
+  })
+
+  it('returns null for plain text that looks like prose', () => {
+    const buf = Buffer.from('Please analyze this code for bugs')
+    expect(tryParseJsonObject(buf)).toBeNull()
   })
 })

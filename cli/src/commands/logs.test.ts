@@ -250,4 +250,114 @@ describe('logs command', () => {
 
     await program.parseAsync(['node', 'test', 'logs', 'test-agent'])
   })
+
+  // ─── BUG-B: Auto-select workspace for single-workspace users ────────────
+
+  it('auto-selects workspace when user has exactly one and none is configured', async () => {
+    // No workspace in config
+    mockLoadConfig.mockResolvedValue({})
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        // Verify it used the auto-selected workspace ID in the URL
+        expect(path).toContain(`/workspaces/${WORKSPACE_ID}/runs`)
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    // Should NOT throw — should auto-select the only workspace
+    await program.parseAsync(['node', 'test', 'logs'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('test-agent')
+  })
+
+  it('errors with workspace list when user has multiple workspaces and none is configured', async () => {
+    // No workspace in config
+    mockLoadConfig.mockResolvedValue({})
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return {
+          workspaces: [
+            { id: 'ws-1', name: 'Personal', slug: 'joe' },
+            { id: 'ws-2', name: 'Team Alpha', slug: 'team-alpha' },
+          ],
+        }
+      }
+      return {}
+    })
+
+    // Should throw with helpful message listing available workspaces
+    await expect(
+      program.parseAsync(['node', 'test', 'logs'])
+    ).rejects.toThrow('workspace')
+  })
+
+  it('errors when user has no workspaces and none is configured', async () => {
+    // No workspace in config
+    mockLoadConfig.mockResolvedValue({})
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [] }
+      }
+      return {}
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'logs'])
+    ).rejects.toThrow('No workspaces found')
+  })
+
+  it('still uses configured workspace when set (existing behavior)', async () => {
+    // Workspace IS in config
+    mockLoadConfig.mockResolvedValue({ workspace: 'joe' })
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return {
+          workspaces: [
+            { id: 'ws-1', name: 'Personal', slug: 'joe' },
+            { id: 'ws-2', name: 'Team Alpha', slug: 'team-alpha' },
+          ],
+        }
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        // Should use ws-1 (the 'joe' workspace), not ws-2
+        expect(path).toContain('/workspaces/ws-1/runs')
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs'])
+  })
+
+  it('still uses --workspace flag when provided (existing behavior)', async () => {
+    // No workspace in config
+    mockLoadConfig.mockResolvedValue({})
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return {
+          workspaces: [
+            { id: 'ws-1', name: 'Personal', slug: 'joe' },
+            { id: 'ws-2', name: 'Team Alpha', slug: 'team-alpha' },
+          ],
+        }
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        expect(path).toContain('/workspaces/ws-2/runs')
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', '--workspace', 'team-alpha'])
+  })
 })

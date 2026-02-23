@@ -347,12 +347,22 @@ describe('orch metrics', () => {
     ).rejects.toThrow("Workspace 'nonexistent' not found")
   })
 
-  it('errors when no workspace configured', async () => {
+  it('auto-selects single workspace when none configured', async () => {
     mockLoadConfig.mockResolvedValue({})
 
-    await expect(
-      program.parseAsync(['node', 'test', 'metrics'])
-    ).rejects.toThrow('No workspace specified')
+    mockRequest.mockImplementation(async (_config, _method, path) => {
+      const p = path as string
+      if (p === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'My Workspace', slug: 'my-workspace' }] }
+      }
+      if (p.includes('/metrics/dashboard')) {
+        return { overview: { total_runs: 0, completed_runs: 0, failed_runs: 0, total_cost_usd: 0, avg_duration_ms: 0, success_rate: 0 }, agents: [], daily_series: [], period: '7d', total_agents: 0 }
+      }
+      return {}
+    })
+
+    // Should NOT throw — should auto-select the only workspace
+    await program.parseAsync(['node', 'test', 'metrics'])
   })
 
   // ─── Error handling ───────────────────────────────────────────────

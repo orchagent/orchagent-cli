@@ -63,6 +63,7 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
   const resolved = await getResolvedConfig({ api_key: apiKey })
   const org = await getOrg(resolved)
   const existing = await loadConfig()
+  const isFirstLogin = !existing.api_key
 
   const nextConfig = {
     ...existing,
@@ -76,6 +77,10 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
   await saveConfig(nextConfig)
   await track('cli_login', { method: 'key' })
   process.stdout.write(`✓ Logged in to ${org.slug}\n`)
+
+  if (isFirstLogin) {
+    process.stdout.write('\n  Tip: Run `orch doctor` to verify your setup.\n\n')
+  }
 }
 
 /**
@@ -83,6 +88,7 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
  */
 async function browserBasedLogin(port: number): Promise<void> {
   const existing = await loadConfig()
+  const isFirstLogin = !existing.api_key
   const resolved = await getResolvedConfig()
 
   process.stdout.write('Opening browser for authentication...\n')
@@ -102,6 +108,10 @@ async function browserBasedLogin(port: number): Promise<void> {
     await saveConfig(nextConfig)
     await track('cli_login', { method: 'browser' })
     process.stdout.write(`\n✓ Logged in to ${result.orgSlug}\n`)
+
+    if (isFirstLogin) {
+      process.stdout.write('\n  Tip: Run `orch doctor` to verify your setup.\n\n')
+    }
   } catch (err) {
     if (err instanceof CliError) {
       throw err

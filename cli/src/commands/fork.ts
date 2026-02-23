@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 
-import { getResolvedConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig } from '../lib/config'
 import { getAgentWithFallback, request, forkAgent, ApiError } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
@@ -78,7 +78,13 @@ Examples:
         throw new CliError('Not logged in. Run `orchagent login` first.')
       }
 
-      const { org, agent, version } = parseAgentRef(agentRef)
+      const parsed = parseAgentRef(agentRef)
+      const configFile = await loadConfig()
+      const org = parsed.org ?? configFile.workspace ?? config.defaultOrg
+      if (!org) {
+        throw new CliError('Missing org. Use org/agent format or set default org.')
+      }
+      const { agent, version } = parsed
 
       write('Resolving source agent...\n')
       const source = await getAgentWithFallback(config, org, agent, version)

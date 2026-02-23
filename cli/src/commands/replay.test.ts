@@ -322,12 +322,21 @@ describe('replay command', () => {
     ).rejects.toThrow('Missing API key')
   })
 
-  it('requires workspace', async () => {
+  it('auto-selects single workspace when none configured', async () => {
     mockLoadConfig.mockResolvedValue({})
 
-    await expect(
-      program.parseAsync(['node', 'test', 'replay', FULL_RUN_ID, '--no-wait'])
-    ).rejects.toThrow('No workspace specified')
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/replay')) {
+        return { run_id: 'new-run-id', status: 'running' }
+      }
+      return {}
+    })
+
+    // Should NOT throw — should auto-select the only workspace
+    await program.parseAsync(['node', 'test', 'replay', FULL_RUN_ID, '--no-wait'])
   })
 
   // ─── Options forwarding ────────────────────────────────────────────

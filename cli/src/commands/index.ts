@@ -41,6 +41,7 @@ import { registerReplayCommand } from './replay'
 import { registerTraceCommand } from './trace'
 import { registerMetricsCommand } from './metrics'
 import { registerDagCommand } from './dag'
+import { registerCompletionCommand } from './completion'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -84,4 +85,5 @@ export function registerCommands(program: Command): void {
   registerTraceCommand(program)
   registerMetricsCommand(program)
   registerDagCommand(program)
+  registerCompletionCommand(program)
 }

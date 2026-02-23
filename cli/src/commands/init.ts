@@ -3,6 +3,7 @@ import fs from 'fs/promises'
 import path from 'path'
 
 import { CliError } from '../lib/errors'
+import { runInitWizard, printTemplateList } from './init-wizard'
 import {
   AVAILABLE_TEMPLATES,
   TEMPLATE_MANIFEST,
@@ -1568,15 +1569,48 @@ function resolveInitFlavor(typeOption: string): { type: 'prompt' | 'tool' | 'age
 export function registerInitCommand(program: Command): void {
   program
     .command('init')
-    .description('Initialize a new agent project')
+    .description('Initialize a new agent project (interactive wizard when called without arguments)')
     .argument('[name]', 'Agent name (default: current directory name)')
     .option('--type <type>', 'Type: prompt, tool, agent, or skill (legacy aliases: agentic, code)', 'prompt')
     .option('--orchestrator', 'Create an orchestrator agent with dependency scaffolding and SDK boilerplate')
     .option('--run-mode <mode>', 'Run mode for agents: on_demand or always_on', 'on_demand')
     .option('--language <lang>', 'Language: python or javascript (default: python)', 'python')
     .option('--loop', 'Use platform-managed LLM loop instead of code runtime (requires --type agent)')
-    .option('--template <name>', 'Start from a template (available: fan-out, pipeline, map-reduce, support-agent, discord, discord-js, github-weekly-summary)')
-    .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; loop?: boolean; runMode: string; language: string; template?: string }) => {
+    .option('--template <name>', 'Start from a template (use --list-templates to see options)')
+    .option('--list-templates', 'Show available templates with descriptions')
+    .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; loop?: boolean; runMode: string; language: string; template?: string; listTemplates?: boolean }) => {
+      // --list-templates: print and exit
+      if (options.listTemplates) {
+        printTemplateList()
+        return
+      }
+
+      // Interactive wizard: no name, TTY, and no explicit flags that indicate non-interactive intent
+      const rawArgs = process.argv.slice(2)
+      const initArgIndex = rawArgs.indexOf('init')
+      const argsAfterInit = initArgIndex >= 0 ? rawArgs.slice(initArgIndex + 1) : []
+      const hasExplicitFlags = argsAfterInit.some(a => a.startsWith('--'))
+      const hasNameArg = name !== undefined
+
+      if (!hasNameArg && !hasExplicitFlags && process.stdin.isTTY) {
+        const wizard = await runInitWizard()
+        // Re-invoke the action with wizard results by constructing args
+        const wizardArgs = ['node', 'orch', 'init']
+        if (wizard.name) wizardArgs.push(wizard.name)
+        wizardArgs.push('--type', wizard.type)
+        wizardArgs.push('--language', wizard.language)
+        wizardArgs.push('--run-mode', wizard.runMode)
+        if (wizard.template) wizardArgs.push('--template', wizard.template)
+        if (wizard.orchestrator) wizardArgs.push('--orchestrator')
+        if (wizard.loop) wizardArgs.push('--loop')
+
+        // Create a fresh program to run with wizard args
+        const wizardProgram = new Command()
+        wizardProgram.exitOverride()
+        registerInitCommand(wizardProgram)
+        await wizardProgram.parseAsync(wizardArgs)
+        return
+      }
       const cwd = process.cwd()
       let runMode = (options.runMode || 'on_demand').trim().toLowerCase()
       if (!['on_demand', 'always_on'].includes(runMode)) {

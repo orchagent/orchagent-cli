@@ -2,12 +2,14 @@ import { Command } from 'commander'
 import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
+import chalk from 'chalk'
 
 import { getResolvedConfig, getDefaultFormats, getDefaultScope, setDefaultFormats, FORMAT_SKILL_DIRS, VALID_FORMAT_IDS, loadConfig, type FormatId } from '../lib/config'
 import { publicRequest, ApiError, getOrg, listMyAgents, reportInstall, getPublicAgent, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
-import { trackInstall, computeHash, untrackInstall, type InstalledAgent } from '../lib/installed'
+import { trackInstall, computeHash, untrackInstall, getInstalled, type InstalledAgent } from '../lib/installed'
+import { latestOnly } from './agents'
 import type { Agent, AgentTypeValue, PublicAgent, ResolvedConfig } from '../types'
 import packageJson from '../../package.json'
 
@@ -221,17 +223,100 @@ export function registerSkillCommand(program: Command): void {
   // orch skill list
   skill
     .command('list')
-    .description('Browse available skills')
+    .description('List your published and installed skills')
     .option('--json', 'Output raw JSON')
-    .action(async () => {
-      process.stdout.write(
-        'Install a skill:\n' +
-        '  orch skill install <org>/<skill-name>\n\n' +
-        'View installed skills:\n' +
-        '  orch update --check\n\n' +
-        'Learn more: https://docs.orchagent.io/skills\n'
-      )
-      process.exit(0)
+    .action(async (options: { json?: boolean }) => {
+      const config = await getResolvedConfig()
+      const jsonMode = options.json === true
+
+      // Fetch published skills (only if authenticated)
+      let publishedSkills: Agent[] = []
+      if (config.apiKey) {
+        const configFile = await loadConfig()
+        const orgSlug = configFile.workspace ?? config.defaultOrg
+        const workspaceId = orgSlug ? await resolveWorkspaceIdForOrg(config, orgSlug) : undefined
+        const allAgents = await listMyAgents(config, workspaceId)
+        publishedSkills = allAgents.filter(a => a.type === 'skill')
+      }
+
+      // Fetch locally installed skills
+      const installed = await getInstalled()
+
+      // JSON output
+      if (jsonMode) {
+        const { agents: latestSkills } = latestOnly(publishedSkills)
+        process.stdout.write(JSON.stringify({
+          published: latestSkills,
+          installed,
+        }, null, 2) + '\n')
+        return
+      }
+
+      // Empty state
+      if (publishedSkills.length === 0 && installed.length === 0) {
+        process.stdout.write(
+          'No skills found.\n\n' +
+          'Install a skill:\n' +
+          '  orch skill install <org>/<skill-name>\n\n' +
+          'Create a skill:\n' +
+          '  orch skill create <name>\n'
+        )
+        return
+      }
+
+      // Published skills table
+      if (publishedSkills.length > 0) {
+        const { agents: latestSkills, versionCounts } = latestOnly(publishedSkills)
+        const Table = (await import('cli-table3')).default
+        const table = new Table({
+          head: [
+            chalk.bold('Skill'),
+            chalk.bold('Version'),
+            chalk.bold('Description'),
+          ],
+        })
+
+        for (const skill of latestSkills) {
+          const desc = skill.description
+            ? skill.description.length > 60
+              ? skill.description.slice(0, 57) + '...'
+              : skill.description
+            : '-'
+          let version = skill.version
+          const count = versionCounts.get(skill.name) ?? 1
+          if (count > 1) {
+            version = `${skill.version} (${count} total)`
+          }
+          table.push([skill.name, version, desc])
+        }
+
+        process.stdout.write(`Published Skills\n${table.toString()}\n`)
+        process.stdout.write(`\n${latestSkills.length} skill${latestSkills.length === 1 ? '' : 's'}`)
+        if (publishedSkills.length > latestSkills.length) {
+          process.stdout.write(` (${publishedSkills.length} versions total)`)
+        }
+        process.stdout.write('\n')
+      }
+
+      // Installed skills table
+      if (installed.length > 0) {
+        const Table = (await import('cli-table3')).default
+        const table = new Table({
+          head: [
+            chalk.bold('Skill'),
+            chalk.bold('Version'),
+            chalk.bold('Tool'),
+            chalk.bold('Scope'),
+          ],
+        })
+
+        for (const entry of installed) {
+          table.push([entry.agent, entry.version, entry.format, entry.scope])
+        }
+
+        if (publishedSkills.length > 0) process.stdout.write('\n')
+        process.stdout.write(`Installed Skills\n${table.toString()}\n`)
+      }
     })
 
   // orch skill create [name]

@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 
-import { getResolvedConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig } from '../lib/config'
 import { getAgentCostEstimate, ApiError } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { printJson } from '../lib/output'
@@ -30,12 +30,14 @@ export function registerEstimateCommand(program: Command): void {
     .option('--json', 'Output as JSON')
     .action(async (agentArg: string, options: { json?: boolean }) => {
       const config = await getResolvedConfig()
-      const { org, agent, version } = parseAgentRef(agentArg)
-
+      const parsed = parseAgentRef(agentArg)
+      const configFile = await loadConfig()
+      const org = parsed.org ?? configFile.workspace ?? config.defaultOrg
       if (!org) {
-        process.stderr.write(chalk.red('Error: org/agent format required (e.g. myorg/my-agent)\n'))
+        process.stderr.write(chalk.red('Error: Missing org. Use org/agent format or set default org.\n'))
         process.exit(1)
       }
+      const { agent, version } = parsed
 
       let data
       try {
