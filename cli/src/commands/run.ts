@@ -191,13 +191,21 @@ function warnIfLocalPathReference(jsonBody: string): void {
   }
 }
 
-function inferFileField(inputSchema?: object): string {
+/**
+ * Infer which schema field should receive file content.
+ *
+ * Returns the detected field name, or null when the schema has properties
+ * but none of the heuristics can determine the right field.
+ * Returns 'content' (default) only when there is no schema to check against.
+ */
+export function inferFileField(inputSchema?: object): string | null {
   if (!inputSchema || typeof inputSchema !== 'object') return 'content'
   const props = (inputSchema as Record<string, unknown>).properties
   if (!props || typeof props !== 'object') return 'content'
 
   const properties = props as Record<string, { type?: string }>
 
+  // 1. Check well-known content field names
   for (const field of CONTENT_FIELD_NAMES) {
     if (properties[field] && properties[field].type === 'string') return field
   }
@@ -207,12 +215,49 @@ function inferFileField(inputSchema?: object): string {
     .filter(([, v]) => v.type === 'string')
     .map(([k]) => k)
 
+  // 2. Only one string property in the schema — use it
   if (stringProps.length === 1) return stringProps[0]
 
+  // 3. Only one required string property — use it
   const requiredStrings = stringProps.filter(k => required.includes(k))
   if (requiredStrings.length === 1) return requiredStrings[0]
 
-  return 'content'
+  // 4. Schema exists but detection is ambiguous — return null so callers
+  //    can surface a clear error instead of silently using the wrong field
+  return null
+}
+
+/**
+ * Resolve the file field name, throwing a clear error when auto-detection fails.
+ * Used at call sites where a file is being injected into a JSON payload.
+ */
+function resolveFileField(
+  fileFieldOption: string | undefined,
+  inputSchema: object | undefined
+): string {
+  if (fileFieldOption) return fileFieldOption
+
+  const detected = inferFileField(inputSchema)
+  if (detected !== null) return detected
+
+  // Detection failed — build a helpful error message
+  const props = (inputSchema as Record<string, unknown>)?.properties as
+    Record<string, { type?: string }> | undefined
+  const stringFields = props
+    ? Object.entries(props).filter(([, v]) => v.type === 'string').map(([k]) => k)
+    : []
+  const fieldList = stringFields.length > 0
+    ? `String fields in schema: ${stringFields.map(f => `"${f}"`).join(', ')}`
+    : 'No string fields found in schema'
+
+  throw new CliError(
+    `Could not determine which input field to use for file content.\n\n` +
+    `${fieldList}\n\n` +
+    `Specify the field explicitly:\n` +
+    `  orch run <agent> --file-field <field> input.json\n` +
+    `  orch run <agent> --data @input.json\n` +
+    `  orch run <agent> --file <field>=input.json`
+  )
 }
 
 function applySchemaDefaults(
@@ -2435,7 +2480,7 @@ async function executeCloud(
     const bodyObj = JSON.parse(resolvedBody) as Record<string, unknown>
 
     if (cloudEngine !== 'code_runtime') {
-      const fieldName = options.fileField || inferFileField(agentMeta.input_schema as object | undefined)
+      const fieldName = resolveFileField(options.fileField, agentMeta.input_schema as object | undefined)
       if (filePaths.length === 1) {
         await validateFilePath(filePaths[0])
         bodyObj[fieldName] = await fs.readFile(filePaths[0], 'utf-8')
@@ -2486,7 +2531,7 @@ async function executeCloud(
     body = JSON.stringify(parsedBody)
     headers['Content-Type'] = 'application/json'
   } else if ((filePaths.length > 0 || options.metadata) && cloudEngine !== 'code_runtime') {
-    const fieldName = options.fileField || inferFileField(agentMeta.input_schema as object | undefined)
+    const fieldName = resolveFileField(options.fileField, agentMeta.input_schema as object | undefined)
     let bodyObj: Record<string, unknown> = {}
 
     if (options.metadata) {
@@ -2601,8 +2646,11 @@ async function executeCloud(
     : createElapsedSpinner(`Running ${org}/${parsed.agent}@${parsed.version}...`)
   spinner?.start()
 
-  // Streamed sandbox runs can take longer; use 10 min timeout.
-  const timeoutMs = wantStream ? 600000 : undefined
+  // Streamed sandbox runs can take longer; use 10 min timeout (or --wait-timeout).
+  const waitTimeoutSec = options.waitTimeout ? parseInt(options.waitTimeout, 10) : undefined
+  const timeoutMs = wantStream
+    ? (waitTimeoutSec && waitTimeoutSec > 0 ? waitTimeoutSec * 1000 : 600000)
+    : undefined
 
   let response: Response
   try {
@@ -2811,35 +2859,74 @@ async function executeCloud(
     }
 
     let progressErrorShown = false
+    let streamTimedOut = false
 
-    for await (const { event, data } of parseSSE(response.body)) {
-      if (event === 'progress') {
-        try {
-          const parsed = JSON.parse(data)
-          renderProgress(parsed, !!options.verbose)
-          if (parsed.type === 'error') {
-            progressErrorShown = true
+    try {
+      for await (const { event, data } of parseSSE(response.body)) {
+        if (event === 'progress') {
+          try {
+            const parsed = JSON.parse(data)
+            renderProgress(parsed, !!options.verbose)
+            if (parsed.type === 'error') {
+              progressErrorShown = true
+            }
+          } catch {
+            // ignore malformed progress events
           }
-        } catch {
-          // ignore malformed progress events
+        } else if (event === 'result') {
+          try {
+            finalPayload = JSON.parse(data)
+          } catch {
+            finalPayload = data
+          }
+        } else if (event === 'error') {
+          hadError = true
+          try {
+            finalPayload = JSON.parse(data)
+          } catch {
+            finalPayload = data
+          }
         }
-      } else if (event === 'result') {
-        try {
-          finalPayload = JSON.parse(data)
-        } catch {
-          finalPayload = data
-        }
-      } else if (event === 'error') {
-        hadError = true
-        try {
-          finalPayload = JSON.parse(data)
-        } catch {
-          finalPayload = data
-        }
+      }
+    } catch (streamErr) {
+      // BUG-6: Detect timeout/abort errors — the server-side job may still be running.
+      const errName = streamErr instanceof DOMException ? streamErr.name
+        : streamErr instanceof Error ? streamErr.name
+        : ''
+      if (errName === 'TimeoutError' || errName === 'AbortError') {
+        streamTimedOut = true
+      } else {
+        throw streamErr
       }
     }
 
     process.stderr.write('\n')
+
+    // BUG-6: When the stream timed out, the run is likely still in progress on server.
+    if (streamTimedOut) {
+      const runId = response.headers?.get?.('x-run-id')
+      process.stderr.write(
+        chalk.yellow('\nRun still in progress on server — the CLI stopped waiting.\n') +
+        (runId
+          ? chalk.yellow(`Check status with: orch logs ${runId}\n`)
+          : chalk.yellow('Check recent runs with: orch runs\n')) +
+        (options.waitTimeout
+          ? ''
+          : chalk.gray('Tip: Use --wait-timeout <seconds> to wait longer.\n'))
+      )
+
+      await track('cli_run', {
+        agent: `${org}/${parsed.agent}@${parsed.version}`,
+        input_type: hasInjection ? 'file_injection' : unkeyedFileArgs.length > 0 ? 'file' : options.data ? 'json' : 'empty',
+        mode: 'cloud',
+        streamed: true,
+        timed_out: true,
+      })
+
+      const err = new CliError('CLI wait timeout — run still in progress on server', ExitCodes.TIMEOUT)
+      err.displayed = true
+      throw err
+    }
 
     await track('cli_run', {
       agent: `${org}/${parsed.agent}@${parsed.version}`,
@@ -3302,6 +3389,7 @@ type RunOptions = {
   noSkills?: boolean
   stream?: boolean
   noStream?: boolean
+  waitTimeout?: string
   here?: boolean
   path?: string
   provider?: string
@@ -3333,6 +3421,7 @@ export function registerRunCommand(program: Command): void {
     .option('--skills-only <skills>', 'Use only these skills')
     .option('--no-skills', 'Ignore default skills')
     .option('--no-stream', 'Disable real-time streaming for stream-capable sandbox runs')
+    .option('--wait-timeout <seconds>', 'Max seconds to wait for streaming result (default: 600)')
     // Cloud-only options
     .option('--endpoint <endpoint>', 'Override agent endpoint (cloud only)')
     .option('--tenant <tenant>', 'Tenant identifier for multi-tenant callers (cloud only)')

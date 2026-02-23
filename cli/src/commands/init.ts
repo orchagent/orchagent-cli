@@ -19,6 +19,12 @@ import {
   TEMPLATE_README,
 } from './templates/github-weekly-summary'
 import {
+  CRON_JOB_MAIN_PY,
+  CRON_JOB_MAIN_JS,
+  CRON_JOB_SCHEMA,
+  cronJobReadme,
+} from './templates/cron-job'
+import {
   SA_CONFIG_PY,
   SA_BRAIN_PY,
   SA_DISCORD_CONNECTOR_PY,
@@ -814,7 +820,7 @@ const MAPREDUCE_SCHEMA = `{
 
 const AGENT_BUILDER_HINT = `\n  Tip: orch skill install orchagent-public/agent-builder — gives your AI the full platform builder reference\n`
 
-type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'discord_js' | 'support_agent' | 'github_weekly_summary' | 'fan_out' | 'pipeline' | 'map_reduce'
+type InitFlavor = 'direct_llm' | 'managed_loop' | 'code_runtime' | 'orchestrator' | 'discord' | 'discord_js' | 'support_agent' | 'github_weekly_summary' | 'fan_out' | 'pipeline' | 'map_reduce' | 'cron_job'
 
 function readmeTemplate(agentName: string, flavor: InitFlavor, type?: string): string {
   if (flavor === 'support_agent') {
@@ -1637,7 +1643,7 @@ export function registerInitCommand(program: Command): void {
 
       if (options.template) {
         const template = options.template.trim().toLowerCase()
-        const validTemplates = ['fan-out', 'pipeline', 'map-reduce', 'support-agent', 'discord', 'discord-js', 'github-weekly-summary']
+        const validTemplates = ['fan-out', 'pipeline', 'map-reduce', 'support-agent', 'discord', 'discord-js', 'github-weekly-summary', 'cron-job']
         if (!validTemplates.includes(template)) {
           throw new CliError(`Unknown --template '${template}'. Available templates: ${validTemplates.join(', ')}`)
         }
@@ -1664,6 +1670,8 @@ export function registerInitCommand(program: Command): void {
           runMode = 'always_on'
         } else if (template === 'github-weekly-summary') {
           initMode = { type: 'agent', flavor: 'github_weekly_summary' }
+        } else if (template === 'cron-job') {
+          initMode = { type: 'tool', flavor: 'cron_job' }
         }
       }
 
@@ -2039,6 +2047,76 @@ export function registerInitCommand(program: Command): void {
           process.stdout.write(`  ${stepNum + 1}. Edit main.py with your orchestration logic\n`)
         }
         process.stdout.write(`  ${stepNum + 2}. Publish dependency agents first, then: orchagent publish\n`)
+        process.stdout.write(AGENT_BUILDER_HINT)
+        return
+      }
+
+      // Handle cron-job template
+      if (initMode.flavor === 'cron_job') {
+        const manifestPath = path.join(targetDir, 'orchagent.json')
+
+        try {
+          await fs.access(manifestPath)
+          throw new CliError(`Already initialized (orchagent.json exists in ${name ? name + '/' : 'current directory'})`)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw err
+          }
+        }
+
+        const manifest: Record<string, unknown> = {
+          name: agentName,
+          type: 'tool',
+          description: 'A scheduled job that runs on a cron schedule',
+          run_mode: 'on_demand',
+          runtime: { command: isJavaScript ? 'node main.js' : 'python main.py' },
+          required_secrets: [],
+          tags: ['scheduled', 'cron'],
+        }
+        if (isJavaScript) {
+          manifest.entrypoint = 'main.js'
+        }
+
+        await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+
+        if (isJavaScript) {
+          await fs.writeFile(path.join(targetDir, 'main.js'), CRON_JOB_MAIN_JS)
+          await fs.writeFile(path.join(targetDir, 'package.json'), JSON.stringify({
+            name: agentName,
+            private: true,
+            type: 'commonjs',
+            dependencies: {},
+          }, null, 2) + '\n')
+        } else {
+          await fs.writeFile(path.join(targetDir, 'main.py'), CRON_JOB_MAIN_PY)
+        }
+        await fs.writeFile(path.join(targetDir, 'schema.json'), CRON_JOB_SCHEMA)
+        await fs.writeFile(path.join(targetDir, 'README.md'), cronJobReadme(agentName))
+
+        const prefix = name ? name + '/' : ''
+        process.stdout.write(`Initialized scheduled job "${agentName}" in ${targetDir}\n`)
+        process.stdout.write(`\nFiles created:\n`)
+        process.stdout.write(`  ${prefix}orchagent.json    - Agent configuration (cron job)\n`)
+        if (isJavaScript) {
+          process.stdout.write(`  ${prefix}main.js           - Scheduled job entrypoint\n`)
+          process.stdout.write(`  ${prefix}package.json      - npm dependencies\n`)
+        } else {
+          process.stdout.write(`  ${prefix}main.py           - Scheduled job entrypoint\n`)
+        }
+        process.stdout.write(`  ${prefix}schema.json       - Input/output schemas\n`)
+        process.stdout.write(`  ${prefix}README.md         - Setup guide with cron patterns\n`)
+
+        process.stdout.write(`\nNext steps:\n`)
+        const stepNum = name ? 2 : 1
+        if (name) {
+          process.stdout.write(`  1. cd ${name}\n`)
+        }
+        const mainFile = isJavaScript ? 'main.js' : 'main.py'
+        const testCmd = isJavaScript ? 'node main.js' : 'python main.py'
+        process.stdout.write(`  ${stepNum}. Edit ${mainFile} with your job logic\n`)
+        process.stdout.write(`  ${stepNum + 1}. Test: echo '{}' | ${testCmd}\n`)
+        process.stdout.write(`  ${stepNum + 2}. Publish: orch publish\n`)
+        process.stdout.write(`  ${stepNum + 3}. Schedule: orch schedule create <org>/${agentName} --cron "0 9 * * 1"\n`)
         process.stdout.write(AGENT_BUILDER_HINT)
         return
       }

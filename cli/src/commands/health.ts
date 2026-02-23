@@ -37,14 +37,24 @@ type Schema = {
 type SchemaProperty = {
   type?: string
   description?: string
-  items?: { type?: string }
+  items?: SchemaProperty
   enum?: string[]
   default?: unknown
+  format?: string
+  examples?: unknown[]
+  minLength?: number
+  minimum?: number
+  maximum?: number
+  exclusiveMinimum?: number
+  exclusiveMaximum?: number
+  minItems?: number
+  pattern?: string
 }
 
 /**
  * Generate a minimal sample input from an agent's input schema.
- * Produces just enough to satisfy required fields.
+ * Produces just enough to satisfy required fields, using schema hints
+ * (format, examples, field name conventions) to create realistic values.
  */
 function generateSampleInput(schema?: Schema): Record<string, unknown> | undefined {
   if (!schema?.properties) return undefined
@@ -53,29 +63,116 @@ function generateSampleInput(schema?: Schema): Record<string, unknown> | undefin
 
   for (const [key, prop] of Object.entries(schema.properties)) {
     if (!required.has(key)) continue
-    result[key] = sampleValue(prop)
+    result[key] = sampleValue(prop, key)
   }
 
   // If no required fields, fill one optional field so the request isn't empty
   if (Object.keys(result).length === 0) {
     const firstKey = Object.keys(schema.properties)[0]
     if (firstKey) {
-      result[firstKey] = sampleValue(schema.properties[firstKey])
+      result[firstKey] = sampleValue(schema.properties[firstKey], firstKey)
     }
   }
 
   return Object.keys(result).length > 0 ? result : undefined
 }
 
-function sampleValue(prop: SchemaProperty): unknown {
+/** Well-known JSON Schema string formats → realistic sample values. */
+const FORMAT_SAMPLES: Record<string, string> = {
+  uri: 'https://example.com',
+  url: 'https://example.com',
+  iri: 'https://example.com',
+  'uri-reference': '/test',
+  'iri-reference': '/test',
+  email: 'test@example.com',
+  'idn-email': 'test@example.com',
+  date: '2026-01-01',
+  'date-time': '2026-01-01T00:00:00Z',
+  time: '12:00:00',
+  uuid: '00000000-0000-0000-0000-000000000000',
+  hostname: 'example.com',
+  'idn-hostname': 'example.com',
+  ipv4: '192.0.2.1',
+  ipv6: '::1',
+  'json-pointer': '/test',
+  'relative-json-pointer': '0/test',
+  regex: '.*',
+}
+
+/**
+ * Field name segments that suggest a specific value type.
+ * Checked after format (format takes priority).
+ */
+const NAME_HINT_SAMPLES: Array<{ segments: Set<string>; value: string }> = [
+  { segments: new Set(['url', 'uri', 'href', 'link', 'endpoint', 'webhook']), value: 'https://example.com' },
+  { segments: new Set(['email']), value: 'test@example.com' },
+  { segments: new Set(['path', 'file', 'filename', 'filepath']), value: '/tmp/test' },
+  { segments: new Set(['date', 'timestamp']), value: '2026-01-01' },
+  { segments: new Set(['phone', 'tel', 'telephone']), value: '+12025551234' },
+  { segments: new Set(['ip', 'ipaddr', 'ipaddress']), value: '192.0.2.1' },
+  { segments: new Set(['host', 'hostname', 'domain']), value: 'example.com' },
+  { segments: new Set(['uuid', 'guid']), value: '00000000-0000-0000-0000-000000000000' },
+]
+
+function sampleString(prop: SchemaProperty, fieldName?: string): string {
+  // 1. Schema format (highest priority after default/enum)
+  if (prop.format && FORMAT_SAMPLES[prop.format]) {
+    return FORMAT_SAMPLES[prop.format]
+  }
+
+  // 2. Field name heuristics — split on _ and - to get semantic segments
+  if (fieldName) {
+    const segments = new Set(fieldName.toLowerCase().split(/[_-]/))
+    for (const hint of NAME_HINT_SAMPLES) {
+      for (const seg of segments) {
+        if (hint.segments.has(seg)) return hint.value
+      }
+    }
+  }
+
+  // 3. Respect minLength
+  const base = 'test'
+  if (prop.minLength && prop.minLength > base.length) {
+    return base + 'x'.repeat(prop.minLength - base.length)
+  }
+
+  return base
+}
+
+function sampleNumber(prop: SchemaProperty): number {
+  const min = prop.exclusiveMinimum !== undefined
+    ? prop.exclusiveMinimum + 1
+    : prop.minimum
+  const max = prop.exclusiveMaximum !== undefined
+    ? prop.exclusiveMaximum - 1
+    : prop.maximum
+
+  if (min !== undefined && max !== undefined) {
+    return prop.type === 'integer' ? Math.ceil((min + max) / 2) : (min + max) / 2
+  }
+  if (min !== undefined) return min
+  if (max !== undefined) return max
+  return 1
+}
+
+function sampleArray(prop: SchemaProperty): unknown[] {
+  const count = prop.minItems || 0
+  if (count === 0) return []
+  const itemProp: SchemaProperty = prop.items || { type: 'string' }
+  return Array.from({ length: count }, () => sampleValue(itemProp))
+}
+
+function sampleValue(prop: SchemaProperty, fieldName?: string): unknown {
   if (prop.default !== undefined) return prop.default
+  if (prop.examples?.length) return prop.examples[0]
   if (prop.enum?.length) return prop.enum[0]
+
   switch (prop.type) {
-    case 'string': return 'test'
+    case 'string': return sampleString(prop, fieldName)
     case 'number':
-    case 'integer': return 1
+    case 'integer': return sampleNumber(prop)
     case 'boolean': return true
-    case 'array': return []
+    case 'array': return sampleArray(prop)
     case 'object': return {}
     default: return 'test'
   }

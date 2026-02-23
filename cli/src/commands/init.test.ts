@@ -1579,6 +1579,135 @@ describe('init command', () => {
     })
   })
 
+  describe('cron-job template', () => {
+    it('creates correct files for Python cron job', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job'])
+
+      const writtenFiles = mockFs.writeFile.mock.calls.map(([p]) => path.basename(p as string))
+      expect(writtenFiles).toContain('orchagent.json')
+      expect(writtenFiles).toContain('main.py')
+      expect(writtenFiles).toContain('schema.json')
+      expect(writtenFiles).toContain('README.md')
+    })
+
+    it('sets tool type with correct manifest fields', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.type).toBe('tool')
+      expect(manifest.name).toBe('my-job')
+      expect(manifest.run_mode).toBe('on_demand')
+      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.required_secrets).toEqual([])
+      expect(manifest.tags).toContain('scheduled')
+      expect(manifest.tags).toContain('cron')
+    })
+
+    it('creates main.py with cron job template', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('scheduled job')
+      expect(content).toContain('dry_run')
+      expect(content).toContain('datetime')
+      expect(content).toContain('orch schedule create')
+    })
+
+    it('creates schema with optional options input', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job'])
+
+      const schemaCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('schema.json')
+      )
+      const schema = JSON.parse(schemaCall![1] as string)
+      expect(schema.input.properties).toHaveProperty('options')
+      expect(schema.input.properties.options.properties).toHaveProperty('dry_run')
+      expect(schema.output.properties).toHaveProperty('result')
+      expect(schema.output.properties).toHaveProperty('success')
+      // Input fields are all optional (cron jobs often run without input)
+      expect(schema.input.required).toBeUndefined()
+    })
+
+    it('creates README with cron patterns', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job'])
+
+      const readmeCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('README.md')
+      )
+      const content = readmeCall![1] as string
+      expect(content).toContain('my-job')
+      expect(content).toContain('orch schedule create')
+      expect(content).toContain('0 9 * * 1')
+      expect(content).toContain('Cron Patterns')
+    })
+
+    it('shows cron job label in output', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job'])
+
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('scheduled job'))
+      expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('orch schedule create'))
+    })
+
+    it('supports JavaScript via --language', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job', '--language', 'javascript'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.js')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('scheduled job')
+      expect(content).toContain('dry_run')
+
+      const pkgCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('package.json')
+      )
+      expect(pkgCall).toBeDefined()
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.runtime).toEqual({ command: 'node main.js' })
+      expect(manifest.entrypoint).toBe('main.js')
+    })
+
+    it('works without name (current directory)', async () => {
+      await program.parseAsync(['node', 'test', 'init', '--template', 'cron-job'])
+
+      expect(mockFs.mkdir).not.toHaveBeenCalled()
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      expect(manifestCall![0]).toBe(path.join(process.cwd(), 'orchagent.json'))
+    })
+
+    it('throws when orchagent.json already exists', async () => {
+      mockFs.access.mockResolvedValue(undefined)
+
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job'])
+      ).rejects.toThrow('Already initialized')
+    })
+
+    it('creates subdirectory when name is provided', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-job', '--template', 'cron-job'])
+
+      expect(mockFs.mkdir).toHaveBeenCalledWith(
+        path.join(process.cwd(), 'my-job'),
+        { recursive: true }
+      )
+    })
+  })
+
   describe('multiple inits in same parent directory', () => {
     it('can create two different agent subdirectories', async () => {
       // First init

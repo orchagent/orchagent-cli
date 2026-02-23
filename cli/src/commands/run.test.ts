@@ -20,7 +20,7 @@ vi.mock('../lib/analytics', () => ({
 }))
 
 import fs from 'fs/promises'
-import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema, tryParseJsonObject } from './run'
+import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema, tryParseJsonObject, inferFileField } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import {
@@ -2634,6 +2634,113 @@ describe('UX-4: validateInputSchema', () => {
   })
 })
 
+// ─── UX-5: File input auto-detection ──────────────────────────────────────────
+
+describe('UX-5: inferFileField', () => {
+  it('returns "content" when no schema is provided', () => {
+    expect(inferFileField(undefined)).toBe('content')
+    expect(inferFileField(null as unknown as object)).toBe('content')
+  })
+
+  it('returns "content" when schema has no properties', () => {
+    expect(inferFileField({})).toBe('content')
+    expect(inferFileField({ required: ['foo'] })).toBe('content')
+  })
+
+  it('detects well-known field names (code, content, text, etc.)', () => {
+    expect(inferFileField({
+      properties: { code: { type: 'string' }, lang: { type: 'string' } },
+    })).toBe('code')
+
+    expect(inferFileField({
+      properties: { lang: { type: 'string' }, text: { type: 'string' } },
+    })).toBe('text')
+
+    expect(inferFileField({
+      properties: { source: { type: 'string' }, level: { type: 'number' } },
+    })).toBe('source')
+
+    expect(inferFileField({
+      properties: { body: { type: 'string' }, meta: { type: 'object' } },
+    })).toBe('body')
+
+    expect(inferFileField({
+      properties: { file_content: { type: 'string' } },
+    })).toBe('file_content')
+  })
+
+  it('skips well-known names that are not type string', () => {
+    // "code" exists but is a number — should not match
+    expect(inferFileField({
+      properties: { code: { type: 'number' }, data: { type: 'string' } },
+    })).toBe('data') // falls through to single-string-prop detection
+  })
+
+  it('uses the only string property when exactly one exists', () => {
+    expect(inferFileField({
+      properties: {
+        query: { type: 'string' },
+        limit: { type: 'number' },
+        verbose: { type: 'boolean' },
+      },
+    })).toBe('query')
+  })
+
+  it('uses the only required string property when multiple strings exist', () => {
+    expect(inferFileField({
+      properties: {
+        data: { type: 'string' },
+        format: { type: 'string' },
+        label: { type: 'string' },
+      },
+      required: ['data'],
+    })).toBe('data')
+  })
+
+  it('returns null when multiple required string fields exist and none are well-known', () => {
+    const result = inferFileField({
+      properties: {
+        query: { type: 'string' },
+        context: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['query', 'context'],
+    })
+    expect(result).toBeNull()
+  })
+
+  it('returns null when multiple string fields exist, none required, none well-known', () => {
+    const result = inferFileField({
+      properties: {
+        data: { type: 'string' },
+        payload: { type: 'string' },
+      },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('returns null when schema has properties but no string fields at all', () => {
+    const result = inferFileField({
+      properties: {
+        count: { type: 'number' },
+        enabled: { type: 'boolean' },
+      },
+    })
+    expect(result).toBeNull()
+  })
+
+  it('prefers well-known names over single-string or required-string heuristics', () => {
+    // "content" is well-known and should win even though "data" is the only required string
+    expect(inferFileField({
+      properties: {
+        content: { type: 'string' },
+        data: { type: 'string' },
+      },
+      required: ['data'],
+    })).toBe('content')
+  })
+})
+
 describe('UX-4: Client-side schema validation in cloud execution', () => {
   let program: Command
   let stdoutSpy: ReturnType<typeof vi.spyOn>
@@ -3471,5 +3578,281 @@ describe('BUG-D: tryParseJsonObject — piped JSON stdin auto-detection', () => 
   it('returns null for plain text that looks like prose', () => {
     const buf = Buffer.from('Please analyze this code for bugs')
     expect(tryParseJsonObject(buf)).toBeNull()
+  })
+})
+
+// ─── BUG-6: CLI reports failure when SSE stream times out ─────────────────────
+
+describe('BUG-6: SSE stream timeout shows "still running" instead of failure', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  function stderrOutput(): string {
+    return stderrSpy.mock.calls.map(c => String(c[0])).join('')
+  }
+
+  /**
+   * Create a ReadableStream that emits some SSE events, then throws an
+   * AbortError (simulating AbortSignal.timeout firing mid-stream).
+   */
+  function createTimingOutSSEStream(
+    events: Array<{ event: string; data: string }>
+  ): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder()
+    let pushed = false
+    return new ReadableStream({
+      pull(controller) {
+        if (!pushed) {
+          pushed = true
+          const sseText = events
+            .map(e => `event: ${e.event}\ndata: ${e.data}\n\n`)
+            .join('')
+          controller.enqueue(encoder.encode(sseText))
+          return
+        }
+        // Simulate AbortSignal.timeout firing
+        const err = new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+        controller.error(err)
+      },
+    })
+  }
+
+  it('shows "still in progress" when SSE stream times out with run-id', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'orchestrator',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    const sseBody = createTimingOutSSEStream([
+      { event: 'progress', data: JSON.stringify({ type: 'sandbox_start' }) },
+      { event: 'progress', data: JSON.stringify({ type: 'turn_start', turn: 1, max_turns: 10 }) },
+      { event: 'progress', data: JSON.stringify({ type: 'turn_start', turn: 2, max_turns: 10 }) },
+    ])
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-type': 'text/event-stream',
+        'x-run-id': 'run_abc123',
+      }),
+      body: sseBody,
+    } as any)
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/orchestrator',
+        '--data', '{"task": "test"}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      // Should NOT say "failed" or show a generic network error
+      const output = stderrOutput()
+      expect(output).toContain('still in progress')
+      expect(output).toContain('run_abc123')
+      expect(output).toContain('orch logs')
+      // The error should be marked as displayed (message already shown via stderr)
+      expect(err.displayed).toBe(true)
+    }
+  })
+
+  it('shows "still in progress" when SSE stream times out without run-id', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'orchestrator',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    const sseBody = createTimingOutSSEStream([
+      { event: 'progress', data: JSON.stringify({ type: 'sandbox_start' }) },
+    ])
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-type': 'text/event-stream',
+        // No x-run-id header
+      }),
+      body: sseBody,
+    } as any)
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/orchestrator',
+        '--data', '{"task": "test"}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      const output = stderrOutput()
+      expect(output).toContain('still in progress')
+      expect(output).toContain('orch runs')
+      expect(err.displayed).toBe(true)
+    }
+  })
+
+  it('handles AbortError (non-timeout) the same way', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'orchestrator',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    // AbortError (from manual abort or signal) should also show "still in progress"
+    const encoder = new TextEncoder()
+    let pushed = false
+    const sseBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!pushed) {
+          pushed = true
+          const sseText = `event: progress\ndata: ${JSON.stringify({ type: 'sandbox_start' })}\n\n`
+          controller.enqueue(encoder.encode(sseText))
+          return
+        }
+        controller.error(new DOMException('The operation was aborted', 'AbortError'))
+      },
+    })
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-type': 'text/event-stream',
+        'x-run-id': 'run_xyz789',
+      }),
+      body: sseBody,
+    } as any)
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/orchestrator',
+        '--data', '{"task": "test"}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      const output = stderrOutput()
+      expect(output).toContain('still in progress')
+      expect(output).toContain('run_xyz789')
+      expect(err.displayed).toBe(true)
+    }
+  })
+
+  it('passes through real SSE errors (non-timeout) normally', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    // A real error from the server (not a timeout) should still throw CliError
+    const encoder = new TextEncoder()
+    let pushed = false
+    const sseBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (!pushed) {
+          pushed = true
+          const events = [
+            `event: progress\ndata: ${JSON.stringify({ type: 'sandbox_start' })}\n\n`,
+            `event: error\ndata: ${JSON.stringify({ error: { message: 'Agent crashed: OOM' } })}\n\n`,
+          ].join('')
+          controller.enqueue(encoder.encode(events))
+          return
+        }
+        controller.close()
+      },
+    })
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: sseBody,
+    } as any)
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"task": "test"}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      // Real errors should NOT say "still in progress"
+      expect(err.message).toBe('Agent crashed: OOM')
+      const output = stderrOutput()
+      expect(output).not.toContain('still in progress')
+    }
+  })
+
+  it('uses --wait-timeout value for streaming timeout', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    // Normal successful SSE stream
+    const encoder = new TextEncoder()
+    const sseText = [
+      `event: progress\ndata: ${JSON.stringify({ type: 'done' })}\n\n`,
+      `event: result\ndata: ${JSON.stringify({ output: 'ok', metadata: {} })}\n\n`,
+    ].join('')
+    const sseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText))
+        controller.close()
+      },
+    })
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      body: sseBody,
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/test-agent',
+      '--data', '{"task": "test"}',
+      '--wait-timeout', '1800',
+    ])
+
+    // Verify the fetch was called with the custom timeout (1800s = 1800000ms)
+    const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
+    expect(fetchCall[1]?.timeoutMs).toBe(1800000)
   })
 })

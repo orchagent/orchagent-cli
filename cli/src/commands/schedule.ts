@@ -371,7 +371,7 @@ export function registerScheduleCommand(program: Command): void {
         }
       } else {
         if (s.webhook_url) {
-          process.stdout.write(`\n  ${chalk.bold('Webhook URL')} (save this — secret shown once):\n`)
+          process.stdout.write(`\n  ${chalk.bold('Webhook URL')} (save this — retrieve later with ${chalk.cyan('orch schedule info --reveal')}):\n`)
           process.stdout.write(`  ${s.webhook_url}\n`)
         }
       }
@@ -627,8 +627,10 @@ export function registerScheduleCommand(program: Command): void {
       }
       if (s.webhook_url) {
         process.stdout.write(`  Webhook:    ${s.webhook_url}\n`)
-      } else if (s.schedule_type === 'webhook' && !options.reveal) {
-        process.stdout.write(`  Webhook:    ${chalk.gray('(redacted — use --reveal to show)')}\n`)
+      } else if (s.schedule_type === 'webhook' && options.reveal) {
+        process.stdout.write(`  Webhook:    ${chalk.red('Failed to reveal — you may need owner permissions')}\n`)
+      } else if (s.schedule_type === 'webhook') {
+        process.stdout.write(`  Webhook:    ${chalk.gray('(redacted — use --reveal to show, or regenerate-webhook if lost)')}\n`)
       }
       process.stdout.write(`  Enabled:    ${s.enabled ? chalk.green('yes') : chalk.red('no')}\n`)
       process.stdout.write(`  Auto-update: ${s.auto_update === false ? chalk.yellow('pinned') : chalk.green('yes')}\n`)
@@ -773,5 +775,50 @@ export function registerScheduleCommand(program: Command): void {
       } else {
         process.stdout.write(chalk.red('\u2717') + ' Test alert delivery failed\n')
       }
+    })
+
+  // orch schedule regenerate-webhook <schedule-id>
+  schedule
+    .command('regenerate-webhook <schedule-id>')
+    .description('Regenerate the webhook secret (invalidates old URL)')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .action(async (partialScheduleId: string, options: { workspace?: string; yes?: boolean }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+      const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
+
+      if (!options.yes) {
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        })
+        const answer = await rl.question(
+          chalk.yellow('Warning: This will invalidate the current webhook URL.\n') +
+          'Any integrations using the old URL will stop working.\n' +
+          'Regenerate webhook secret? (y/N): '
+        )
+        rl.close()
+        if (answer.trim().toLowerCase() !== 'y' && answer.trim().toLowerCase() !== 'yes') {
+          process.stdout.write('Cancelled.\n')
+          return
+        }
+      }
+
+      const result = await request<{ webhook_url: string; message: string }>(
+        config,
+        'POST',
+        `/workspaces/${workspaceId}/schedules/${scheduleId}/regenerate-webhook`,
+      )
+
+      process.stdout.write(chalk.green('\u2713') + ' Webhook secret regenerated\n\n')
+      process.stdout.write(`  ${chalk.bold('New Webhook URL')} (save this — retrieve later with ${chalk.cyan('orch schedule info --reveal')}):\n`)
+      process.stdout.write(`  ${result.webhook_url}\n\n`)
+      process.stdout.write(chalk.yellow('  The old webhook URL no longer works.\n'))
+      process.stdout.write('\n')
     })
 }

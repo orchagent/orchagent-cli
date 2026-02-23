@@ -4,6 +4,7 @@ import { registerLoginCommand } from './login'
 import { registerLogoutCommand } from './logout'
 import { registerAgentsCommand } from './agents'
 import { registerInitCommand } from './init'
+import { registerScaffoldCommand } from './scaffold'
 import { registerPublishCommand } from './publish'
 import { registerWhoamiCommand } from './whoami'
 import { registerRunCommand } from './run'
@@ -42,12 +43,14 @@ import { registerTraceCommand } from './trace'
 import { registerMetricsCommand } from './metrics'
 import { registerDagCommand } from './dag'
 import { registerCompletionCommand } from './completion'
+import { registerValidateCommand } from './validate'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
   registerLogoutCommand(program)
   registerWhoamiCommand(program)
   registerInitCommand(program)
+  registerScaffoldCommand(program)
   registerPublishCommand(program)
   registerRunCommand(program)
   registerInfoCommand(program)
@@ -86,4 +89,5 @@ export function registerCommands(program: Command): void {
   registerMetricsCommand(program)
   registerDagCommand(program)
   registerCompletionCommand(program)
+  registerValidateCommand(program)
 }

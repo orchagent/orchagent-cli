@@ -4,7 +4,8 @@ import path from 'path'
 import chalk from 'chalk'
 
 import { getResolvedConfig } from '../lib/config'
-import { publicRequest, ApiError } from '../lib/api'
+import { publicRequest, ApiError, getOrg, getMyAgent, resolveWorkspaceIdForOrg } from '../lib/api'
+import { NetworkError } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { adapterRegistry, type CanonicalAgent } from '../adapters'
 import {
@@ -18,28 +19,62 @@ import {
 import { mergeAgentsMdContent } from '../lib/agents-md-utils'
 import type { Agent, ResolvedConfig } from '../types'
 
+type FetchResult =
+  | { status: 'found'; agent: CanonicalAgent; latestVersion: string; private: boolean }
+  | { status: 'not_found_no_auth' }
+  | { status: 'not_found' }
+  | { status: 'bad_ref' }
+
 async function fetchLatestAgent(
   config: ResolvedConfig,
   agentRef: string
-): Promise<{ agent: CanonicalAgent; latestVersion: string } | null> {
+): Promise<FetchResult> {
   const [org, name] = agentRef.split('/')
-  if (!org || !name) return null
+  if (!org || !name) return { status: 'bad_ref' }
 
+  // Try public endpoint first
   try {
-    // Try to get latest version
     const agent = await publicRequest<Agent>(
       config,
       `/public/agents/${org}/${name}/latest`
     )
     return {
+      status: 'found',
       agent: { ...agent, org_slug: org },
-      latestVersion: agent.version
+      latestVersion: agent.version,
+      private: false,
     }
   } catch (err) {
-    if (err instanceof ApiError && err.status === 404) {
-      return null
+    // Network errors should propagate — don't confuse with 404
+    if (err instanceof NetworkError) throw err
+    if (!(err instanceof ApiError) || err.status !== 404) throw err
+  }
+
+  // Public endpoint returned 404 — try authenticated endpoint for private agents
+  if (!config.apiKey) {
+    return { status: 'not_found_no_auth' }
+  }
+
+  try {
+    const workspaceId = await resolveWorkspaceIdForOrg(config, org)
+    const userOrg = await getOrg(config, workspaceId)
+    if (userOrg.slug !== org) {
+      return { status: 'not_found' }
     }
-    throw err
+
+    const myAgent = await getMyAgent(config, name, 'latest', workspaceId)
+    if (!myAgent) {
+      return { status: 'not_found' }
+    }
+
+    return {
+      status: 'found',
+      agent: { ...myAgent, org_slug: org },
+      latestVersion: myAgent.version,
+      private: true,
+    }
+  } catch {
+    return { status: 'not_found' }
   }
 }
 
@@ -102,11 +137,21 @@ export function registerUpdateCommand(program: Command): void {
           }
 
           // Fetch latest version once per agent
-          const latest = await fetchLatestAgent(resolved, agentName)
-          if (!latest) {
-            process.stdout.write(`  ${chalk.yellow('?')} ${agentName} - could not fetch latest\n`)
+          const result = await fetchLatestAgent(resolved, agentName)
+          if (result.status === 'not_found_no_auth') {
+            process.stdout.write(`  ${chalk.yellow('?')} ${agentName} - not found publicly. Log in with ${chalk.cyan('orch login')} to check private agents.\n`)
             continue
           }
+          if (result.status === 'not_found') {
+            process.stdout.write(`  ${chalk.yellow('?')} ${agentName} - agent not found\n`)
+            continue
+          }
+          if (result.status === 'bad_ref') {
+            process.stdout.write(`  ${chalk.yellow('?')} ${agentName} - invalid agent reference\n`)
+            continue
+          }
+
+          const latest = result
 
           // Use the version from the first entry (all entries for the same
           // agent should share the same version after install/update)

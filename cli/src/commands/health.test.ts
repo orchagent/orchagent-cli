@@ -150,10 +150,10 @@ describe('orch health', () => {
 
       await program.parseAsync(['node', 'test', 'health', 'joe/schema-agent'])
 
-      // Should send only required field with sample value
+      // Should send only required field — field name 'repo_url' triggers URL heuristic
       const fetchCall = mockFetch.mock.calls[0]
       const sentBody = JSON.parse(fetchCall[1]?.body as string)
-      expect(sentBody).toEqual({ repo_url: 'test' })
+      expect(sentBody).toEqual({ repo_url: 'https://example.com' })
     })
 
     it('uses custom input via --data', async () => {
@@ -419,14 +419,14 @@ describe('orch health', () => {
         input_schema: {
           type: 'object',
           properties: {
-            name: { type: 'string' },
+            query: { type: 'string' },
             count: { type: 'integer' },
             score: { type: 'number' },
             active: { type: 'boolean' },
             items: { type: 'array' },
             config: { type: 'object' },
           },
-          required: ['name', 'count', 'score', 'active', 'items', 'config'],
+          required: ['query', 'count', 'score', 'active', 'items', 'config'],
         },
         supported_providers: ['any'],
       } as any)
@@ -437,7 +437,7 @@ describe('orch health', () => {
 
       const sentBody = JSON.parse(mockFetch.mock.calls[0][1]?.body as string)
       expect(sentBody).toEqual({
-        name: 'test',
+        query: 'test',
         count: 1,
         score: 1,
         active: true,
@@ -542,6 +542,406 @@ describe('orch health', () => {
 
       const sentBody = JSON.parse(mockFetch.mock.calls[0][1]?.body as string)
       expect(sentBody).toEqual({})
+    })
+  })
+
+  describe('schema-aware sample generation (UX-3)', () => {
+    // Helper: run health with a given input_schema and return the body sent to the server
+    async function getSentBody(inputSchema: Record<string, unknown>): Promise<Record<string, unknown>> {
+      mockGetAgentWithFallback.mockResolvedValue({
+        id: 'agent-ux3',
+        org_name: 'Joe',
+        org_slug: 'joe',
+        name: 'ux3-agent',
+        version: 'v1',
+        type: 'tool',
+        input_schema: inputSchema,
+        supported_providers: ['any'],
+      } as any)
+      mockFetch.mockResolvedValue(makeResponse(200, {}))
+      await program.parseAsync(['node', 'test', 'health', 'joe/ux3-agent'])
+      return JSON.parse(mockFetch.mock.calls[0][1]?.body as string)
+    }
+
+    describe('format-based string generation', () => {
+      it('generates URL for format: uri', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { target: { type: 'string', format: 'uri' } },
+          required: ['target'],
+        })
+        expect(body.target).toBe('https://example.com')
+      })
+
+      it('generates URL for format: url', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { site: { type: 'string', format: 'url' } },
+          required: ['site'],
+        })
+        expect(body.site).toBe('https://example.com')
+      })
+
+      it('generates email for format: email', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { contact: { type: 'string', format: 'email' } },
+          required: ['contact'],
+        })
+        expect(body.contact).toBe('test@example.com')
+      })
+
+      it('generates date for format: date', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { when: { type: 'string', format: 'date' } },
+          required: ['when'],
+        })
+        expect(body.when).toBe('2026-01-01')
+      })
+
+      it('generates datetime for format: date-time', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { ts: { type: 'string', format: 'date-time' } },
+          required: ['ts'],
+        })
+        expect(body.ts).toBe('2026-01-01T00:00:00Z')
+      })
+
+      it('generates UUID for format: uuid', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { id: { type: 'string', format: 'uuid' } },
+          required: ['id'],
+        })
+        expect(body.id).toBe('00000000-0000-0000-0000-000000000000')
+      })
+
+      it('generates hostname for format: hostname', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { server: { type: 'string', format: 'hostname' } },
+          required: ['server'],
+        })
+        expect(body.server).toBe('example.com')
+      })
+
+      it('generates IPv4 for format: ipv4', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { addr: { type: 'string', format: 'ipv4' } },
+          required: ['addr'],
+        })
+        expect(body.addr).toBe('192.0.2.1')
+      })
+
+      it('generates IPv6 for format: ipv6', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { addr6: { type: 'string', format: 'ipv6' } },
+          required: ['addr6'],
+        })
+        expect(body.addr6).toBe('::1')
+      })
+
+      it('falls back to "test" for unknown format', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { thing: { type: 'string', format: 'custom-weird-format' } },
+          required: ['thing'],
+        })
+        expect(body.thing).toBe('test')
+      })
+    })
+
+    describe('field name heuristics', () => {
+      it('generates URL for field named repo_url', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { repo_url: { type: 'string' } },
+          required: ['repo_url'],
+        })
+        expect(body.repo_url).toBe('https://example.com')
+      })
+
+      it('generates URL for field named webhook', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { webhook: { type: 'string' } },
+          required: ['webhook'],
+        })
+        expect(body.webhook).toBe('https://example.com')
+      })
+
+      it('generates email for field named user_email', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { user_email: { type: 'string' } },
+          required: ['user_email'],
+        })
+        expect(body.user_email).toBe('test@example.com')
+      })
+
+      it('generates file path for field named file_path', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { file_path: { type: 'string' } },
+          required: ['file_path'],
+        })
+        expect(body.file_path).toBe('/tmp/test')
+      })
+
+      it('generates hostname for field named domain', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { domain: { type: 'string' } },
+          required: ['domain'],
+        })
+        expect(body.domain).toBe('example.com')
+      })
+
+      it('does not false-positive on unrelated field names', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { culture: { type: 'string' }, formula: { type: 'string' } },
+          required: ['culture', 'formula'],
+        })
+        expect(body.culture).toBe('test')
+        expect(body.formula).toBe('test')
+      })
+    })
+
+    describe('examples field', () => {
+      it('uses first example value', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            query: { type: 'string', examples: ['hello world', 'another'] },
+          },
+          required: ['query'],
+        })
+        expect(body.query).toBe('hello world')
+      })
+
+      it('examples take priority over format', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            site: { type: 'string', format: 'uri', examples: ['https://mysite.dev'] },
+          },
+          required: ['site'],
+        })
+        expect(body.site).toBe('https://mysite.dev')
+      })
+    })
+
+    describe('numeric constraints', () => {
+      it('respects minimum', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { port: { type: 'integer', minimum: 1024 } },
+          required: ['port'],
+        })
+        expect(body.port).toBe(1024)
+      })
+
+      it('respects maximum', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { pct: { type: 'number', maximum: 100 } },
+          required: ['pct'],
+        })
+        expect(body.pct).toBe(100)
+      })
+
+      it('picks midpoint for min+max range (integer)', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { level: { type: 'integer', minimum: 1, maximum: 10 } },
+          required: ['level'],
+        })
+        expect(body.level).toBe(6) // Math.ceil((1+10)/2)
+      })
+
+      it('picks midpoint for min+max range (number)', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { ratio: { type: 'number', minimum: 0, maximum: 1 } },
+          required: ['ratio'],
+        })
+        expect(body.ratio).toBe(0.5)
+      })
+
+      it('respects exclusiveMinimum', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { age: { type: 'integer', exclusiveMinimum: 0 } },
+          required: ['age'],
+        })
+        expect(body.age).toBe(1) // exclusiveMinimum + 1
+      })
+
+      it('respects exclusiveMaximum', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { score: { type: 'integer', exclusiveMaximum: 100 } },
+          required: ['score'],
+        })
+        expect(body.score).toBe(99) // exclusiveMaximum - 1
+      })
+    })
+
+    describe('string minLength', () => {
+      it('pads string to meet minLength', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { code: { type: 'string', minLength: 8 } },
+          required: ['code'],
+        })
+        expect(body.code).toBe('testxxxx')
+        expect((body.code as string).length).toBe(8)
+      })
+
+      it('does not pad when minLength <= "test" length', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: { tag: { type: 'string', minLength: 2 } },
+          required: ['tag'],
+        })
+        expect(body.tag).toBe('test')
+      })
+    })
+
+    describe('array with minItems', () => {
+      it('generates items when minItems > 0', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            tags: { type: 'array', minItems: 3, items: { type: 'string' } },
+          },
+          required: ['tags'],
+        })
+        expect(body.tags).toEqual(['test', 'test', 'test'])
+      })
+
+      it('generates integer items from items schema', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            scores: { type: 'array', minItems: 2, items: { type: 'integer' } },
+          },
+          required: ['scores'],
+        })
+        expect(body.scores).toEqual([1, 1])
+      })
+
+      it('defaults to string items when items schema missing', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            data: { type: 'array', minItems: 1 },
+          },
+          required: ['data'],
+        })
+        expect(body.data).toEqual(['test'])
+      })
+
+      it('returns empty array when no minItems', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            optional_list: { type: 'array' },
+          },
+          required: ['optional_list'],
+        })
+        expect(body.optional_list).toEqual([])
+      })
+    })
+
+    describe('priority order', () => {
+      it('default > examples > enum > format > name heuristic', async () => {
+        // default wins over everything
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              format: 'uri',
+              examples: ['https://other.dev'],
+              enum: ['a', 'b'],
+              default: 'my-default',
+            },
+          },
+          required: ['url'],
+        })
+        expect(body.url).toBe('my-default')
+      })
+
+      it('examples win over enum and format', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              format: 'uri',
+              enum: ['a', 'b'],
+              examples: ['https://specific.dev'],
+            },
+          },
+          required: ['url'],
+        })
+        expect(body.url).toBe('https://specific.dev')
+      })
+
+      it('enum wins over format', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              format: 'uri',
+              enum: ['https://allowed.com', 'https://other.com'],
+            },
+          },
+          required: ['url'],
+        })
+        expect(body.url).toBe('https://allowed.com')
+      })
+
+      it('format wins over name heuristic', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            // field named 'email' but format says ipv4
+            email: { type: 'string', format: 'ipv4' },
+          },
+          required: ['email'],
+        })
+        expect(body.email).toBe('192.0.2.1')
+      })
+    })
+
+    describe('mixed realistic schema', () => {
+      it('generates realistic payload for a URL scanner agent', async () => {
+        const body = await getSentBody({
+          type: 'object',
+          properties: {
+            target_url: { type: 'string', format: 'uri', description: 'URL to scan' },
+            depth: { type: 'integer', minimum: 1, maximum: 5 },
+            notify_email: { type: 'string', format: 'email' },
+            tags: { type: 'array', items: { type: 'string' }, minItems: 1 },
+            verbose: { type: 'boolean' },
+          },
+          required: ['target_url', 'depth', 'notify_email', 'tags'],
+        })
+        expect(body).toEqual({
+          target_url: 'https://example.com',
+          depth: 3, // Math.ceil((1+5)/2)
+          notify_email: 'test@example.com',
+          tags: ['test'],
+        })
+      })
     })
   })
 

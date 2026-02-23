@@ -601,7 +601,7 @@ export function registerPublishCommand(program: Command): void {
     .option('--skills-locked', 'Lock default skills (callers cannot override via headers)')
     .option('--docker', 'Include Dockerfile for custom environment (builds E2B template)')
     .option('--local-download', 'Allow users to download and run locally (default: server-only)')
-    .option('--no-required-secrets', 'Skip required_secrets check for tool/agent types')
+    .option('--no-required-secrets', '(deprecated) No longer needed — required_secrets defaults to []')
     .option('--all', 'Publish all agents in subdirectories (dependency order)')
     .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean; all?: boolean }) => {
       const cwd = process.cwd()
@@ -754,24 +754,28 @@ export function registerPublishCommand(program: Command): void {
         throw new CliError(`Failed to read orchagent.json: ${err}`)
       }
 
+      // UX-1: Collect validation errors and report them all at once
+      const validationErrors: string[] = []
+
       // Validate manifest
       if (!manifest.name) {
-        throw new CliError('orchagent.json must have name')
-      }
-      // Validate agent name format (must match gateway rules)
-      const agentNameRegex = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/
-      const agentName = manifest.name
-      if (agentName.length < 2 || agentName.length > 50) {
-        throw new CliError('Agent name must be 2-50 characters')
-      }
-      if (agentName !== agentName.toLowerCase()) {
-        throw new CliError('Agent name must be lowercase')
-      }
-      if (agentName.length > 1 && !agentNameRegex.test(agentName)) {
-        throw new CliError('Agent name must contain only lowercase letters, numbers, and hyphens, and must start/end with a letter or number')
-      }
-      if (agentName.includes('--')) {
-        throw new CliError('Agent name must not contain consecutive hyphens')
+        validationErrors.push('orchagent.json must have name')
+      } else {
+        // Validate agent name format (must match gateway rules)
+        const agentNameRegex = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/
+        const agentName = manifest.name
+        if (agentName.length < 2 || agentName.length > 50) {
+          validationErrors.push('Agent name must be 2-50 characters')
+        }
+        if (agentName !== agentName.toLowerCase()) {
+          validationErrors.push('Agent name must be lowercase')
+        }
+        if (agentName.length > 1 && !agentNameRegex.test(agentName)) {
+          validationErrors.push('Agent name must contain only lowercase letters, numbers, and hyphens, and must start/end with a letter or number')
+        }
+        if (agentName.includes('--')) {
+          validationErrors.push('Agent name must not contain consecutive hyphens')
+        }
       }
       const { canonicalType, rawType } = canonicalizeManifestType(manifest.type)
       const runMode = normalizeRunMode(manifest.run_mode)
@@ -780,21 +784,38 @@ export function registerPublishCommand(program: Command): void {
 
       if (canonicalType === 'skill') {
         throw new CliError(
-          "Use SKILL.md for publishing skills. Remove orchagent.json and run 'orchagent publish' from a skill directory."
+          'Skills use a different publishing format (SKILL.md with YAML front matter).\n\n' +
+          '  To publish a skill:\n' +
+          '    1. Run: orchagent skill create ' + (manifest.name || '<name>') + '\n' +
+          '    2. Edit the generated SKILL.md with your skill content\n' +
+          '    3. Run: orchagent publish\n\n' +
+          '  orchagent.json is not used for skills — SKILL.md replaces it entirely.\n' +
+          '  See: https://orchagent.io/docs/skills'
         )
       }
       if (runMode === 'always_on' && executionEngine === 'direct_llm') {
-        throw new CliError('run_mode=always_on requires runtime.command or loop configuration')
+        validationErrors.push('run_mode=always_on requires runtime.command or loop configuration')
       }
       if (manifest.timeout_seconds !== undefined) {
         if (!Number.isInteger(manifest.timeout_seconds) || manifest.timeout_seconds <= 0) {
-          throw new CliError('timeout_seconds must be a positive integer')
+          validationErrors.push('timeout_seconds must be a positive integer')
         }
       }
 
       // Warn about deprecated prompt field
       if (manifest.prompt) {
         process.stderr.write(chalk.yellow('Warning: "prompt" field in orchagent.json is ignored. Use prompt.md file instead.\n'))
+      }
+
+      // UX-9: Warn about model (singular) vs default_models
+      if ((manifest as Record<string, unknown>).model && !manifest.default_models) {
+        const modelVal = (manifest as Record<string, unknown>).model
+        process.stderr.write(chalk.yellow(
+          `\nWarning: "model" field in orchagent.json is not recognized.\n` +
+          `  Use "default_models" instead to set per-provider defaults:\n\n` +
+          `  ${chalk.cyan(`"default_models": { "anthropic": "${modelVal}" }`)}\n\n` +
+          `  The model resolution order is: caller --model flag → agent default_models → platform default.\n\n`
+        ))
       }
 
       // Auto-migrate inline schemas to schema.json
@@ -828,21 +849,9 @@ export function registerPublishCommand(program: Command): void {
       const manifestFields = ['manifest_version', 'dependencies', 'max_hops', 'timeout_ms', 'per_call_downstream_cap']
       const misplacedFields = manifestFields.filter(f => f in manifest && !manifest.manifest)
       if (misplacedFields.length > 0) {
-        throw new CliError(
-          `Found manifest fields (${misplacedFields.join(', ')}) at top level of orchagent.json.\n` +
-          `These must be nested under a "manifest" key. Example:\n\n` +
-          `  {\n` +
-          `    "name": "${manifest.name}",\n` +
-          `    "type": "${manifest.type || 'agent'}",\n` +
-          `    "manifest": {\n` +
-          `      "manifest_version": 1,\n` +
-          `      "dependencies": [...],\n` +
-          `      "max_hops": 2,\n` +
-          `      "timeout_ms": 60000,\n` +
-          `      "per_call_downstream_cap": 50\n` +
-          `    }\n` +
-          `  }\n\n` +
-          `See docs/manifest.md for details.`
+        validationErrors.push(
+          `Found manifest fields (${misplacedFields.join(', ')}) at top level of orchagent.json. ` +
+          `These must be nested under a "manifest" key. See docs/manifest.md for details.`
         )
       }
 
@@ -854,13 +863,12 @@ export function registerPublishCommand(program: Command): void {
           prompt = await fs.readFile(promptPath, 'utf-8')
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-            throw new CliError(
-              'No prompt.md found for this agent.\n\n' +
-              'Create a prompt.md file in the current directory with your prompt template.\n' +
-              'See: https://orchagent.io/docs/publishing'
+            validationErrors.push(
+              'No prompt.md found. Create a prompt.md file with your prompt template.'
             )
+          } else {
+            throw err
           }
-          throw err
         }
       }
 
@@ -869,7 +877,7 @@ export function registerPublishCommand(program: Command): void {
       if (executionEngine === 'managed_loop') {
         if (manifest.max_turns !== undefined) {
           if (typeof manifest.max_turns !== 'number' || manifest.max_turns < 1 || manifest.max_turns > 50) {
-            throw new CliError('max_turns must be a number between 1 and 50')
+            validationErrors.push('max_turns must be a number between 1 and 50')
           }
         }
 
@@ -896,21 +904,20 @@ export function registerPublishCommand(program: Command): void {
           const seenNames = new Set<string>()
           for (const tool of mergedTools) {
             if (!tool.name || !tool.command) {
-              throw new CliError(
-                `Invalid custom_tool: each tool must have 'name' and 'command' fields.\n` +
-                `Found: ${JSON.stringify(tool)}`
+              validationErrors.push(
+                `Invalid custom_tool: each tool must have 'name' and 'command' fields. Found: ${JSON.stringify(tool)}`
               )
+            } else {
+              if (reservedNames.has(tool.name)) {
+                validationErrors.push(
+                  `Custom tool '${tool.name}' conflicts with a built-in tool name. Reserved names: ${[...reservedNames].join(', ')}`
+                )
+              }
+              if (seenNames.has(tool.name)) {
+                validationErrors.push(`Duplicate custom tool name: '${tool.name}'`)
+              }
+              seenNames.add(tool.name)
             }
-            if (reservedNames.has(tool.name)) {
-              throw new CliError(
-                `Custom tool '${tool.name}' conflicts with a built-in tool name.\n` +
-                `Reserved names: ${[...reservedNames].join(', ')}`
-              )
-            }
-            if (seenNames.has(tool.name)) {
-              throw new CliError(`Duplicate custom tool name: '${tool.name}'`)
-            }
-            seenNames.add(tool.name)
           }
         }
 
@@ -975,13 +982,14 @@ export function registerPublishCommand(program: Command): void {
         }
         if (!options.url) {
           if (!bundleEntrypoint) {
-            throw new CliError(
+            validationErrors.push(
               'Tool requires either --url <url> or an entry point file (main.py, app.py, index.js, etc.)'
             )
+          } else {
+            shouldUploadBundle = true
+            agentUrl = 'https://tool.internal'
+            process.stdout.write(`Detected code runtime entrypoint: ${bundleEntrypoint}\n`)
           }
-          shouldUploadBundle = true
-          agentUrl = 'https://tool.internal'
-          process.stdout.write(`Detected code runtime entrypoint: ${bundleEntrypoint}\n`)
         }
 
         let runtimeCommand = manifest.runtime?.command?.trim() || ''
@@ -997,7 +1005,7 @@ export function registerPublishCommand(program: Command): void {
       }
 
       if (options.docker && executionEngine !== 'code_runtime') {
-        throw new CliError('--docker is only supported for code runtime agents')
+        validationErrors.push('--docker is only supported for code runtime agents')
       }
 
       // Get org info (workspace-aware — returns workspace org if workspace is active)
@@ -1051,27 +1059,33 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
-      // C-1: Block publish if tool/agent type has no required_secrets declared.
+      // UX-2: Default required_secrets to [] when omitted for tool/agent types.
       // Prompt and skill types are exempt (prompt agents get LLM keys from platform,
       // skills don't run standalone).
-      // An explicit empty array (required_secrets: []) is a valid declaration
-      // meaning "this agent deliberately needs no secrets."
-      // Runs before dry-run so --dry-run catches the same errors as real publish (BUG-11).
       if (
         (canonicalType === 'tool' || canonicalType === 'agent') &&
-        manifest.required_secrets === undefined &&
-        options.requiredSecrets !== false
+        manifest.required_secrets === undefined
       ) {
+        manifest.required_secrets = []
         process.stderr.write(
-          chalk.red(`\nError: ${canonicalType} agents must declare required_secrets in orchagent.json.\n\n`) +
-          `  Add the env vars your code needs at runtime:\n` +
-          `  ${chalk.cyan('"required_secrets": ["ANTHROPIC_API_KEY", "MY_TOKEN"]')}\n\n` +
-          `  If this agent genuinely needs no secrets, add an empty array:\n` +
-          `  ${chalk.cyan('"required_secrets": []')}\n\n` +
-          `  These are matched by name against your workspace secrets vault.\n` +
-          `  Use ${chalk.cyan('--no-required-secrets')} to skip this check.\n`
+          chalk.dim(`  ℹ No required_secrets declared — defaulting to [] (no secrets needed)\n`)
         )
-        const err = new CliError('Missing required_secrets declaration', ExitCodes.INVALID_INPUT)
+      }
+
+      // UX-1: Report all validation errors at once
+      if (validationErrors.length > 0) {
+        if (validationErrors.length === 1) {
+          throw new CliError(validationErrors[0])
+        }
+        const numbered = validationErrors.map((e, i) => `  ${i + 1}. ${e}`).join('\n')
+        process.stderr.write(
+          chalk.red(`\nFound ${validationErrors.length} validation errors:\n\n`) +
+          numbered + '\n'
+        )
+        const err = new CliError(
+          `Found ${validationErrors.length} validation errors:\n${numbered}`,
+          ExitCodes.INVALID_INPUT
+        )
         err.displayed = true
         throw err
       }

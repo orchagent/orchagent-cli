@@ -1,33 +1,32 @@
 import { Command } from 'commander'
-import chalk from 'chalk'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { ApiError, getOrg, listMyAgents, getPublicAgent, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
 import { withSpinner } from '../lib/spinner'
-import type { AgentTypeValue } from '../types'
+import { printDiffs } from './diff-format'
 
 // ── Types ──────────────────────────────────────────────────────
 
-type SchemaProperty = {
+export type SchemaProperty = {
   type?: string
   description?: string
   items?: { type?: string }
 }
 
-type Schema = {
+export type Schema = {
   type?: string
   properties?: Record<string, SchemaProperty>
   required?: string[]
 }
 
-type ManifestDependency = {
+export type ManifestDependency = {
   id: string
   version: string
 }
 
-type CustomTool = {
+export type CustomTool = {
   name: string
   description?: string
   command?: string
@@ -59,7 +58,7 @@ type AgentSnapshot = {
   max_turns?: number
 }
 
-type FieldDiff = {
+export type FieldDiff = {
   field: string
   kind: 'changed' | 'added' | 'removed'
   old?: unknown
@@ -302,142 +301,6 @@ export function computeDiffs(a: AgentSnapshot, b: AgentSnapshot): FieldDiff[] {
   }
 
   return diffs
-}
-
-// ── Formatting ─────────────────────────────────────────────────
-
-function formatValue(val: unknown): string {
-  if (val === undefined || val === null) return chalk.gray('(none)')
-  if (typeof val === 'boolean') return val ? chalk.green('true') : chalk.red('false')
-  if (typeof val === 'string') {
-    if (val.length > 120) return val.slice(0, 117) + '...'
-    return val
-  }
-  if (Array.isArray(val)) {
-    if (val.length === 0) return chalk.gray('[]')
-    // Array of strings
-    if (typeof val[0] === 'string') return val.join(', ')
-    // Array of objects — compact JSON
-    return JSON.stringify(val, null, 2)
-  }
-  if (typeof val === 'object') return JSON.stringify(val, null, 2)
-  return String(val)
-}
-
-function formatPromptDiff(oldPrompt: string | undefined, newPrompt: string | undefined): string {
-  const oldLines = (oldPrompt || '').split('\n')
-  const newLines = (newPrompt || '').split('\n')
-  const lines: string[] = []
-
-  // Simple line-by-line diff (not LCS — good enough for prompt comparison)
-  const maxLines = Math.max(oldLines.length, newLines.length)
-  const oldSet = new Set(oldLines)
-  const newSet = new Set(newLines)
-
-  for (const line of oldLines) {
-    if (!newSet.has(line)) {
-      lines.push(chalk.red(`  - ${line}`))
-    }
-  }
-  for (const line of newLines) {
-    if (!oldSet.has(line)) {
-      lines.push(chalk.green(`  + ${line}`))
-    }
-  }
-
-  if (lines.length === 0) {
-    // Lines are the same but order changed
-    lines.push(chalk.yellow('  (line order changed)'))
-  }
-
-  // Truncate if very large
-  if (lines.length > 40) {
-    const shown = lines.slice(0, 40)
-    shown.push(chalk.gray(`  ... and ${lines.length - 40} more lines`))
-    return shown.join('\n')
-  }
-
-  return lines.join('\n')
-}
-
-function formatSchemaDiff(field: string, oldSchema: Schema | undefined, newSchema: Schema | undefined): string {
-  const lines: string[] = []
-  const oldProps = oldSchema?.properties || {}
-  const newProps = newSchema?.properties || {}
-  const oldRequired = new Set(oldSchema?.required || [])
-  const newRequired = new Set(newSchema?.required || [])
-  const allKeys = new Set([...Object.keys(oldProps), ...Object.keys(newProps)])
-
-  for (const key of allKeys) {
-    const inOld = key in oldProps
-    const inNew = key in newProps
-    if (!inOld && inNew) {
-      const reqMark = newRequired.has(key) ? '' : '?'
-      lines.push(chalk.green(`  + ${key}${reqMark}: ${newProps[key].type || 'any'}`))
-    } else if (inOld && !inNew) {
-      const reqMark = oldRequired.has(key) ? '' : '?'
-      lines.push(chalk.red(`  - ${key}${reqMark}: ${oldProps[key].type || 'any'}`))
-    } else if (inOld && inNew) {
-      const oldType = oldProps[key].type || 'any'
-      const newType = newProps[key].type || 'any'
-      const wasReq = oldRequired.has(key)
-      const isReq = newRequired.has(key)
-      if (oldType !== newType || wasReq !== isReq) {
-        const oldMark = wasReq ? '' : '?'
-        const newMark = isReq ? '' : '?'
-        lines.push(chalk.red(`  - ${key}${oldMark}: ${oldType}`))
-        lines.push(chalk.green(`  + ${key}${newMark}: ${newType}`))
-      }
-    }
-  }
-
-  return lines.join('\n')
-}
-
-function printDiffs(
-  refA: string,
-  refB: string,
-  diffs: FieldDiff[]
-): void {
-  process.stdout.write('\n')
-  process.stdout.write(chalk.bold(`${refA}  ${chalk.yellow('→')}  ${refB}`) + '\n')
-  process.stdout.write('='.repeat(50) + '\n\n')
-
-  if (diffs.length === 0) {
-    process.stdout.write(chalk.green('No differences found.') + '\n')
-    return
-  }
-
-  process.stdout.write(`${chalk.bold(String(diffs.length))} ${diffs.length === 1 ? 'change' : 'changes'}:\n\n`)
-
-  for (const diff of diffs) {
-    // Schema fields get special formatting
-    if ((diff.field === 'input_schema' || diff.field === 'output_schema') && diff.kind === 'changed') {
-      process.stdout.write(chalk.cyan(`~ ${diff.field}:`) + '\n')
-      process.stdout.write(formatSchemaDiff(diff.field, diff.old as Schema, diff.new as Schema) + '\n\n')
-      continue
-    }
-
-    // Prompt gets special formatting
-    if (diff.field === 'prompt' && diff.kind === 'changed') {
-      process.stdout.write(chalk.cyan(`~ prompt:`) + '\n')
-      process.stdout.write(formatPromptDiff(diff.old as string, diff.new as string) + '\n\n')
-      continue
-    }
-
-    // Standard fields
-    const prefix = diff.kind === 'added' ? chalk.green('+')
-      : diff.kind === 'removed' ? chalk.red('-')
-      : chalk.cyan('~')
-
-    if (diff.kind === 'added') {
-      process.stdout.write(`${prefix} ${chalk.bold(diff.field)}: ${formatValue(diff.new)}\n`)
-    } else if (diff.kind === 'removed') {
-      process.stdout.write(`${prefix} ${chalk.bold(diff.field)}: ${formatValue(diff.old)}\n`)
-    } else {
-      process.stdout.write(`${prefix} ${chalk.bold(diff.field)}: ${formatValue(diff.old)} ${chalk.yellow('→')} ${formatValue(diff.new)}\n`)
-    }
-  }
 }
 
 // ── Ref parsing ────────────────────────────────────────────────
