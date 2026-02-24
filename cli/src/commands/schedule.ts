@@ -400,6 +400,7 @@ export function registerScheduleCommand(program: Command): void {
     .option('--disable', 'Disable the schedule')
     .option('--auto-update', 'Enable auto-update on publish')
     .option('--pin-version', 'Pin to current version (disable auto-update)')
+    .option('--agent-version <version>', 'Pin to specific agent version (e.g., v2)')
     .option('--alert-webhook <url>', 'Webhook URL to POST on failure (HTTPS required)')
     .option('--alert-on-failure-count <n>', 'Number of consecutive failures before alerting', parseInt)
     .option('--clear-alert-webhook', 'Remove the alert webhook URL')
@@ -413,6 +414,7 @@ export function registerScheduleCommand(program: Command): void {
       disable?: boolean
       autoUpdate?: boolean
       pinVersion?: boolean
+      agentVersion?: string
       alertWebhook?: string
       alertOnFailureCount?: number
       clearAlertWebhook?: boolean
@@ -429,6 +431,9 @@ export function registerScheduleCommand(program: Command): void {
       if (options.autoUpdate && options.pinVersion) {
         throw new CliError('Cannot use both --auto-update and --pin-version')
       }
+      if (options.agentVersion && options.autoUpdate) {
+        throw new CliError('Cannot use both --agent-version and --auto-update (pinning a version disables auto-update)')
+      }
       if (options.alertWebhook && options.clearAlertWebhook) {
         throw new CliError('Cannot use both --alert-webhook and --clear-alert-webhook')
       }
@@ -443,6 +448,7 @@ export function registerScheduleCommand(program: Command): void {
       if (options.disable) updates.enabled = false
       if (options.autoUpdate) updates.auto_update = true
       if (options.pinVersion) updates.auto_update = false
+      if (options.agentVersion) updates.agent_version = options.agentVersion
       if (options.alertWebhook) updates.alert_webhook_url = options.alertWebhook
       if (options.alertOnFailureCount) updates.alert_on_failure_count = options.alertOnFailureCount
       if (options.clearAlertWebhook) updates.alert_webhook_url = ''
@@ -472,6 +478,7 @@ export function registerScheduleCommand(program: Command): void {
       const s = result.schedule
       process.stdout.write(chalk.green('\u2713') + ` Schedule updated\n\n`)
       process.stdout.write(`  ID:      ${s.id}\n`)
+      process.stdout.write(`  Agent:   ${s.agent_name}@${s.agent_version}${s.auto_update === false ? chalk.yellow(' [pinned]') : ''}\n`)
       process.stdout.write(`  Enabled: ${s.enabled ? chalk.green('yes') : chalk.red('no')}\n`)
       if (s.cron_expression) {
         process.stdout.write(`  Cron:    ${s.cron_expression}\n`)

@@ -1475,6 +1475,22 @@ export function registerPublishCommand(program: Command): void {
       process.stdout.write(`Providers: ${supportedProviders.join(', ')}\n`)
       process.stdout.write(`Visibility: private\n`)
 
+      // Show orchestration mode for dependency orchestrators
+      const orchMode = (result as Record<string, unknown>).orchestration_mode as string | undefined
+      if (orchMode) {
+        const modeColor = orchMode === 'strict' ? chalk.yellow : chalk.green
+        process.stdout.write(`Orchestration: ${modeColor(orchMode)}\n`)
+      }
+
+      // Show publish warnings from gateway
+      const publishWarnings = (result as Record<string, unknown>).warnings as string[] | undefined
+      if (publishWarnings?.length) {
+        process.stdout.write(`\n`)
+        for (const warning of publishWarnings) {
+          process.stderr.write(chalk.yellow(`⚠ ${warning}\n`))
+        }
+      }
+
       // Show required secrets with setup instructions (F-18)
       if (manifest.required_secrets?.length) {
         process.stdout.write(`\nRequired secrets:\n`)
