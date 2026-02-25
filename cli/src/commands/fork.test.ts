@@ -25,13 +25,14 @@ vi.mock('../lib/output')
 vi.mock('../lib/key-store')
 
 import { registerForkCommand } from './fork'
-import { getResolvedConfig } from '../lib/config'
+import { getResolvedConfig, loadConfig } from '../lib/config'
 import { getAgentWithFallback, request, forkAgent, ApiError } from '../lib/api'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
 import { saveServiceKey } from '../lib/key-store'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
+const mockLoadConfig = vi.mocked(loadConfig)
 const mockGetAgentWithFallback = vi.mocked(getAgentWithFallback)
 const mockRequest = vi.mocked(request)
 const mockForkAgent = vi.mocked(forkAgent)
@@ -58,6 +59,8 @@ describe('fork command', () => {
       apiKey: 'sk_test_123',
       apiUrl: 'https://api.test.com',
     })
+
+    mockLoadConfig.mockResolvedValue({})
 
     mockGetAgentWithFallback.mockResolvedValue({
       id: 'source-agent-id',
@@ -98,7 +101,7 @@ describe('fork command', () => {
     ).rejects.toThrow('Not logged in')
   })
 
-  it('forks a public agent into current workspace by default', async () => {
+  it('forks a public agent into current workspace by default with org_slug from response', async () => {
     await program.parseAsync(['node', 'test', 'fork', 'orchagent/my-discord-agent'])
 
     expect(mockGetAgentWithFallback).toHaveBeenCalledWith(
@@ -117,6 +120,40 @@ describe('fork command', () => {
     expect(output).toContain('Forked orchagent/my-discord-agent@latest')
     expect(output).toContain('New agent: joe/my-discord-agent@v1')
     expect(output).toContain('Service key')
+  })
+
+  it('resolves current workspace when org_slug is missing from response', async () => {
+    // Simulate gateway returning agent without org_slug
+    mockForkAgent.mockResolvedValue({
+      agent: {
+        id: 'forked-agent-id',
+        org_slug: undefined, // Missing!
+        name: 'my-discord-agent',
+        version: 'v1',
+      },
+      service_key: 'sk_service_abc123',
+      service_key_prefix: 'sk_service',
+    } as any)
+
+    mockRequest.mockResolvedValue({
+      workspaces: [
+        { id: 'ws-personal', name: 'Personal', slug: 'joe', type: 'personal', role: 'owner', member_count: 1 },
+      ],
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'fork', 'orchagent/my-discord-agent'])
+
+    // Should call /workspaces to resolve current workspace
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.any(Object),
+      'GET',
+      '/workspaces'
+    )
+
+    const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
+    expect(output).toContain('Resolving current workspace')
+    expect(output).toContain('New agent: joe/my-discord-agent@v1')
+    expect(output).toContain('Workspace: Personal (joe)')
   })
 
   it('resolves --workspace slug and sends workspace_id', async () => {
@@ -249,5 +286,133 @@ describe('fork command', () => {
 
     // JSON mode outputs raw JSON, no interactive saving
     expect(mockSaveServiceKey).not.toHaveBeenCalled()
+  })
+
+  it('uses org_slug from response when --workspace is specified', async () => {
+    mockRequest.mockResolvedValue({
+      workspaces: [
+        { id: 'ws-team', name: 'Acme', slug: 'acme-corp', type: 'team', role: 'member', member_count: 4 },
+      ],
+    } as any)
+
+    // When forking into acme-corp, the gateway returns the forked agent with correct org_slug
+    mockForkAgent.mockResolvedValue({
+      agent: {
+        id: 'forked-agent-id',
+        org_slug: 'acme-corp', // Gateway confirms it was created in acme-corp
+        name: 'my-discord-agent',
+        version: 'v1',
+      },
+      service_key: 'sk_service_abc123',
+      service_key_prefix: 'sk_service',
+    } as any)
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'fork',
+      'orchagent/my-discord-agent',
+      '--workspace',
+      'acme-corp',
+    ])
+
+    const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
+    // Should show the workspace from the response (which matches the target)
+    expect(output).toContain('New agent: acme-corp/my-discord-agent@v1')
+    expect(output).toContain('Workspace: Acme (acme-corp)')
+  })
+
+  it('falls back to targetWorkspace slug when org_slug missing', async () => {
+    mockRequest.mockResolvedValue({
+      workspaces: [
+        { id: 'ws-team', name: 'Acme', slug: 'acme-corp', type: 'team', role: 'member', member_count: 4 },
+      ],
+    } as any)
+
+    // Edge case: gateway doesn't return org_slug for some reason
+    mockForkAgent.mockResolvedValue({
+      agent: {
+        id: 'forked-agent-id',
+        org_slug: undefined, // Missing
+        name: 'my-discord-agent',
+        version: 'v1',
+      },
+      service_key: 'sk_service_abc123',
+      service_key_prefix: 'sk_service',
+    } as any)
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'fork',
+      'orchagent/my-discord-agent',
+      '--workspace',
+      'acme-corp',
+    ])
+
+    const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
+    // Should fall back to the explicitly provided workspace
+    expect(output).toContain('New agent: acme-corp/my-discord-agent@v1')
+    expect(output).toContain('Workspace: Acme (acme-corp)')
+  })
+
+  it('handles multiple workspaces with config default workspace', async () => {
+    // When config has a default workspace and multiple workspaces exist
+    mockRequest.mockResolvedValue({
+      workspaces: [
+        { id: 'ws-personal', name: 'Personal', slug: 'joe', type: 'personal', role: 'owner', member_count: 1 },
+        { id: 'ws-team', name: 'Acme', slug: 'acme-corp', type: 'team', role: 'member', member_count: 4 },
+      ],
+    } as any)
+
+    mockForkAgent.mockResolvedValue({
+      agent: {
+        id: 'forked-agent-id',
+        org_slug: undefined, // Missing — will resolve from config
+        name: 'my-discord-agent',
+        version: 'v1',
+      },
+      service_key: 'sk_service_abc123',
+      service_key_prefix: 'sk_service',
+    } as any)
+
+    // Config has a default workspace set
+    mockLoadConfig.mockResolvedValue({
+      workspace: 'joe', // Default workspace set
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'fork', 'orchagent/my-discord-agent'])
+
+    const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
+    // Should use the config default
+    expect(output).toContain('New agent: joe/my-discord-agent@v1')
+    expect(output).toContain('Workspace: Personal (joe)')
+  })
+
+  it('throws when multiple workspaces and no default', async () => {
+    mockRequest.mockResolvedValue({
+      workspaces: [
+        { id: 'ws-personal', name: 'Personal', slug: 'joe', type: 'personal', role: 'owner', member_count: 1 },
+        { id: 'ws-team', name: 'Acme', slug: 'acme-corp', type: 'team', role: 'member', member_count: 4 },
+      ],
+    } as any)
+
+    mockForkAgent.mockResolvedValue({
+      agent: {
+        id: 'forked-agent-id',
+        org_slug: undefined, // Missing
+        name: 'my-discord-agent',
+        version: 'v1',
+      },
+      service_key: 'sk_service_abc123',
+      service_key_prefix: 'sk_service',
+    } as any)
+
+    // Config has no default workspace
+    mockLoadConfig.mockResolvedValue({} as any)
+
+    await expect(
+      program.parseAsync(['node', 'test', 'fork', 'orchagent/my-discord-agent'])
+    ).rejects.toThrow('Multiple workspaces available')
   })
 })

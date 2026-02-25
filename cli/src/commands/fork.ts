@@ -54,6 +54,32 @@ async function resolveWorkspace(
   return workspace
 }
 
+async function resolveCurrentWorkspace(
+  config: { apiKey?: string; apiUrl: string }
+): Promise<Workspace> {
+  const configFile = await loadConfig()
+  const response = await request<WorkspacesResponse>(config, 'GET', '/workspaces')
+
+  // If user has a default workspace configured, use it
+  if (configFile.workspace) {
+    const workspace = response.workspaces.find((w) => w.slug === configFile.workspace)
+    if (workspace) {
+      return workspace
+    }
+  }
+
+  // If only one workspace, use it
+  if (response.workspaces.length === 1) {
+    return response.workspaces[0]
+  }
+
+  // Multiple workspaces and no default — this shouldn't happen in fork flow,
+  // but if we get here, throw an error
+  throw new CliError(
+    'Multiple workspaces available. Use `orch workspace use <slug>` to set default or `--workspace <slug>` to specify.'
+  )
+}
+
 export function registerForkCommand(program: Command): void {
   program
     .command('fork <agent>')
@@ -129,7 +155,22 @@ Examples:
       }
 
       const forked = result.agent
-      const targetOrgSlug = forked.org_slug ?? targetWorkspace?.slug ?? 'current-workspace'
+      // Resolve the target workspace slug:
+      // 1. If org_slug is in response, use it (gateway knows what org it created the agent in)
+      // 2. If explicit --workspace was provided, use its slug
+      // 3. Otherwise, resolve current workspace
+      let targetOrgSlug: string | undefined
+      if (forked.org_slug) {
+        targetOrgSlug = forked.org_slug
+      } else if (targetWorkspace) {
+        targetOrgSlug = targetWorkspace.slug
+      } else {
+        write('Resolving current workspace...\n')
+        const currentWorkspace = await resolveCurrentWorkspace(config)
+        targetOrgSlug = currentWorkspace.slug
+        targetWorkspace = currentWorkspace
+      }
+
       write(`\n${chalk.green('\u2713')} Forked ${org}/${agent}@${version}\n`)
       write(`  New agent: ${targetOrgSlug}/${forked.name}@${forked.version}\n`)
 

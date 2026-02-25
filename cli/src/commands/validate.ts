@@ -42,7 +42,7 @@ function printResult(result: ValidationResult, serverIssues?: ValidationIssue[])
   // Header
   const label = m.isSkill ? 'skill' : 'agent'
   const name = m.agentName || '(unknown)'
-  process.stderr.write(`\nValidating ${label}: ${chalk.bold(name)}\n\n`)
+  process.stderr.write(`\n${chalk.dim('[validation only]')} Validating ${label}: ${chalk.bold(name)}\n\n`)
 
   // Summary line: type, engine, mode
   if (!m.isSkill && m.agentType && m.executionEngine) {
@@ -115,7 +115,18 @@ export function registerValidateCommand(program: Command): void {
   program
     .command('validate')
     .alias('lint')
-    .description('Validate agent or skill configuration without publishing')
+    .description('Validate configuration only (no tests)')
+    .addHelpText('after', `
+Use 'orch validate' to check configuration before publishing.
+Use 'orch test' to validate + run test suite (fixtures, unit tests, etc).
+
+Options:
+  --json              Output as JSON (for CI/CD pipelines)
+  --server            Also validate against server (requires auth)
+  --profile <name>    Use API key from named profile
+  --url <url>         Agent URL (for code-based agents)
+  --docker            Validate with Dockerfile
+`)
     .option('--profile <name>', 'Use API key from named profile')
     .option('--json', 'Output as JSON (for CI/CD)')
     .option('--server', 'Also run server-side validation (requires auth)')

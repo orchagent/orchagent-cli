@@ -22,7 +22,7 @@ vi.mock('../lib/analytics', () => ({
 import fs from 'fs/promises'
 import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema, tryParseJsonObject, inferFileField, canonicalAgentType } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
-import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg } from '../lib/api'
+import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg, getAgentCostEstimate } from '../lib/api'
 import {
   detectLlmKeyFromEnv,
   getDefaultModel,
@@ -41,6 +41,7 @@ const mockGetAgentWithFallback = vi.mocked(getAgentWithFallback)
 const mockSafeFetchWithRetryForCalls = vi.mocked(safeFetchWithRetryForCalls)
 const mockRequest = vi.mocked(request)
 const mockResolveWorkspaceIdForOrg = vi.mocked(resolveWorkspaceIdForOrg)
+const mockGetAgentCostEstimate = vi.mocked(getAgentCostEstimate)
 
 describe('run command --local - agent ref parsing', () => {
   let program: Command
@@ -3854,6 +3855,116 @@ describe('BUG-6: SSE stream timeout shows "still running" instead of failure', (
     // Verify the fetch was called with the custom timeout (1800s = 1800000ms)
     const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
     expect(fetchCall[1]?.timeoutMs).toBe(1800000)
+  })
+})
+
+describe('run command --estimate and --estimate-only', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+    mockFs.mkdir.mockResolvedValue(undefined)
+    mockFs.writeFile.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('--estimate-only shows cost estimate and exits without running', async () => {
+    mockGetAgentCostEstimate.mockResolvedValue({
+      estimate: {
+        sample_size: 25,
+        avg_cost_usd: 0.015,
+        p50_cost_usd: 0.012,
+        p95_cost_usd: 0.045,
+        provider_breakdown: [{ provider: 'anthropic', avg_cost_usd: 0.015 }],
+        period_days: 30,
+      },
+    })
+
+    // Mock agent metadata
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    })
+
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('workspace-123')
+
+    await program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1', '--estimate-only'])
+
+    // Verify estimate was shown in stderr
+    const stderrOutput = stderrSpy.mock.calls.map(c => c[0]).join('')
+    expect(stderrOutput).toContain('Cost Estimate')
+    expect(stderrOutput).toContain('25 runs')
+
+    // Verify getAgentCostEstimate was called
+    expect(mockGetAgentCostEstimate).toHaveBeenCalled()
+  })
+
+  it('--estimate-only throws error when estimate fetch fails', async () => {
+    mockGetAgentCostEstimate.mockRejectedValue(new Error('API Error'))
+
+    // Mock agent metadata
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    })
+
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('workspace-123')
+
+    // Should throw an error when estimate fails with --estimate-only
+    await expect(
+      program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1', '--estimate-only'])
+    ).rejects.toThrow()
+  })
+
+  it('--estimate shows warning for agents with no run history', async () => {
+    mockGetAgentCostEstimate.mockResolvedValue({
+      estimate: {
+        sample_size: 0,
+      },
+    })
+
+    // Mock agent metadata
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'new-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    })
+
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('workspace-123')
+
+    await program.parseAsync(['node', 'test', 'run', 'test-org/new-agent@v1', '--estimate-only'])
+
+    const stderrOutput = stderrSpy.mock.calls.map(c => c[0]).join('')
+    expect(stderrOutput).toContain('No run history available')
+    expect(stderrOutput).toContain('This agent has not been run before')
   })
 })
 

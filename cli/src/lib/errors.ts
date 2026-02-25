@@ -15,6 +15,29 @@ export class CliError extends Error {
   }
 }
 
+function dedupeErrorDetail(message: string, detail: string): string | null {
+  const normalizedMessage = message.replace(/\r\n/g, '\n').trim()
+  const normalizedDetail = detail.replace(/\r\n/g, '\n').trim()
+
+  if (!normalizedDetail) return null
+  if (!normalizedMessage) return normalizedDetail
+
+  // Some responses repeat the same text in both `message` and `detail`.
+  if (normalizedDetail === normalizedMessage) return null
+
+  // If detail starts with the same first line, keep only the additional context.
+  const detailLines = normalizedDetail.split('\n')
+  if (detailLines[0] === normalizedMessage) {
+    const remainder = detailLines.slice(1).join('\n').trim()
+    return remainder || null
+  }
+
+  // No useful extra information.
+  if (normalizedMessage.includes(normalizedDetail)) return null
+
+  return normalizedDetail
+}
+
 export function formatError(err: unknown): string {
   if (err instanceof CliError) {
     return err.message
@@ -27,7 +50,10 @@ export function formatError(err: unknown): string {
       const code = p.error?.code
       const detail = p.error?.detail || p.detail
       let msg = `${anyErr.message} (status ${anyErr.status}${code ? `, ${code}` : ''})`
-      if (detail) msg += `\n${detail}`
+      if (typeof detail === 'string') {
+        const dedupedDetail = dedupeErrorDetail(anyErr.message, detail)
+        if (dedupedDetail) msg += `\n${dedupedDetail}`
+      }
       return msg
     }
     return anyErr.message

@@ -637,13 +637,27 @@ class Analyst:
 
     async def generate_weekly_summary(self, store: ActivityStore) -> str:
         """Generate an intelligent weekly summary from the activity window."""
+        from datetime import datetime, timezone
+
         activity_data = store.serialise_for_llm()
         repos = ", ".join(store.repos)
+        now = datetime.now(timezone.utc)
+        current_date = now.strftime("%d %b %Y")
+
+        # Period range from activity window
+        period_start = store.window.period_start.strftime("%d %b %Y") if store.window and store.window.period_start else "unknown"
+        period_end = store.window.period_end.strftime("%d %b %Y") if store.window and store.window.period_end else current_date
 
         system_prompt = self._summary_prompt.replace(
             "{team_name}", self.team_name
         ).replace(
             "{repos}", repos
+        ).replace(
+            "{current_date}", current_date
+        ).replace(
+            "{period_start}", period_start
+        ).replace(
+            "{period_end}", period_end
         ).replace(
             "{activity_data}", activity_data
         )
@@ -747,6 +761,9 @@ anthropic>=0.40.0
 // ─── prompts/weekly_summary.md ───────────────────────────────────────────────
 
 export const TEMPLATE_WEEKLY_SUMMARY_PROMPT = `You are a senior engineering manager analysing your team's GitHub activity for the past week. Your job is to write a concise, insightful weekly summary that a CTO or team lead would actually want to read on Monday morning.
+
+**Current date: {current_date}**
+**Reporting period: {period_start} to {period_end}**
 
 Rules:
 - INTERPRET, don't just list. "3 PRs merged" is useless. "The auth refactor shipped -- 3 PRs merged across 2 repos" is useful.

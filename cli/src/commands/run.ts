@@ -2300,7 +2300,8 @@ async function executeCloud(
   }
 
   // --estimate: show cost estimate before running and ask for confirmation
-  if (options.estimate) {
+  // --estimate-only: show cost estimate and exit without running
+  if (options.estimate || options.estimateOnly) {
     try {
       const est = await getAgentCostEstimate(resolved, org, parsed.agent, parsed.version)
       const e = est.estimate
@@ -2322,7 +2323,13 @@ async function executeCloud(
         }
         process.stderr.write('\n')
       }
-      // Ask for confirmation
+
+      // If --estimate-only, exit after showing estimate
+      if (options.estimateOnly) {
+        return
+      }
+
+      // Otherwise, ask for confirmation (--estimate only)
       const rl = await import('readline')
       const iface = rl.createInterface({ input: process.stdin, output: process.stderr })
       const answer = await new Promise<string>(resolve => {
@@ -2334,7 +2341,10 @@ async function executeCloud(
         return
       }
     } catch {
-      // Non-fatal: if estimate fails, proceed with the run
+      // Non-fatal: if estimate fails, proceed with the run (or exit if --estimate-only)
+      if (options.estimateOnly) {
+        throw new CliError('Could not fetch cost estimate.')
+      }
       process.stderr.write(chalk.gray('Could not fetch cost estimate. Proceeding...\n\n'))
     }
   }
@@ -3392,6 +3402,7 @@ type RunOptions = {
   json?: boolean
   verbose?: boolean
   estimate?: boolean
+  estimateOnly?: boolean
   skills?: string
   skillsOnly?: string
   noSkills?: boolean
@@ -3422,6 +3433,7 @@ export function registerRunCommand(program: Command): void {
     .option('--json', 'Output raw JSON')
     .option('--verbose', 'Show sandbox stdout/stderr and debug info (cloud only)')
     .option('--estimate', 'Show cost estimate before running and ask for confirmation')
+    .option('--estimate-only', 'Show cost estimate and exit (for CI/CD automation)')
     .option('--provider <provider>', 'LLM provider (openai, anthropic, gemini, ollama)')
     .option('--model <model>', 'LLM model to use (overrides agent default)')
     .option('--key <key>', 'LLM API key (overrides env vars)')

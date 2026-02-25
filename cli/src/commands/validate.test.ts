@@ -884,4 +884,11 @@ describe('orch validate command', () => {
     const output = allStderr()
     expect(output).toContain('Server-side validation passed')
   })
+
+  it('shows "[validation only]" label in output', async () => {
+    mockPromptAgent()
+    await program.parseAsync(['node', 'test', 'validate'])
+    const output = allStderr()
+    expect(output).toContain('[validation only]')
+  })
 })

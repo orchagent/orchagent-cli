@@ -257,7 +257,9 @@ describe('orch dag', () => {
       })
       .mockRejectedValueOnce(new Error('Not part of a chain (404)'))
 
-    await expect(runCommand(FULL_RUN_ID)).rejects.toThrow('not part of an orchestration chain')
+    await expect(runCommand(FULL_RUN_ID)).rejects.toThrow(
+      'is not part of an orchestration chain'
+    )
   })
 
   it('throws error without API key', async () => {

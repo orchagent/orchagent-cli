@@ -325,7 +325,9 @@ export function registerDagCommand(program: Command): void {
           const msg = e instanceof Error ? e.message : 'Unknown error'
           if (msg.includes('404') || msg.includes('not found') || msg.includes('Not part of')) {
             throw new CliError(
-              `Run ${resolvedRunId.slice(0, 8)}... is not part of an orchestration chain.`
+              `Run ${resolvedRunId.slice(0, 8)}... is not part of an orchestration chain.\n\n` +
+              `The DAG view is only available for runs that call other agents via the SDK.\n` +
+              `Verify that your agent uses the Orchestrator SDK to invoke other agents.`
             )
           }
           throw e

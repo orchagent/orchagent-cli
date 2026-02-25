@@ -48,6 +48,7 @@ interface Workspace {
   id: string
   name: string
   slug: string
+  type?: 'personal' | 'team'
 }
 
 interface WorkspacesResponse {
@@ -84,7 +85,13 @@ async function resolveWorkspaceId(
     return response.workspaces[0].id
   }
 
-  // Multiple workspaces — list them and ask the user to pick
+  // Multiple workspaces — try to default to personal workspace
+  const personalWorkspace = response.workspaces.find((w) => w.type === 'personal')
+  if (personalWorkspace) {
+    return personalWorkspace.id
+  }
+
+  // Multiple workspaces and no personal workspace found — ask the user to pick
   const slugs = response.workspaces.map((w) => w.slug).join(', ')
   throw new CliError(
     `Multiple workspaces available: ${slugs}\n` +

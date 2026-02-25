@@ -1256,24 +1256,31 @@ async function runOnce(
 export function registerTestCommand(program: Command): void {
   program
     .command('test [path]')
-    .description('Validate agent configuration and run test suite')
+    .description('Validate configuration and run test suite (fixtures + unit tests)')
     .option('-v, --verbose', 'Show detailed test output')
     .option('-w, --watch', 'Watch for file changes and re-run tests')
     .option('-r, --run', 'Run the agent once with --data input (validate first)')
     .option('-d, --data <json>', 'JSON input for --run mode')
+    .option('--validate-only', 'Run validation only (skip test suite)')
     .addHelpText('after', `
 Examples:
   orch test                    Validate + run tests in current directory
   orch test ./my-agent         Validate + run tests in specified directory
   orch test --verbose          Show detailed test output
   orch test --watch            Watch mode — re-run on file changes
+  orch test --validate-only    Validation only (same as: orch validate)
   orch test --run --data '{"task": "hello"}'   Validate, then run once
 
-What it checks:
+What it does (default):
   1. Validates orchagent.json (type, engine, required files, secrets, etc.)
   2. Runs Python tests (pytest): test_*.py, *_test.py
   3. Runs JS/TS tests (vitest): *.test.ts, *.spec.ts
   4. Runs fixture tests: tests/fixture-*.json
+
+When to use each command:
+  orch validate             Quick validation before publishing (config only)
+  orch test                 Full test suite (config + fixtures + unit tests)
+  orch test --validate-only Same as validate (config only)
 
 Fixture Format (tests/fixture-basic.json):
   {
@@ -1308,7 +1315,7 @@ Run mode (--run):
 `)
     .action(async (
       agentPath: string | undefined,
-      options: { verbose?: boolean; watch?: boolean; run?: boolean; data?: string }
+      options: { verbose?: boolean; watch?: boolean; run?: boolean; data?: string; validateOnly?: boolean }
     ) => {
       const agentDir = agentPath
         ? path.resolve(process.cwd(), agentPath)
@@ -1333,6 +1340,13 @@ Run mode (--run):
         config = await getResolvedConfig()
       } catch {
         // Config not available, fixture tests will use env vars only
+      }
+
+      // --validate-only flag: run validation then exit
+      if (options.validateOnly) {
+        const validation = await validateAgent(agentDir)
+        const isValid = printValidation(validation)
+        process.exit(isValid ? 0 : 1)
       }
 
       // Run mode: validate then execute once

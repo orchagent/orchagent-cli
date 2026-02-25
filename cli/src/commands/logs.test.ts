@@ -360,4 +360,127 @@ describe('logs command', () => {
 
     await program.parseAsync(['node', 'test', 'logs', '--workspace', 'team-alpha'])
   })
+
+  // ─── UX-1: Smart workspace defaulting ─────────────────────────────────────
+
+  it('defaults to personal workspace when multiple are available', async () => {
+    // No workspace in config
+    mockLoadConfig.mockResolvedValue({})
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return {
+          workspaces: [
+            { id: 'ws-1', name: 'Personal', slug: 'joe', type: 'personal' },
+            { id: 'ws-2', name: 'Team Alpha', slug: 'team-alpha', type: 'team' },
+            { id: 'ws-3', name: 'Team Beta', slug: 'team-beta', type: 'team' },
+          ],
+        }
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        // Should default to personal workspace (ws-1), not require explicit --workspace
+        expect(path).toContain('/workspaces/ws-1/runs')
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    // Should NOT throw — should auto-select the personal workspace
+    await program.parseAsync(['node', 'test', 'logs'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('test-agent')
+  })
+
+  it('still errors when multiple workspaces but no personal type available', async () => {
+    // No workspace in config
+    mockLoadConfig.mockResolvedValue({})
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return {
+          workspaces: [
+            { id: 'ws-1', name: 'Team Alpha', slug: 'team-alpha', type: 'team' },
+            { id: 'ws-2', name: 'Team Beta', slug: 'team-beta', type: 'team' },
+          ],
+        }
+      }
+      return {}
+    })
+
+    // Should throw because no personal workspace to default to
+    await expect(
+      program.parseAsync(['node', 'test', 'logs'])
+    ).rejects.toThrow('Multiple workspaces available')
+  })
+
+  it('respects personal workspace type even when not first in list', async () => {
+    mockLoadConfig.mockResolvedValue({})
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return {
+          workspaces: [
+            { id: 'ws-1', name: 'Team Alpha', slug: 'team-alpha', type: 'team' },
+            { id: 'ws-2', name: 'Team Beta', slug: 'team-beta', type: 'team' },
+            { id: 'ws-3', name: 'Personal', slug: 'joe', type: 'personal' },
+          ],
+        }
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        // Should default to personal workspace (ws-3), not the first one (ws-1)
+        expect(path).toContain('/workspaces/ws-3/runs')
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs'])
+  })
+
+  it('explicit --workspace overrides personal defaulting', async () => {
+    mockLoadConfig.mockResolvedValue({})
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return {
+          workspaces: [
+            { id: 'ws-1', name: 'Personal', slug: 'joe', type: 'personal' },
+            { id: 'ws-2', name: 'Team Alpha', slug: 'team-alpha', type: 'team' },
+          ],
+        }
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        // Should use team-alpha (explicit choice), not personal workspace
+        expect(path).toContain('/workspaces/ws-2/runs')
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', '--workspace', 'team-alpha'])
+  })
+
+  it('configured workspace takes precedence over personal defaulting', async () => {
+    mockLoadConfig.mockResolvedValue({ workspace: 'team-alpha' })
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return {
+          workspaces: [
+            { id: 'ws-1', name: 'Personal', slug: 'joe', type: 'personal' },
+            { id: 'ws-2', name: 'Team Alpha', slug: 'team-alpha', type: 'team' },
+          ],
+        }
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        // Should use configured workspace (team-alpha), not personal
+        expect(path).toContain('/workspaces/ws-2/runs')
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs'])
+  })
 })
