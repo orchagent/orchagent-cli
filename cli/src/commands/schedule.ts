@@ -1,4 +1,4 @@
-import { Command } from 'commander'
+import { Command, Option } from 'commander'
 import Table from 'cli-table3'
 import chalk from 'chalk'
 import readline from 'readline/promises'
@@ -277,7 +277,8 @@ export function registerScheduleCommand(program: Command): void {
     .option('--cron <expression>', 'Cron expression (e.g., "0 9 * * 1" for every Monday 9am)')
     .option('--webhook', 'Create a webhook-triggered schedule instead of cron')
     .option('--timezone <tz>', 'Timezone for cron schedule (default: UTC)', 'UTC')
-    .option('--input <json>', 'Input data as JSON string')
+    .option('--data <json>', 'Input data as JSON string')
+    .addOption(new Option('--input <json>').hideHelp())
     .option('--provider <provider>', 'LLM provider (anthropic, openai, gemini)')
     .option('--pin-version', 'Pin to this version (disable auto-update on publish)')
     .option('--alert-webhook <url>', 'Webhook URL to POST on failure (HTTPS required)')
@@ -287,6 +288,7 @@ export function registerScheduleCommand(program: Command): void {
       cron?: string
       webhook?: boolean
       timezone?: string
+      data?: string
       input?: string
       provider?: string
       pinVersion?: boolean
@@ -318,13 +320,14 @@ export function registerScheduleCommand(program: Command): void {
       // Resolve agent to get the ID (pass workspace context for private agents)
       const agent = await getAgentWithFallback(config, org, ref.agent, ref.version, workspaceId)
 
-      // Parse input data
+      // Parse input data (--data is primary, --input is deprecated alias)
+      const rawInput = options.data ?? options.input
       let inputData: Record<string, unknown> | undefined
-      if (options.input) {
+      if (rawInput) {
         try {
-          inputData = JSON.parse(options.input)
+          inputData = JSON.parse(rawInput)
         } catch {
-          throw new CliError('Invalid JSON in --input. Use single quotes: --input \'{"key": "value"}\'')
+          throw new CliError('Invalid JSON in --data. Use single quotes: --data \'{"key": "value"}\'')
         }
       }
 
@@ -394,7 +397,8 @@ export function registerScheduleCommand(program: Command): void {
     .description('Update a schedule')
     .option('--cron <expression>', 'New cron expression')
     .option('--timezone <tz>', 'New timezone')
-    .option('--input <json>', 'New input data as JSON')
+    .option('--data <json>', 'New input data as JSON')
+    .addOption(new Option('--input <json>').hideHelp())
     .option('--provider <provider>', 'New LLM provider')
     .option('--enable', 'Enable the schedule')
     .option('--disable', 'Disable the schedule')
@@ -405,9 +409,10 @@ export function registerScheduleCommand(program: Command): void {
     .option('--alert-on-failure-count <n>', 'Number of consecutive failures before alerting', parseInt)
     .option('--clear-alert-webhook', 'Remove the alert webhook URL')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (scheduleId: string, options: {
+    .action(async (partialScheduleId: string, options: {
       cron?: string
       timezone?: string
+      data?: string
       input?: string
       provider?: string
       enable?: boolean
@@ -439,6 +444,7 @@ export function registerScheduleCommand(program: Command): void {
       }
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
+      const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
       const updates: Record<string, unknown> = {}
       if (options.cron) updates.cron_expression = options.cron
@@ -453,11 +459,12 @@ export function registerScheduleCommand(program: Command): void {
       if (options.alertOnFailureCount) updates.alert_on_failure_count = options.alertOnFailureCount
       if (options.clearAlertWebhook) updates.alert_webhook_url = ''
 
-      if (options.input) {
+      const rawInput = options.data ?? options.input
+      if (rawInput) {
         try {
-          updates.input_data = JSON.parse(options.input)
+          updates.input_data = JSON.parse(rawInput)
         } catch {
-          throw new CliError('Invalid JSON in --input')
+          throw new CliError('Invalid JSON in --data')
         }
       }
 
@@ -502,13 +509,14 @@ export function registerScheduleCommand(program: Command): void {
     .description('Delete a schedule')
     .option('-y, --yes', 'Skip confirmation prompt')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (scheduleId: string, options: { yes?: boolean; workspace?: string }) => {
+    .action(async (partialScheduleId: string, options: { yes?: boolean; workspace?: string }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
       }
 
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
+      const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
       if (!options.yes) {
         const rl = readline.createInterface({
@@ -536,9 +544,10 @@ export function registerScheduleCommand(program: Command): void {
   schedule
     .command('trigger <schedule-id>')
     .description('Manually trigger a schedule execution')
-    .option('--input <json>', 'Override input data as JSON')
+    .option('--data <json>', 'Override input data as JSON')
+    .addOption(new Option('--input <json>').hideHelp())
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (partialScheduleId: string, options: { input?: string; workspace?: string }) => {
+    .action(async (partialScheduleId: string, options: { data?: string; input?: string; workspace?: string }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -547,13 +556,14 @@ export function registerScheduleCommand(program: Command): void {
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
+      const rawInput = options.data ?? options.input
       let body: string | undefined
-      if (options.input) {
+      if (rawInput) {
         try {
-          JSON.parse(options.input) // validate
-          body = options.input
+          JSON.parse(rawInput) // validate
+          body = rawInput
         } catch {
-          throw new CliError('Invalid JSON in --input')
+          throw new CliError('Invalid JSON in --data')
         }
       }
 
