@@ -19,7 +19,8 @@ interface Workspace {
 
 interface WorkspaceMember {
   id: string
-  clerk_user_id: string
+  user_id: string
+  clerk_user_id: string | null
   email: string | null
   name: string | null
   role: 'owner' | 'member'
@@ -304,7 +305,7 @@ async function leaveWorkspace(
 ): Promise<void> {
   const workspaceId = await resolveWorkspaceId(config, workspaceSlug)
 
-  // Get current user's email and members list to find our clerk_user_id
+  // Get current user's email and members list to find our user_id
   const [userResponse, membersResponse] = await Promise.all([
     request<UserResponse>(config, 'GET', '/users/me'),
     request<MembersResponse>(config, 'GET', `/workspaces/${workspaceId}/members`),
@@ -320,7 +321,7 @@ async function leaveWorkspace(
   await request(
     config,
     'DELETE',
-    `/workspaces/${workspaceId}/members/${currentMember.clerk_user_id}`
+    `/workspaces/${workspaceId}/members/${currentMember.user_id}`
   )
 
   await track('cli_workspace_leave')
