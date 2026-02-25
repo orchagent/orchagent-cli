@@ -20,7 +20,7 @@ vi.mock('../lib/analytics', () => ({
 }))
 
 import fs from 'fs/promises'
-import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema, tryParseJsonObject, inferFileField } from './run'
+import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema, tryParseJsonObject, inferFileField, canonicalAgentType } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
 import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import {
@@ -3327,8 +3327,8 @@ describe('UX-007: --verbose flag in streaming mode', () => {
     ])
 
     const output = stderrOutput()
-    // canonicalAgentType normalizes 'tool' → 'agent'
-    expect(output).toContain('type=agent')
+    // canonicalAgentType now correctly preserves 'tool' type
+    expect(output).toContain('type=tool')
     expect(output).toContain('engine=code_runtime')
     expect(output).toContain('endpoint=analyze')
   })
@@ -3365,8 +3365,8 @@ describe('UX-007: --verbose flag in streaming mode', () => {
     const output = stderrOutput()
     // Pre-request debug header
     expect(output).toContain('[verbose]')
-    // canonicalAgentType normalizes 'prompt' → 'agent'
-    expect(output).toContain('type=agent')
+    // canonicalAgentType now correctly preserves 'prompt' type
+    expect(output).toContain('type=prompt')
     expect(output).toContain('engine=direct_llm')
     // Non-streaming verbose shows stdout/stderr from metadata
     expect(output).toContain('--- stderr ---')
@@ -3854,5 +3854,53 @@ describe('BUG-6: SSE stream timeout shows "still running" instead of failure', (
     // Verify the fetch was called with the custom timeout (1800s = 1800000ms)
     const fetchCall = mockSafeFetchWithRetryForCalls.mock.calls[0]
     expect(fetchCall[1]?.timeoutMs).toBe(1800000)
+  })
+})
+
+describe('canonicalAgentType', () => {
+  it('returns "prompt" for prompt type', () => {
+    expect(canonicalAgentType('prompt')).toBe('prompt')
+    expect(canonicalAgentType('PROMPT')).toBe('prompt')
+    expect(canonicalAgentType('Prompt')).toBe('prompt')
+  })
+
+  it('returns "tool" for tool type', () => {
+    expect(canonicalAgentType('tool')).toBe('tool')
+    expect(canonicalAgentType('TOOL')).toBe('tool')
+    expect(canonicalAgentType('Tool')).toBe('tool')
+  })
+
+  it('returns "agent" for agent type', () => {
+    expect(canonicalAgentType('agent')).toBe('agent')
+    expect(canonicalAgentType('AGENT')).toBe('agent')
+    expect(canonicalAgentType('Agent')).toBe('agent')
+  })
+
+  it('returns "skill" for skill type', () => {
+    expect(canonicalAgentType('skill')).toBe('skill')
+    expect(canonicalAgentType('SKILL')).toBe('skill')
+    expect(canonicalAgentType('Skill')).toBe('skill')
+  })
+
+  it('maps legacy "agentic" to "agent"', () => {
+    expect(canonicalAgentType('agentic')).toBe('agent')
+    expect(canonicalAgentType('AGENTIC')).toBe('agent')
+    expect(canonicalAgentType('Agentic')).toBe('agent')
+  })
+
+  it('maps legacy "code" to "tool"', () => {
+    expect(canonicalAgentType('code')).toBe('tool')
+    expect(canonicalAgentType('CODE')).toBe('tool')
+    expect(canonicalAgentType('Code')).toBe('tool')
+  })
+
+  it('defaults to "agent" for undefined/null', () => {
+    expect(canonicalAgentType(undefined)).toBe('agent')
+    expect(canonicalAgentType('')).toBe('agent')
+  })
+
+  it('defaults to "agent" for unrecognized types', () => {
+    expect(canonicalAgentType('unknown')).toBe('agent')
+    expect(canonicalAgentType('invalid')).toBe('agent')
   })
 })

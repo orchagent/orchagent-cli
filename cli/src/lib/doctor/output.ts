@@ -194,6 +194,11 @@ export function printHumanOutput(
   }
 
   process.stdout.write(`Summary: ${summaryParts.join(', ')}\n`)
+
+  // Hint about verbose flag if not already verbose
+  if (!verbose) {
+    process.stdout.write(chalk.dim('\nTip: Run with --verbose for detailed information about each check.\n'))
+  }
 }
 
 /**

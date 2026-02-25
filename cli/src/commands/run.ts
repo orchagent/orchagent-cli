@@ -118,9 +118,17 @@ type AgentDownload = {
   dependencies?: AgentDependency[]
 }
 
-function canonicalAgentType(typeValue: AgentDownload['type'] | string | undefined): 'agent' | 'skill' {
+export function canonicalAgentType(typeValue: AgentDownload['type'] | string | undefined): 'prompt' | 'tool' | 'agent' | 'skill' {
   const normalized = (typeValue || 'agent').toLowerCase()
-  return normalized === 'skill' ? 'skill' : 'agent'
+  // Handle legacy type names: agentic → agent, code → tool
+  if (normalized === 'agentic') return 'agent'
+  if (normalized === 'code') return 'tool'
+  // Return the canonical type, defaulting to 'agent' for unrecognized types
+  if (normalized === 'prompt') return 'prompt'
+  if (normalized === 'tool') return 'tool'
+  if (normalized === 'agent') return 'agent'
+  if (normalized === 'skill') return 'skill'
+  return 'agent'
 }
 
 function resolveExecutionEngine(agentData: {
