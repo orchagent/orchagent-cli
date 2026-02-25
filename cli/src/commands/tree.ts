@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { request } from '../lib/api'
+import { request, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
 
@@ -50,10 +50,14 @@ export function registerTreeCommand(program: Command): void {
       }
       const { agent, version } = parsed
 
+      // Resolve workspace context for team workspaces
+      const workspaceId = await resolveWorkspaceIdForOrg(config, org)
+
       const tree = await request<TreeResponse>(
         config,
         'GET',
-        `/agents/${org}/${agent}/${version}/tree`
+        `/agents/${org}/${agent}/${version}/tree`,
+        ...(workspaceId ? [{ headers: { 'X-Workspace-Id': workspaceId } }] : [])
       )
 
       if (options.json) {

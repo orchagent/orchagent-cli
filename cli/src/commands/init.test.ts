@@ -521,6 +521,18 @@ describe('init command', () => {
       expect(content).toContain('asyncio.run(')
     })
 
+    it('includes package name comment to clarify SDK naming (BUG-11-10)', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
+
+      const mainCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('main.py')
+      )
+      expect(mainCall).toBeDefined()
+      const content = mainCall![1] as string
+      expect(content).toContain('# pip install orchagent-sdk')
+      expect(content).toContain('from orchagent import AgentClient  # module name')
+    })
+
     it('creates requirements.txt with orchagent-sdk', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-orch', '--orchestrator'])
 
@@ -1328,6 +1340,7 @@ describe('init command', () => {
       const content = mainCall![1] as string
       expect(content).toContain('asyncio.gather')
       expect(content).toContain('from orchagent import AgentClient')
+      expect(content).toContain('# pip install orchagent-sdk')
       expect(content).toContain('org/agent-a@v1')
       expect(content).toContain('org/agent-b@v1')
       expect(content).toContain('org/agent-c@v1')

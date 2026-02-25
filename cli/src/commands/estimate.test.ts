@@ -21,15 +21,17 @@ vi.mock('../lib/api', () => {
   return {
     ApiError,
     getAgentCostEstimate: vi.fn(),
+    resolveWorkspaceIdForOrg: vi.fn().mockResolvedValue(undefined),
   }
 })
 
 import { registerEstimateCommand } from './estimate'
 import { getResolvedConfig } from '../lib/config'
-import { getAgentCostEstimate, ApiError } from '../lib/api'
+import { getAgentCostEstimate, ApiError, resolveWorkspaceIdForOrg } from '../lib/api'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockGetAgentCostEstimate = vi.mocked(getAgentCostEstimate)
+const mockResolveWorkspaceIdForOrg = vi.mocked(resolveWorkspaceIdForOrg)
 
 function allStdout(spy: ReturnType<typeof vi.spyOn>): string {
   return spy.mock.calls.map(c => c[0]).join('')
@@ -174,7 +176,8 @@ describe('orch estimate', () => {
       expect.any(Object),
       'orchagent',
       'scanner',
-      'v3'
+      'v3',
+      undefined
     )
   })
 
@@ -194,7 +197,8 @@ describe('orch estimate', () => {
       expect.any(Object),
       'myorg',
       'agent',
-      'latest'
+      'latest',
+      undefined
     )
   })
 
@@ -283,5 +287,53 @@ describe('orch estimate', () => {
     const output = allStdout(stdoutSpy)
     expect(output).toContain('claude-sonnet-4-6')
     expect(output).toContain('gemini-2.5-flash')
+  })
+
+  it('resolves workspace ID and passes it to getAgentCostEstimate (BUG-11-02)', async () => {
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-123')
+    mockGetAgentCostEstimate.mockResolvedValue({
+      agent: 'team-org/my-agent@v1',
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      supported_providers: ['any'],
+      estimate: { sample_size: 0 },
+      metadata: { request_id: 'test-ws' },
+    })
+
+    await program.parseAsync(['node', 'test', 'estimate', 'team-org/my-agent@v1'])
+
+    expect(mockResolveWorkspaceIdForOrg).toHaveBeenCalledWith(
+      expect.any(Object),
+      'team-org'
+    )
+    expect(mockGetAgentCostEstimate).toHaveBeenCalledWith(
+      expect.any(Object),
+      'team-org',
+      'my-agent',
+      'v1',
+      'ws-team-123'
+    )
+  })
+
+  it('passes undefined workspace when not in a team workspace', async () => {
+    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+    mockGetAgentCostEstimate.mockResolvedValue({
+      agent: 'personal-org/my-agent@v1',
+      type: 'prompt',
+      execution_engine: 'direct_llm',
+      supported_providers: ['any'],
+      estimate: { sample_size: 0 },
+      metadata: { request_id: 'test-personal' },
+    })
+
+    await program.parseAsync(['node', 'test', 'estimate', 'personal-org/my-agent@v1'])
+
+    expect(mockGetAgentCostEstimate).toHaveBeenCalledWith(
+      expect.any(Object),
+      'personal-org',
+      'my-agent',
+      'v1',
+      undefined
+    )
   })
 })

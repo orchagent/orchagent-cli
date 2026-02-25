@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { getAgentCostEstimate, ApiError } from '../lib/api'
+import { getAgentCostEstimate, ApiError, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { printJson } from '../lib/output'
 
@@ -39,9 +39,11 @@ export function registerEstimateCommand(program: Command): void {
       }
       const { agent, version } = parsed
 
+      const workspaceId = await resolveWorkspaceIdForOrg(config, org)
+
       let data
       try {
-        data = await getAgentCostEstimate(config, org, agent, version)
+        data = await getAgentCostEstimate(config, org, agent, version, workspaceId)
       } catch (err) {
         if (err instanceof ApiError && err.status === 404) {
           process.stderr.write(chalk.red(`Agent '${org}/${agent}@${version}' not found\n`))

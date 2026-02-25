@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { request, publicRequest, ApiError, getOrg, safeFetchWithRetryForCalls, getAgentWithFallback, listMyAgents, resolveWorkspaceIdForOrg } from './api'
+import { request, publicRequest, ApiError, getOrg, safeFetchWithRetryForCalls, getAgentWithFallback, listMyAgents, resolveWorkspaceIdForOrg, downloadCodeBundleAuthenticated } from './api'
 import type { ResolvedConfig } from '../types'
 
 // Mock fetch globally
@@ -552,5 +552,61 @@ describe('getAgentWithFallback with workspaceId', () => {
     expect(result).toEqual(publicAgent)
     // Only one fetch call (public endpoint)
     expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('downloadCodeBundleAuthenticated', () => {
+  const config: ResolvedConfig = {
+    apiKey: 'sk_test_123',
+    apiUrl: 'https://api.test.com',
+    defaultOrg: 'my-org',
+  }
+
+  beforeEach(() => {
+    mockFetch.mockReset()
+  })
+
+  it('sends X-Workspace-Id header when workspaceId provided', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
+    })
+
+    await downloadCodeBundleAuthenticated(config, 'agent-id-1', 'ws-team-123')
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://api.test.com/agents/agent-id-1/bundle',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer sk_test_123',
+          'X-Workspace-Id': 'ws-team-123',
+        }),
+      })
+    )
+  })
+
+  it('does not send X-Workspace-Id when workspaceId not provided', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
+    })
+
+    await downloadCodeBundleAuthenticated(config, 'agent-id-1')
+
+    const callHeaders = mockFetch.mock.calls[0][1].headers
+    expect(callHeaders['X-Workspace-Id']).toBeUndefined()
+  })
+
+  it('throws ApiError on non-ok response', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      text: () => Promise.resolve(JSON.stringify({ message: 'Agent not found' })),
+    })
+
+    await expect(
+      downloadCodeBundleAuthenticated(config, 'agent-id-1', 'ws-team-123')
+    ).rejects.toThrow('Agent not found')
   })
 })

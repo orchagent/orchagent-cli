@@ -11,7 +11,7 @@ import type { ResolvedConfig, Agent } from '../types'
  * Resolve an agent reference ("org/agent" or just "agent") to an agent ID.
  * Uses the authenticated list-agents endpoint and finds the latest version.
  */
-async function resolveAgentId(config: ResolvedConfig, ref: string): Promise<{ agent: Agent; agentId: string; orgSlug: string }> {
+async function resolveAgentId(config: ResolvedConfig, ref: string): Promise<{ agent: Agent; agentId: string; orgSlug: string; workspaceId?: string }> {
   const parts = ref.split('/')
   const agentName = parts.length >= 2 ? parts[1] : parts[0]
   const orgSlug = parts.length >= 2 ? parts[0] : undefined
@@ -33,7 +33,7 @@ async function resolveAgentId(config: ResolvedConfig, ref: string): Promise<{ ag
     new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   )[0]
 
-  return { agent: latest, agentId: latest.id, orgSlug: latest.org_slug ?? resolvedOrg ?? '' }
+  return { agent: latest, agentId: latest.id, orgSlug: latest.org_slug ?? resolvedOrg ?? '', workspaceId }
 }
 
 export function registerAgentKeysCommand(program: Command): void {
@@ -50,8 +50,8 @@ export function registerAgentKeysCommand(program: Command): void {
         throw new CliError('Missing API key. Run `orchagent login` first.')
       }
 
-      const { agent, agentId, orgSlug } = await resolveAgentId(config, ref)
-      const result = await listAgentKeys(config, agentId)
+      const { agent, agentId, orgSlug, workspaceId } = await resolveAgentId(config, ref)
+      const result = await listAgentKeys(config, agentId, workspaceId)
 
       // Load locally-saved keys for this agent
       const localKeys = await loadServiceKeys(orgSlug, agent.name)
@@ -91,8 +91,8 @@ export function registerAgentKeysCommand(program: Command): void {
         throw new CliError('Missing API key. Run `orchagent login` first.')
       }
 
-      const { agent, orgSlug } = await resolveAgentId(config, ref)
-      const result = await createAgentKey(config, agent.id)
+      const { agent, orgSlug, workspaceId } = await resolveAgentId(config, ref)
+      const result = await createAgentKey(config, agent.id, workspaceId)
 
       process.stdout.write(`\nNew service key for ${agent.name}:\n\n`)
       process.stdout.write(`  ${result.key}\n\n`)
@@ -114,8 +114,8 @@ export function registerAgentKeysCommand(program: Command): void {
         throw new CliError('Missing API key. Run `orchagent login` first.')
       }
 
-      const { agent, agentId } = await resolveAgentId(config, ref)
-      await deleteAgentKey(config, agentId, keyId)
+      const { agent, agentId, workspaceId } = await resolveAgentId(config, ref)
+      await deleteAgentKey(config, agentId, keyId, workspaceId)
 
       process.stdout.write(`Deleted key ${keyId} from ${agent.name}.\n`)
     })

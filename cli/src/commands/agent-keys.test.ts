@@ -114,6 +114,17 @@ describe('agent-keys command', () => {
 
       expect(mockListMyAgents).toHaveBeenCalled()
     })
+
+    it('passes workspace ID to listAgentKeys in team workspace', async () => {
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-456')
+      mockListAgentKeys.mockResolvedValue({ keys: [] })
+
+      await program.parseAsync(['node', 'test', 'agent-keys', 'list', 'joe/my-agent'])
+
+      expect(mockListAgentKeys).toHaveBeenCalledWith(
+        expect.any(Object), 'agent-uuid-123', 'ws-team-456'
+      )
+    })
   })
 
   describe('create', () => {
@@ -123,7 +134,7 @@ describe('agent-keys command', () => {
       await program.parseAsync(['node', 'test', 'agent-keys', 'create', 'joe/my-agent'])
 
       expect(mockCreateAgentKey).toHaveBeenCalledWith(
-        expect.any(Object), 'agent-uuid-123'
+        expect.any(Object), 'agent-uuid-123', 'ws-123'
       )
 
       const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
@@ -155,6 +166,17 @@ describe('agent-keys command', () => {
         program.parseAsync(['node', 'test', 'agent-keys', 'create', 'joe/nonexistent'])
       ).rejects.toThrow("Agent 'joe/nonexistent' not found")
     })
+
+    it('passes workspace ID to createAgentKey in team workspace', async () => {
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-456')
+      mockCreateAgentKey.mockResolvedValue({ key: 'sk_agent_newkey12345', prefix: 'sk_agent_newk' })
+
+      await program.parseAsync(['node', 'test', 'agent-keys', 'create', 'joe/my-agent'])
+
+      expect(mockCreateAgentKey).toHaveBeenCalledWith(
+        expect.any(Object), 'agent-uuid-123', 'ws-team-456'
+      )
+    })
   })
 
   describe('delete', () => {
@@ -164,11 +186,22 @@ describe('agent-keys command', () => {
       await program.parseAsync(['node', 'test', 'agent-keys', 'delete', 'joe/my-agent', 'key-uuid-1'])
 
       expect(mockDeleteAgentKey).toHaveBeenCalledWith(
-        expect.any(Object), 'agent-uuid-123', 'key-uuid-1'
+        expect.any(Object), 'agent-uuid-123', 'key-uuid-1', 'ws-123'
       )
 
       const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
       expect(output).toContain('Deleted key key-uuid-1 from my-agent')
+    })
+
+    it('passes workspace ID to deleteAgentKey in team workspace', async () => {
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-456')
+      mockDeleteAgentKey.mockResolvedValue({ deleted: true })
+
+      await program.parseAsync(['node', 'test', 'agent-keys', 'delete', 'joe/my-agent', 'key-uuid-1'])
+
+      expect(mockDeleteAgentKey).toHaveBeenCalledWith(
+        expect.any(Object), 'agent-uuid-123', 'key-uuid-1', 'ws-team-456'
+      )
     })
   })
 })

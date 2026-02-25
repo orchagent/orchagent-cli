@@ -448,7 +448,8 @@ import asyncio
 import json
 import sys
 
-from orchagent import AgentClient
+# pip install orchagent-sdk  (package name)
+from orchagent import AgentClient  # module name
 
 
 async def run():
@@ -541,7 +542,8 @@ import asyncio
 import json
 import sys
 
-from orchagent import AgentClient
+# pip install orchagent-sdk  (package name)
+from orchagent import AgentClient  # module name
 
 
 async def run():
@@ -629,7 +631,8 @@ import asyncio
 import json
 import sys
 
-from orchagent import AgentClient
+# pip install orchagent-sdk  (package name)
+from orchagent import AgentClient  # module name
 
 
 async def run():
@@ -1269,7 +1272,8 @@ import asyncio
 import json
 import sys
 
-from orchagent import AgentClient
+# pip install orchagent-sdk  (package name)
+from orchagent import AgentClient  # module name
 
 
 def main():

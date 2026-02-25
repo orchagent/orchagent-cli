@@ -3,7 +3,7 @@ import fs from 'fs/promises'
 import chalk from 'chalk'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { safeFetchWithRetryForCalls } from '../lib/api'
+import { safeFetchWithRetryForCalls, resolveWorkspaceIdForOrg } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { printJson } from '../lib/output'
 import { createSpinner } from '../lib/spinner'
@@ -253,6 +253,9 @@ Examples:
 
         const agentId = `${org}/${parsed.agent}/${parsed.version}`
 
+        // Resolve workspace context for the target org
+        const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
+
         // Detect LLM key for the scan
         let llmKey: string | undefined
         let llmProvider: string | undefined
@@ -267,7 +270,13 @@ Examples:
           llmKey = options.key
           llmProvider = options.provider
         } else {
-          const detected = await detectLlmKey(['any'] as LlmProvider[], resolved)
+          // Respect --provider preference when detecting local keys
+          let providersToCheck: LlmProvider[] = ['any']
+          if (options.provider) {
+            validateProvider(options.provider)
+            providersToCheck = [options.provider as LlmProvider]
+          }
+          const detected = await detectLlmKey(providersToCheck, resolved)
           if (detected) {
             llmKey = detected.key
             llmProvider = detected.provider
@@ -299,6 +308,9 @@ Examples:
         const headers: Record<string, string> = {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${resolved.apiKey}`,
+        }
+        if (workspaceId) {
+          headers['X-Workspace-Id'] = workspaceId
         }
         if (llmKey) {
           headers['X-LLM-API-Key'] = llmKey

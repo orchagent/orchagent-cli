@@ -22,7 +22,7 @@ vi.mock('../lib/analytics', () => ({
 import fs from 'fs/promises'
 import { registerRunCommand, renderProgress, isKeyedFileArg, mountDirectory, buildInjectedPayload, localCommandForEntrypoint, validateInputSchema, tryParseJsonObject, inferFileField, canonicalAgentType } from './run'
 import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
-import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg, getAgentCostEstimate } from '../lib/api'
+import { publicRequest, getPublicAgent, getAgentWithFallback, safeFetchWithRetryForCalls, request, resolveWorkspaceIdForOrg, getAgentCostEstimate, downloadCodeBundle, downloadCodeBundleAuthenticated, ApiError } from '../lib/api'
 import {
   detectLlmKeyFromEnv,
   getDefaultModel,
@@ -42,6 +42,8 @@ const mockSafeFetchWithRetryForCalls = vi.mocked(safeFetchWithRetryForCalls)
 const mockRequest = vi.mocked(request)
 const mockResolveWorkspaceIdForOrg = vi.mocked(resolveWorkspaceIdForOrg)
 const mockGetAgentCostEstimate = vi.mocked(getAgentCostEstimate)
+const mockDownloadCodeBundle = vi.mocked(downloadCodeBundle)
+const mockDownloadCodeBundleAuthenticated = vi.mocked(downloadCodeBundleAuthenticated)
 
 describe('run command --local - agent ref parsing', () => {
   let program: Command
@@ -4013,5 +4015,81 @@ describe('canonicalAgentType', () => {
   it('defaults to "agent" for unrecognized types', () => {
     expect(canonicalAgentType('unknown')).toBe('agent')
     expect(canonicalAgentType('invalid')).toBe('agent')
+  })
+})
+
+describe('BUG-11-06: bundle download passes workspace context', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerRunCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+
+    mockLoadConfig.mockResolvedValue({})
+    mockGetDefaultProvider.mockResolvedValue(undefined)
+
+    mockFs.mkdir.mockResolvedValue(undefined)
+    mockFs.writeFile.mockResolvedValue(undefined)
+    mockFs.readFile.mockRejectedValue(new Error('ENOENT'))
+    mockFs.access.mockRejectedValue(new Error('ENOENT'))
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('passes workspaceId to downloadCodeBundleAuthenticated for bundle download', async () => {
+    // Simulate team workspace context
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-456')
+
+    // Agent metadata downloads successfully via public endpoint
+    mockPublicRequest.mockResolvedValue({
+      id: 'agent-bundle-1',
+      type: 'tool',
+      name: 'my-tool',
+      version: 'v1',
+      execution_engine: 'code_runtime',
+      has_bundle: true,
+      entrypoint: 'main.py',
+      supported_providers: ['any'],
+    })
+
+    // Public bundle download fails with an ApiError (404).
+    // Auto-mocked ApiError constructor doesn't run, so we set .status manually.
+    const notFoundErr = new (ApiError as any)()
+    notFoundErr.status = 404
+    mockDownloadCodeBundle.mockRejectedValue(notFoundErr)
+    // Authenticated bundle download succeeds
+    mockDownloadCodeBundleAuthenticated.mockResolvedValue(Buffer.from('fake-zip-data'))
+
+    // The command will fail later at bundle extraction (fake zip data)
+    // but we only care that downloadCodeBundleAuthenticated was called with workspace ID
+    try {
+      await program.parseAsync(['node', 'test', 'run', 'team-org/my-tool@v1', '--local'])
+    } catch {
+      // Expected to fail at bundle extraction
+    }
+
+    expect(mockDownloadCodeBundleAuthenticated).toHaveBeenCalledWith(
+      expect.any(Object),
+      'agent-bundle-1',
+      'ws-team-456'
+    )
   })
 })

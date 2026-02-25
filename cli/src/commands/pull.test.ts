@@ -40,6 +40,7 @@ import {
   downloadCodeBundle,
   downloadCodeBundleAuthenticated,
   ApiError,
+  resolveWorkspaceIdForOrg,
 } from '../lib/api'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
@@ -52,6 +53,7 @@ const mockListMyAgents = vi.mocked(listMyAgents)
 const mockGetOrg = vi.mocked(getOrg)
 const mockDownloadCodeBundle = vi.mocked(downloadCodeBundle)
 const mockDownloadCodeBundleAuthenticated = vi.mocked(downloadCodeBundleAuthenticated)
+const mockResolveWorkspaceIdForOrg = vi.mocked(resolveWorkspaceIdForOrg)
 const mockTrack = vi.mocked(track)
 const mockPrintJson = vi.mocked(printJson)
 
@@ -616,7 +618,8 @@ describe('pull command', () => {
     expect(mockDownloadCodeBundle).toHaveBeenCalled()
     expect(mockDownloadCodeBundleAuthenticated).toHaveBeenCalledWith(
       expect.any(Object),
-      'agent-id-3'
+      'agent-id-3',
+      undefined
     )
   })
 
@@ -773,5 +776,57 @@ describe('pull command', () => {
     ])
 
     await expect(fs.access(path.join(outputDir, 'prompt.md'))).rejects.toThrow()
+  })
+
+  // ─── BUG-11-05: orch pull passes workspaceId for bundle download ────────
+
+  it('passes workspaceId to authenticated bundle download in team workspace', async () => {
+    // Team workspace context
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-123')
+
+    // 404 on public download → falls to private authenticated path
+    mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
+
+    // Org matches the team workspace slug
+    mockGetOrg.mockResolvedValue({ id: 'org-team', name: 'Team Org', slug: 'acme', created_at: '2026-01-01' })
+
+    // Agent found in team workspace agent list
+    mockListMyAgents.mockResolvedValue([
+      {
+        id: 'agent-team-1',
+        name: 'my-agent',
+        version: 'v1',
+        type: 'tool',
+        org_slug: 'acme',
+        created_at: '2026-01-01T00:00:00Z',
+      } as any,
+    ])
+
+    mockRequest.mockResolvedValue({
+      id: 'agent-team-1',
+      name: 'my-agent',
+      version: 'v1',
+      type: 'tool',
+      execution_engine: 'code_runtime',
+      description: 'Team tool',
+      code_bundle_url: 'supabase://bundles/agent-team-1.zip',
+      entrypoint: 'main.py',
+    } as any)
+
+    // Public bundle download fails → falls to authenticated
+    mockDownloadCodeBundle.mockRejectedValue(new ApiError('Not found', 404))
+    // Authenticated also 404s (we just care about the call args)
+    mockDownloadCodeBundleAuthenticated.mockRejectedValue(new ApiError('Not found', 404))
+
+    await program.parseAsync([
+      'node', 'test', 'pull', 'acme/my-agent', '--output', outputDir,
+    ])
+
+    // Key assertion: workspaceId was passed as 3rd argument
+    expect(mockDownloadCodeBundleAuthenticated).toHaveBeenCalledWith(
+      expect.any(Object),
+      'agent-team-1',
+      'ws-team-123'
+    )
   })
 })

@@ -394,7 +394,8 @@ async function downloadBundle(
   org: string,
   agent: string,
   version: string,
-  agentId?: string
+  agentId?: string,
+  workspaceId?: string
 ): Promise<Buffer | null> {
   try {
     return await downloadCodeBundle(config, org, agent, version)
@@ -407,7 +408,7 @@ async function downloadBundle(
 
   if (config.apiKey && agentId) {
     try {
-      return await downloadCodeBundleAuthenticated(config, agentId)
+      return await downloadCodeBundleAuthenticated(config, agentId, workspaceId)
     } catch (err) {
       if (!(err instanceof ApiError) || err.status !== 404) throw err
     }
@@ -529,7 +530,7 @@ Examples:
       // and exit-code 1.
       if (engine === 'code_runtime' && data.has_bundle) {
         write('Downloading code bundle...\n')
-        const bundle = await downloadBundle(config, org, data.name, data.version, data.agentId)
+        const bundle = await downloadBundle(config, org, data.name, data.version, data.agentId, workspaceId)
         if (bundle) {
           const tempDir = path.join(os.tmpdir(), `orchagent-pull-${Date.now()}`)
           const zipPath = path.join(tempDir, 'bundle.zip')

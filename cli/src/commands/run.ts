@@ -760,7 +760,8 @@ async function downloadBundleWithFallback(
   org: string,
   agentName: string,
   version: string,
-  agentId?: string
+  agentId?: string,
+  workspaceId?: string
 ): Promise<Buffer> {
   try {
     return await downloadCodeBundle(config, org, agentName, version)
@@ -772,7 +773,7 @@ async function downloadBundleWithFallback(
     throw new ApiError(`Bundle for '${org}/${agentName}@${version}' not found`, 404)
   }
 
-  return await downloadCodeBundleAuthenticated(config, agentId)
+  return await downloadCodeBundleAuthenticated(config, agentId, workspaceId)
 }
 
 type DepStatus = {
@@ -872,7 +873,8 @@ async function downloadSkillDependency(
 async function downloadDependenciesRecursively(
   config: ResolvedConfig,
   depStatuses: DepStatus[],
-  visited: Set<string> = new Set()
+  visited: Set<string> = new Set(),
+  workspaceId?: string
 ): Promise<void> {
   for (const status of depStatuses) {
     if (!status.downloadable || !status.agentData) continue
@@ -889,7 +891,7 @@ async function downloadDependenciesRecursively(
         await saveAgentLocally(org, agent, status.agentData!)
 
         if (status.agentData!.has_bundle) {
-          await saveBundleLocally(config, org, agent, status.dep.version, status.agentData!.id)
+          await saveBundleLocally(config, org, agent, status.dep.version, status.agentData!.id, workspaceId)
         }
 
         if (resolveExecutionEngine(status.agentData!) === 'code_runtime' && (status.agentData!.source_url || status.agentData!.pip_package)) {
@@ -910,7 +912,7 @@ async function downloadDependenciesRecursively(
 
     if (status.agentData.dependencies && status.agentData.dependencies.length > 0) {
       const nestedStatuses = await checkDependencies(config, status.agentData.dependencies)
-      await downloadDependenciesRecursively(config, nestedStatuses, visited)
+      await downloadDependenciesRecursively(config, nestedStatuses, visited, workspaceId)
     }
   }
 }
@@ -1452,7 +1454,8 @@ async function executeBundleAgent(
   version: string,
   agentData: AgentDownload,
   args: string[],
-  inputOption?: string
+  inputOption?: string,
+  workspaceId?: string
 ): Promise<void> {
   const userCwd = process.cwd()
   const tempDir = path.join(os.tmpdir(), `orchagent-${agentName}-${Date.now()}`)
@@ -1465,7 +1468,7 @@ async function executeBundleAgent(
     const bundleBuffer = await withSpinner(
       `Downloading ${org}/${agentName}@${version} bundle...`,
       async () => {
-        const buffer = await downloadBundleWithFallback(config, org, agentName, version, agentData.id)
+        const buffer = await downloadBundleWithFallback(config, org, agentName, version, agentData.id, workspaceId)
         await fs.writeFile(bundleZip, buffer)
         return buffer
       },
@@ -1714,7 +1717,8 @@ async function saveBundleLocally(
   org: string,
   agent: string,
   version: string,
-  agentId?: string
+  agentId?: string,
+  workspaceId?: string
 ): Promise<string> {
   const agentDir = path.join(AGENTS_DIR, org, agent)
   const bundleDir = path.join(agentDir, 'bundle')
@@ -1737,7 +1741,7 @@ async function saveBundleLocally(
 
   const bundleBuffer = await withSpinner(
     `Downloading bundle for ${org}/${agent}@${version}...`,
-    async () => downloadBundleWithFallback(config, org, agent, version, agentId),
+    async () => downloadBundleWithFallback(config, org, agent, version, agentId, workspaceId),
     { successText: `Downloaded bundle for ${org}/${agent}@${version}` }
   )
 
@@ -3257,7 +3261,7 @@ async function executeLocal(
       process.exit(0)
     }
 
-    await downloadDependenciesRecursively(resolved, depStatuses)
+    await downloadDependenciesRecursively(resolved, depStatuses, new Set(), workspaceId)
   }
 
   // Check if user is overriding locked skills
@@ -3306,7 +3310,7 @@ async function executeLocal(
         })
         bundleInput = injected.body
       }
-      await executeBundleAgent(resolved, org, parsed.agent, parsed.version, agentData, args, bundleInput)
+      await executeBundleAgent(resolved, org, parsed.agent, parsed.version, agentData, args, bundleInput, workspaceId)
       return
     }
 

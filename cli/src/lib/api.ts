@@ -303,12 +303,16 @@ export async function getAgentCostEstimate(
   config: ResolvedConfig,
   org: string,
   agent: string,
-  version: string
+  version: string,
+  workspaceId?: string
 ): Promise<CostEstimateResponse> {
-  return publicRequest<CostEstimateResponse>(
-    config,
-    `/public/agents/${org}/${agent}/${version}/cost-estimate`
-  )
+  const path = `/public/agents/${org}/${agent}/${version}/cost-estimate`
+  if (workspaceId && config.apiKey) {
+    return request<CostEstimateResponse>(config, 'GET', path, {
+      headers: { 'X-Workspace-Id': workspaceId },
+    })
+  }
+  return publicRequest<CostEstimateResponse>(config, path)
 }
 
 export async function listMyAgents(config: ResolvedConfig, workspaceId?: string): Promise<Agent[]> {
@@ -529,19 +533,21 @@ export async function resolveWorkspaceIdForOrg(
  */
 export async function downloadCodeBundleAuthenticated(
   config: ResolvedConfig,
-  agentId: string
+  agentId: string,
+  workspaceId?: string
 ): Promise<Buffer> {
   if (!config.apiKey) {
     throw new ApiError('Missing API key for authenticated bundle download', 401)
   }
 
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.apiKey}`,
+  }
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+
   const response = await safeFetch(
     `${config.apiUrl.replace(/\/$/, '')}/agents/${agentId}/bundle`,
-    {
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-    }
+    { headers }
   )
 
   if (!response.ok) {
@@ -846,22 +852,31 @@ export interface AgentKey {
 
 export async function listAgentKeys(
   config: ResolvedConfig,
-  agentId: string
+  agentId: string,
+  workspaceId?: string
 ): Promise<{ keys: AgentKey[] }> {
-  return request<{ keys: AgentKey[] }>(config, 'GET', `/agents/${agentId}/keys`)
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request<{ keys: AgentKey[] }>(config, 'GET', `/agents/${agentId}/keys`, { headers })
 }
 
 export async function createAgentKey(
   config: ResolvedConfig,
-  agentId: string
+  agentId: string,
+  workspaceId?: string
 ): Promise<{ key: string; prefix: string }> {
-  return request<{ key: string; prefix: string }>(config, 'POST', `/agents/${agentId}/keys`)
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request<{ key: string; prefix: string }>(config, 'POST', `/agents/${agentId}/keys`, { headers })
 }
 
 export async function deleteAgentKey(
   config: ResolvedConfig,
   agentId: string,
-  keyId: string
+  keyId: string,
+  workspaceId?: string
 ): Promise<{ deleted: boolean }> {
-  return request<{ deleted: boolean }>(config, 'DELETE', `/agents/${agentId}/keys/${keyId}`)
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  return request<{ deleted: boolean }>(config, 'DELETE', `/agents/${agentId}/keys/${keyId}`, { headers })
 }

@@ -22,6 +22,18 @@ import { detectEntrypoint } from '../lib/bundle'
 import { runMockedAgentFixtureTests } from '../lib/test-mock-runner'
 import type { AgentManifest, ResolvedConfig } from '../types'
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+export const NO_LLM_KEY_FIXTURE_MESSAGE =
+  'No LLM API key found for fixture tests.\n\n' +
+  'Fixture tests run locally on your machine and cannot access workspace vault keys.\n' +
+  'Set a local environment variable:\n\n' +
+  '  export OPENAI_API_KEY=sk-...\n' +
+  '  export ANTHROPIC_API_KEY=sk-ant-...\n' +
+  '  export GEMINI_API_KEY=AI...\n\n' +
+  'Or add it to a .env file in your agent directory.\n\n' +
+  'To run with vault keys instead, use: orch run --cloud'
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type AgentType = 'prompt' | 'code-python' | 'code-js' | 'skill' | 'unknown'
@@ -617,13 +629,10 @@ async function runPromptFixtureTests(
     // Schema is optional
   }
 
-  // Detect LLM key
+  // Detect LLM key — fixture tests run locally, so vault keys can't be used
   const detected = await detectLlmKey(['any'] as LlmProvider[], config)
   if (!detected) {
-    throw new CliError(
-      'No LLM key found for fixture tests.\n' +
-      'Set an environment variable (e.g., OPENAI_API_KEY) or run `orch secrets set <PROVIDER>_API_KEY <key>`'
-    )
+    throw new CliError(NO_LLM_KEY_FIXTURE_MESSAGE)
   }
 
   const { provider, key, model: serverModel } = detected
