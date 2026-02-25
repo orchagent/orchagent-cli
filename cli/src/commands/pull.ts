@@ -5,7 +5,7 @@ import fs from 'fs/promises'
 import os from 'os'
 import { spawn } from 'child_process'
 
-import { getResolvedConfig, loadConfig } from '../lib/config'
+import { getResolvedConfig } from '../lib/config'
 import {
   publicRequest,
   request,
@@ -14,21 +14,15 @@ import {
   downloadCodeBundle,
   downloadCodeBundleAuthenticated,
   ApiError,
-  resolveWorkspaceIdForOrg,
 } from '../lib/api'
 import { CliError } from '../lib/errors'
+import { resolveAgentContext } from '../lib/resolve-agent'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
 
 import type { ResolvedConfig, Agent } from '../types'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-
-type PullAgentRef = {
-  org?: string
-  agent: string
-  version: string
-}
 
 type PullData = {
   name: string
@@ -72,19 +66,6 @@ type PullResult = {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function parsePullRef(value: string): PullAgentRef {
-  const [ref, versionPart] = value.split('@')
-  const version = versionPart?.trim() || 'latest'
-  const segments = ref.split('/')
-  if (segments.length === 1) {
-    return { agent: segments[0], version }
-  }
-  if (segments.length === 2) {
-    return { org: segments[0], agent: segments[1], version }
-  }
-  throw new CliError('Invalid agent reference. Use org/agent[@version] or agent[@version] format.')
-}
 
 function canonicalType(typeValue: string | undefined): string {
   const normalized = (typeValue || 'agent').toLowerCase()
@@ -466,25 +447,14 @@ Examples:
       }
 
       const config = await getResolvedConfig()
-      const parsed = parsePullRef(agentRef)
+      const { org, agent: agentName, version, workspaceId } = await resolveAgentContext(agentRef, config, {
+        missingOrgMessage: 'Missing org. Use org/agent[@version] format, or set a default org with:\n  orch config set default-org <org>',
+      })
 
-      // Resolve org from workspace / defaultOrg fallback
-      const configFile = await loadConfig()
-      const org = parsed.org ?? configFile.workspace ?? config.defaultOrg
-      if (!org) {
-        throw new CliError(
-          'Missing org. Use org/agent[@version] format, or set a default org with:\n' +
-          '  orch config set default-org <org>'
-        )
-      }
-
-      // Resolve workspace context for the target org
-      const workspaceId = await resolveWorkspaceIdForOrg(config, org)
-
-      write(`Resolving ${org}/${parsed.agent}@${parsed.version}...\n`)
+      write(`Resolving ${org}/${agentName}@${version}...\n`)
 
       // Resolve agent data
-      const data = await resolveAgent(config, org, parsed.agent, parsed.version, workspaceId)
+      const data = await resolveAgent(config, org, agentName, version, workspaceId)
 
       // Reject skills
       if (canonicalType(data.type) === 'skill') {
@@ -579,7 +549,7 @@ Examples:
       // Track analytics
       await track('cli_pull', {
         org,
-        agent: parsed.agent,
+        agent: agentName,
         version: data.version,
         engine,
         source: data.source,
@@ -591,7 +561,7 @@ Examples:
       if (options.json) {
         const result: PullResult = {
           success: true,
-          requested_ref: `${org}/${parsed.agent}@${parsed.version}`,
+          requested_ref: `${org}/${agentName}@${version}`,
           resolved_ref: resolvedRef,
           output_dir: outputDir,
           engine,

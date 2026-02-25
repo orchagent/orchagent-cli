@@ -4,6 +4,7 @@ import chalk from 'chalk'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request, listMyAgents, checkAgentTransfer, transferAgent, ApiError } from '../lib/api'
+import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
@@ -56,7 +57,7 @@ async function promptText(message: string): Promise<string> {
 
 export function registerTransferCommand(program: Command): void {
   program
-    .command('transfer <agent-name>')
+    .command('transfer <agent>')
     .description('Transfer an agent to another workspace')
     .requiredOption('--to <workspace-slug>', 'Target workspace slug')
     .option('-w, --workspace <workspace-slug>', 'Source workspace slug (defaults to active workspace)')
@@ -65,12 +66,13 @@ export function registerTransferCommand(program: Command): void {
     .option('--json', 'Output result as JSON')
     .addHelpText('after', `
 Examples:
-  orch transfer my-agent --to team-workspace           # Transfer agent to another workspace
+  orch transfer my-agent --to team-workspace           # Transfer by name
+  orch transfer my-org/my-agent --to team-workspace    # Transfer using org/agent format
   orch transfer my-agent --to team-workspace --workspace my-team
   orch transfer my-agent --to team-workspace --dry-run  # Preview transfer
   orch transfer my-agent --to team-workspace --yes      # Skip confirmation
 `)
-    .action(async (agentName: string, options: { to: string; workspace?: string; yes?: boolean; dryRun?: boolean; json?: boolean }) => {
+    .action(async (agentArg: string, options: { to: string; workspace?: string; yes?: boolean; dryRun?: boolean; json?: boolean }) => {
       const write = (message: string) => {
         if (!options.json) process.stdout.write(message)
       }
@@ -79,6 +81,18 @@ Examples:
       const configFile = await loadConfig()
       if (!config.apiKey) {
         throw new CliError('Not logged in. Run `orchagent login` first.')
+      }
+
+      // Parse org/agent[@version] or bare agent name
+      const parsed = parseAgentRef(agentArg)
+      const agentName = parsed.agent
+
+      // If org was provided via org/agent format, use it as source workspace
+      // --workspace flag takes precedence if both are given
+      if (parsed.org && options.workspace && parsed.org !== options.workspace) {
+        throw new CliError(
+          `Conflicting source workspace: '${parsed.org}' (from agent ref) vs '${options.workspace}' (from --workspace flag).`
+        )
       }
 
       write('Finding agent and workspaces...\n')
@@ -94,8 +108,8 @@ Examples:
         )
       }
 
-      // Resolve source workspace (optional). If set, list agents from that workspace.
-      const sourceWorkspaceSlug = options.workspace ?? configFile.workspace
+      // Resolve source workspace: --workspace flag > org from ref > config workspace
+      const sourceWorkspaceSlug = options.workspace ?? parsed.org ?? configFile.workspace
       const sourceWorkspace = sourceWorkspaceSlug
         ? workspacesResponse.workspaces.find((w) => w.slug === sourceWorkspaceSlug)
         : null

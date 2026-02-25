@@ -1,25 +1,20 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 
-import { getResolvedConfig, loadConfig } from '../lib/config'
-import { listMyAgents, listAgentKeys, createAgentKey, deleteAgentKey, resolveWorkspaceIdForOrg } from '../lib/api'
+import { getResolvedConfig } from '../lib/config'
+import { listMyAgents, listAgentKeys, createAgentKey, deleteAgentKey } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { saveServiceKey, loadServiceKeys } from '../lib/key-store'
+import { resolveAgentContext } from '../lib/resolve-agent'
 import type { ResolvedConfig, Agent } from '../types'
 
 /**
  * Resolve an agent reference ("org/agent" or just "agent") to an agent ID.
- * Uses the authenticated list-agents endpoint and finds the latest version.
+ * Uses the shared resolveAgentContext() for parsing and org/workspace resolution,
+ * then finds the latest version via the authenticated list-agents endpoint.
  */
 async function resolveAgentId(config: ResolvedConfig, ref: string): Promise<{ agent: Agent; agentId: string; orgSlug: string; workspaceId?: string }> {
-  const parts = ref.split('/')
-  const agentName = parts.length >= 2 ? parts[1] : parts[0]
-  const orgSlug = parts.length >= 2 ? parts[0] : undefined
-
-  // Resolve workspace context from org slug or config
-  const configFile = await loadConfig()
-  const resolvedOrg = orgSlug ?? configFile.workspace ?? config.defaultOrg
-  const workspaceId = resolvedOrg ? await resolveWorkspaceIdForOrg(config, resolvedOrg) : undefined
+  const { org, agent: agentName, workspaceId } = await resolveAgentContext(ref, config)
 
   const agents = await listMyAgents(config, workspaceId)
   const matching = agents.filter(a => a.name === agentName)
@@ -33,7 +28,7 @@ async function resolveAgentId(config: ResolvedConfig, ref: string): Promise<{ ag
     new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   )[0]
 
-  return { agent: latest, agentId: latest.id, orgSlug: latest.org_slug ?? resolvedOrg ?? '', workspaceId }
+  return { agent: latest, agentId: latest.id, orgSlug: latest.org_slug ?? org, workspaceId }
 }
 
 export function registerAgentKeysCommand(program: Command): void {

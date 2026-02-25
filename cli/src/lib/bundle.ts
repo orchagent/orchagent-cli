@@ -26,6 +26,7 @@ export interface BundlePreview {
   totalSizeBytes: number
   entrypoint: string
   excludePatterns: string[]
+  files: string[]
 }
 
 /** Default patterns to exclude from bundles */
@@ -134,7 +135,7 @@ export async function createCodeBundle(
   sourceDir: string,
   outputPath: string,
   options: BundleOptions = {}
-): Promise<{ path: string; sizeBytes: number; fileCount: number }> {
+): Promise<{ path: string; sizeBytes: number; fileCount: number; files: string[] }> {
   // Build exclude patterns, but remove any that are in the include list
   const includeSet = new Set(options.include || [])
   const excludePatterns = [...DEFAULT_EXCLUDES, ...(options.exclude || [])]
@@ -166,12 +167,14 @@ export async function createCodeBundle(
     const archive = archiver('zip', { zlib: { level: 9 } })
 
     let fileCount = 0
+    const files: string[] = []
 
     output.on('close', () => {
       resolve({
         path: outputPath,
         sizeBytes: archive.pointer(),
         fileCount,
+        files,
       })
     })
 
@@ -179,8 +182,11 @@ export async function createCodeBundle(
       reject(err)
     })
 
-    archive.on('entry', () => {
+    archive.on('entry', (entry) => {
       fileCount++
+      if (entry.name) {
+        files.push(entry.name)
+      }
     })
 
     archive.pipe(output)
@@ -279,6 +285,7 @@ export async function previewBundle(
     totalSizeBytes,
     entrypoint,
     excludePatterns,
+    files,
   }
 }
 

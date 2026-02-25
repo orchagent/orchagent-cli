@@ -291,7 +291,7 @@ async function listRuns(
   }
 
   process.stdout.write(
-    chalk.gray('\nView detailed logs for a run: orch logs <run-id>\n')
+    chalk.gray('\nView detailed logs for a run: orch logs <run-id>  · Replay a run: orch replay <run-id>\n')
   )
 }
 
@@ -376,6 +376,11 @@ async function showRunLogs(
       )
     )
   }
+
+  // Footer hints
+  process.stdout.write(
+    chalk.gray(`\nReplay: orch replay ${runId.slice(0, 8)}  · Trace: orch trace ${runId.slice(0, 8)}\n`)
+  )
 
   process.stdout.write('\n')
 }

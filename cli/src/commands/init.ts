@@ -1564,7 +1564,10 @@ function resolveInitFlavor(typeOption: string): { type: 'prompt' | 'tool' | 'age
   if (normalized === 'prompt') {
     return { type: 'prompt', flavor: 'direct_llm' }
   }
-  if (normalized === 'agent' || normalized === 'agentic') {
+  if (normalized === 'agent') {
+    return { type: 'agent', flavor: 'managed_loop' }
+  }
+  if (normalized === 'agentic') {
     return { type: 'agent', flavor: 'code_runtime' }
   }
   if (normalized === 'tool' || normalized === 'code') {
@@ -1585,7 +1588,7 @@ export function registerInitCommand(program: Command): void {
     .option('--orchestrator', 'Create an orchestrator agent with dependency scaffolding and SDK boilerplate')
     .option('--run-mode <mode>', 'Run mode for agents: on_demand or always_on', 'on_demand')
     .option('--language <lang>', 'Language: python or javascript (default: python)', 'python')
-    .option('--loop', 'Use platform-managed LLM loop instead of code runtime (requires --type agent)')
+    .option('--loop', 'Use platform-managed LLM loop execution (explicit for --type agentic; default for --type agent)')
     .option('--template <name>', 'Start from a template (use --list-templates to see options)')
     .option('--list-templates', 'Show available templates with descriptions')
     .action(async (name: string | undefined, options: { type: string; orchestrator?: boolean; loop?: boolean; runMode: string; language: string; template?: string; listTemplates?: boolean }) => {
@@ -1688,7 +1691,7 @@ export function registerInitCommand(program: Command): void {
 
       // Block unsupported JS flavors
       if (isJavaScript && initMode.flavor === 'managed_loop') {
-        throw new CliError('JavaScript is not supported for --loop (managed loop). Use --type agent without --loop for a code-runtime agent.')
+        throw new CliError('JavaScript is not supported for managed-loop agents. Use --type agentic for a code-runtime agent scaffold.')
       }
       // JS orchestrators are now supported via the orchagent-sdk npm package
 
@@ -2141,7 +2144,7 @@ export function registerInitCommand(program: Command): void {
 
       if (initMode.flavor !== 'code_runtime' && initMode.flavor !== 'orchestrator' && initMode.flavor !== 'discord' && runMode === 'always_on') {
         throw new CliError(
-          "run_mode=always_on requires runtime.command in orchagent.json (e.g. \"runtime\": { \"command\": \"python main.py\" }). Use --type tool for code-runtime agents."
+          "run_mode=always_on requires runtime.command in orchagent.json (e.g. \"runtime\": { \"command\": \"python main.py\" }). Use --type tool or --type agentic for code-runtime agents."
         )
       }
 

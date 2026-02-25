@@ -6,7 +6,8 @@ import { spawn } from 'child_process'
 
 import chalk from 'chalk'
 import { loadDotEnv } from '../lib/dotenv'
-import { getResolvedConfig, loadConfig, getDefaultProvider } from '../lib/config'
+import { getResolvedConfig, getDefaultProvider } from '../lib/config'
+import { resolveAgentContext } from '../lib/resolve-agent'
 import {
   getPublicAgent,
   publicRequest,
@@ -56,12 +57,6 @@ const CONTENT_FIELD_NAMES = ['code', 'content', 'text', 'source', 'input', 'file
 // Keys that might indicate local file path references in JSON payloads
 const LOCAL_PATH_KEYS = ['path', 'directory', 'file', 'filepath', 'dir', 'folder', 'local']
 
-type AgentRef = {
-  org?: string
-  agent: string
-  version: string
-}
-
 /**
  * Return the correct local command for a given entrypoint file extension.
  * Uses `python3` (not `python`) to match existing behavior on macOS/Linux.
@@ -71,19 +66,6 @@ export function localCommandForEntrypoint(entrypoint: string): string {
     return 'node'
   }
   return 'python3'
-}
-
-function parseAgentRef(value: string): AgentRef {
-  const [ref, versionPart] = value.split('@')
-  const version = versionPart?.trim() || DEFAULT_VERSION
-  const segments = ref.split('/')
-  if (segments.length === 1) {
-    return { agent: segments[0], version }
-  }
-  if (segments.length === 2) {
-    return { org: segments[0], agent: segments[1], version }
-  }
-  throw new CliError('Invalid agent reference. Use org/agent or agent format.')
 }
 
 type AgentDependency = {
@@ -2246,21 +2228,13 @@ async function executeCloud(
     throw new CliError('Missing API key. Run `orchagent login` first.')
   }
 
-  const parsed = parseAgentRef(agentRef)
-  const configFile = await loadConfig()
-  const org = parsed.org ?? configFile.workspace ?? resolved.defaultOrg
-  if (!org) {
-    throw new CliError('Missing org. Use org/agent or set default org.')
-  }
-
-  // Resolve workspace context for the target org
-  const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
+  const { org, agent: agentName, version, workspaceId } = await resolveAgentContext(agentRef, resolved)
 
   const agentMeta = await getAgentWithFallback(
     resolved,
     org,
-    parsed.agent,
-    parsed.version,
+    agentName,
+    version,
     workspaceId
   )
   const cloudType = canonicalAgentType(agentMeta.type as string | undefined)
@@ -2277,11 +2251,9 @@ async function executeCloud(
     const agentRequiredSecrets = (agentMeta as Agent).required_secrets
     if (agentRequiredSecrets?.length) {
       try {
-        // Use already-resolved workspaceId (or fall back to config workspace slug)
-        const wsId = workspaceId ?? (configFile.workspace ? (await resolveWorkspaceIdForOrg(resolved, configFile.workspace)) : undefined)
-        if (wsId) {
+        if (workspaceId) {
           const secretsResult = await request<{ secrets: Array<{ name: string }> }>(
-            resolved, 'GET', `/workspaces/${wsId}/secrets`
+            resolved, 'GET', `/workspaces/${workspaceId}/secrets`
           )
           const existingNames = new Set(secretsResult.secrets.map((s: { name: string }) => s.name))
           const missing = agentRequiredSecrets.filter((s: string) => !existingNames.has(s))
@@ -2307,7 +2279,7 @@ async function executeCloud(
   // --estimate-only: show cost estimate and exit without running
   if (options.estimate || options.estimateOnly) {
     try {
-      const est = await getAgentCostEstimate(resolved, org, parsed.agent, parsed.version)
+      const est = await getAgentCostEstimate(resolved, org, agentName, version)
       const e = est.estimate
       if (e.sample_size === 0) {
         process.stderr.write(chalk.yellow('\nNo run history available for cost estimation.\n'))
@@ -2642,7 +2614,7 @@ async function executeCloud(
   } // end of non-injection path
 
   const verboseQs = options.verbose ? '?verbose=true' : ''
-  const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${parsed.agent}/${parsed.version}/${endpoint}${verboseQs}`
+  const url = `${resolved.apiUrl.replace(/\/$/, '')}/${org}/${agentName}/${version}/${endpoint}${verboseQs}`
 
   // Enable SSE streaming for sandbox-backed engines (unless --json or --no-stream or --output)
   const isManagedLoopAgent = cloudType === 'agent' && cloudEngine === 'managed_loop'
@@ -2657,7 +2629,7 @@ async function executeCloud(
   // Print verbose debug info before request
   if (options.verbose && !options.json) {
     process.stderr.write(chalk.gray(
-      `\n[verbose] ${org}/${parsed.agent}@${parsed.version}\n` +
+      `\n[verbose] ${org}/${agentName}@${version}\n` +
       `[verbose] type=${cloudType}  engine=${cloudEngine}  endpoint=${endpoint}\n` +
       `[verbose] stream=${wantStream ? 'yes' : 'no'}  url=${url}\n`
     ))
@@ -2665,7 +2637,7 @@ async function executeCloud(
 
   const { spinner, dispose: disposeSpinner } = options.json
     ? { spinner: null, dispose: () => {} }
-    : createElapsedSpinner(`Running ${org}/${parsed.agent}@${parsed.version}...`)
+    : createElapsedSpinner(`Running ${org}/${agentName}@${version}...`)
   spinner?.start()
 
   // Streamed sandbox runs can take longer; use 10 min timeout (or --wait-timeout).
@@ -2874,10 +2846,10 @@ async function executeCloud(
     let hadError = false
 
     if (options.verbose) {
-      process.stderr.write(chalk.gray(`\nStreaming ${org}/${parsed.agent}@${parsed.version} (verbose):\n`))
+      process.stderr.write(chalk.gray(`\nStreaming ${org}/${agentName}@${version} (verbose):\n`))
       process.stderr.write(chalk.gray(`  type=${cloudType}  engine=${cloudEngine}  endpoint=${endpoint}\n`))
     } else {
-      process.stderr.write(chalk.gray(`\nStreaming ${org}/${parsed.agent}@${parsed.version}:\n`))
+      process.stderr.write(chalk.gray(`\nStreaming ${org}/${agentName}@${version}:\n`))
     }
 
     let progressErrorShown = false
@@ -2938,7 +2910,7 @@ async function executeCloud(
       )
 
       await track('cli_run', {
-        agent: `${org}/${parsed.agent}@${parsed.version}`,
+        agent: `${org}/${agentName}@${version}`,
         input_type: hasInjection ? 'file_injection' : unkeyedFileArgs.length > 0 ? 'file' : options.data ? 'json' : 'empty',
         mode: 'cloud',
         streamed: true,
@@ -2951,7 +2923,7 @@ async function executeCloud(
     }
 
     await track('cli_run', {
-      agent: `${org}/${parsed.agent}@${parsed.version}`,
+      agent: `${org}/${agentName}@${version}`,
       input_type: hasInjection ? 'file_injection' : unkeyedFileArgs.length > 0 ? 'file' : options.data ? 'json' : 'empty',
       mode: 'cloud',
       streamed: true,
@@ -2996,7 +2968,7 @@ async function executeCloud(
           }
           const runId = response.headers?.get?.('x-run-id')
           if (runId) {
-            process.stderr.write(chalk.gray(`View logs: orch logs ${runId}\n`))
+            process.stderr.write(chalk.gray(`Snapshot saved · Logs: orch logs ${runId}  · Replay: orch replay ${runId}\n`))
           }
         }
       }
@@ -3005,7 +2977,7 @@ async function executeCloud(
     return
   }
 
-  spinner?.succeed(`Ran ${org}/${parsed.agent}@${parsed.version}`)
+  spinner?.succeed(`Ran ${org}/${agentName}@${version}`)
 
   const inputType =
     hasInjection
@@ -3020,7 +2992,7 @@ async function executeCloud(
               ? 'metadata'
               : 'empty'
   await track('cli_run', {
-    agent: `${org}/${parsed.agent}@${parsed.version}`,
+    agent: `${org}/${agentName}@${version}`,
     input_type: inputType,
     mode: 'cloud',
   })
@@ -3095,7 +3067,7 @@ async function executeCloud(
       }
       const runId = response.headers?.get?.('x-run-id')
       if (runId) {
-        process.stderr.write(chalk.gray(`View logs: orch logs ${runId}\n`))
+        process.stderr.write(chalk.gray(`Snapshot saved · Logs: orch logs ${runId}  · Replay: orch replay ${runId}\n`))
       }
     }
   }
@@ -3138,24 +3110,16 @@ async function executeLocal(
 
   const resolved = await getResolvedConfig()
 
-  const parsed = parseAgentRef(agentRef)
-  const configFile = await loadConfig()
-  const org = parsed.org ?? configFile.workspace ?? resolved.defaultOrg
-  if (!org) {
-    throw new CliError('Missing org. Use org/agent format.')
-  }
-
-  // Resolve workspace context for the target org
-  const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
+  const { org, agent: localAgentName, version: localVersion, workspaceId } = await resolveAgentContext(agentRef, resolved)
 
   // Download agent definition with spinner
   const agentData = await withSpinner(
-    `Downloading ${org}/${parsed.agent}@${parsed.version}...`,
+    `Downloading ${org}/${localAgentName}@${localVersion}...`,
     async () => {
       try {
-        return await downloadAgent(resolved, org, parsed.agent, parsed.version, workspaceId)
+        return await downloadAgent(resolved, org, localAgentName, localVersion, workspaceId)
       } catch (err) {
-        const agentMeta = await getPublicAgent(resolved, org, parsed.agent, parsed.version)
+        const agentMeta = await getPublicAgent(resolved, org, localAgentName, localVersion)
         return {
           type: (agentMeta.type as AgentDownload['type']) || 'agent',
           run_mode: (agentMeta as PublicAgent & { run_mode?: 'on_demand' | 'always_on' | null }).run_mode ?? null,
@@ -3168,7 +3132,7 @@ async function executeLocal(
         } as AgentDownload
       }
     },
-    { successText: `Downloaded ${org}/${parsed.agent}@${parsed.version}` }
+    { successText: `Downloaded ${org}/${localAgentName}@${localVersion}` }
   )
   const localType = canonicalAgentType(agentData.type)
   const localEngine = resolveExecutionEngine(agentData)
@@ -3179,8 +3143,8 @@ async function executeLocal(
       'Skills cannot be run directly.\n\n' +
       'Skills are instructions meant to be injected into AI agent contexts.\n\n' +
       'Options:\n' +
-      `  Install for AI tools:  orchagent skill install ${org}/${parsed.agent}\n` +
-      `  Use with an agent:     orchagent run <agent> --skills ${org}/${parsed.agent}`
+      `  Install for AI tools:  orchagent skill install ${org}/${localAgentName}\n` +
+      `  Use with an agent:     orchagent run <agent> --skills ${org}/${localAgentName}`
     )
   }
 
@@ -3191,13 +3155,13 @@ async function executeLocal(
         'Agent prompt not available for local execution.\n\n' +
         'This agent may have local download disabled.\n' +
         'Remove the --local flag to run in the cloud:\n' +
-        `  orch run ${org}/${parsed.agent}@${parsed.version} --data '{"task": "..."}'`
+        `  orch run ${org}/${localAgentName}@${localVersion} --data '{"task": "..."}'`
       )
     }
 
     if (!options.input) {
       process.stderr.write(`\nAgent downloaded. Run with:\n`)
-      process.stderr.write(`  orch run ${org}/${parsed.agent}@${parsed.version} --local --data '{\"task\": \"...\"}'\n`)
+      process.stderr.write(`  orch run ${org}/${localAgentName}@${localVersion} --local --data '{\"task\": \"...\"}'\n`)
       return
     }
 
@@ -3213,7 +3177,7 @@ async function executeLocal(
     warnInputSchemaErrors(agentInputData, agentData.input_schema as object | undefined)
 
     // Write prompt to temp dir and run
-    const tempAgentDir = path.join(os.tmpdir(), `orchagent-agent-${parsed.agent}-${Date.now()}`)
+    const tempAgentDir = path.join(os.tmpdir(), `orchagent-agent-${localAgentName}-${Date.now()}`)
     await fs.mkdir(tempAgentDir, { recursive: true })
     try {
       await fs.writeFile(path.join(tempAgentDir, 'prompt.md'), agentData.prompt)
@@ -3257,7 +3221,7 @@ async function executeLocal(
 
     if (choice === 'server') {
       process.stderr.write(`\nRun without --local for server execution:\n`)
-      process.stderr.write(`  orch run ${org}/${parsed.agent}@${parsed.version} --data '{...}'\n\n`)
+      process.stderr.write(`  orch run ${org}/${localAgentName}@${localVersion} --data '{...}'\n\n`)
       process.exit(0)
     }
 
@@ -3286,14 +3250,14 @@ async function executeLocal(
   }
 
   // Save locally
-  const agentDir = await saveAgentLocally(org, parsed.agent, agentData)
+  const agentDir = await saveAgentLocally(org, localAgentName, agentData)
   process.stderr.write(`\nAgent saved to: ${agentDir}\n`)
 
   if (localEngine === 'code_runtime') {
     if (agentData.has_bundle) {
       if (options.downloadOnly) {
         process.stdout.write(`\nCode runtime bundle is available for local execution.\n`)
-        process.stdout.write(`Run with: orch run ${org}/${parsed.agent} --local [args...]\n`)
+        process.stdout.write(`Run with: orch run ${org}/${localAgentName} --local [args...]\n`)
         return
       }
 
@@ -3310,14 +3274,14 @@ async function executeLocal(
         })
         bundleInput = injected.body
       }
-      await executeBundleAgent(resolved, org, parsed.agent, parsed.version, agentData, args, bundleInput, workspaceId)
+      await executeBundleAgent(resolved, org, localAgentName, localVersion, agentData, args, bundleInput, workspaceId)
       return
     }
 
     if (agentData.run_command && (agentData.source_url || agentData.pip_package)) {
       if (options.downloadOnly) {
         process.stdout.write(`\nTool ready for local execution.\n`)
-        process.stdout.write(`Run with: orch run ${org}/${parsed.agent} --local [args...]\n`)
+        process.stdout.write(`Run with: orch run ${org}/${localAgentName} --local [args...]\n`)
         return
       }
 
@@ -3327,13 +3291,13 @@ async function executeLocal(
 
     // Fallback: code runtime agent doesn't support local execution.
     process.stdout.write(`\nThis code runtime agent is configured for server execution.\n`)
-    process.stdout.write(`\nRun without --local: orch run ${org}/${parsed.agent}@${parsed.version} --data '{...}'\n`)
+    process.stdout.write(`\nRun without --local: orch run ${org}/${localAgentName}@${localVersion} --data '{...}'\n`)
     return
   }
 
   if (options.downloadOnly) {
     process.stdout.write(`\nAgent downloaded. Run with:\n`)
-    process.stdout.write(`  orch run ${org}/${parsed.agent}@${parsed.version} --local --input '{...}'\n`)
+    process.stdout.write(`  orch run ${org}/${localAgentName}@${localVersion} --local --input '{...}'\n`)
     return
   }
 
@@ -3345,7 +3309,7 @@ async function executeLocal(
   // Direct LLM agents execute locally via prompt composition.
   if (!options.input && !execLocalHasInjection) {
     process.stdout.write(`\nAgent ready.\n`)
-    process.stdout.write(`Run with: orch run ${org}/${parsed.agent}@${parsed.version} --local --input '{...}'\n`)
+    process.stdout.write(`Run with: orch run ${org}/${localAgentName}@${localVersion} --local --input '{...}'\n`)
     return
   }
 

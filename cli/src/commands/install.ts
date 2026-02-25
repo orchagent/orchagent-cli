@@ -3,36 +3,16 @@ import fs from 'fs/promises'
 import path from 'path'
 import os from 'os'
 
-import { getResolvedConfig, getDefaultFormats, getDefaultScope, loadConfig } from '../lib/config'
-import { publicRequest, ApiError, getOrg, listMyAgents, getPublicAgent, request, resolveWorkspaceIdForOrg } from '../lib/api'
+import { getResolvedConfig, getDefaultFormats, getDefaultScope } from '../lib/config'
+import { publicRequest, ApiError, getOrg, listMyAgents, getPublicAgent, request } from '../lib/api'
 import { CliError, ExitCodes } from '../lib/errors'
+import { resolveAgentContext } from '../lib/resolve-agent'
 import { track } from '../lib/analytics'
 import { adapterRegistry, type CanonicalAgent } from '../adapters'
 import { resolveSkills } from '../lib/skill-resolve'
 import { trackInstall, computeHash, type InstalledAgent } from '../lib/installed'
 import { mergeAgentsMdContent } from '../lib/agents-md-utils'
 import type { Agent, ResolvedConfig } from '../types'
-
-const DEFAULT_VERSION = 'latest'
-
-type AgentRef = {
-  org?: string
-  name: string
-  version: string
-}
-
-function parseAgentRef(value: string): AgentRef {
-  const [ref, versionPart] = value.split('@')
-  const version = versionPart?.trim() || DEFAULT_VERSION
-  const segments = ref.split('/')
-  if (segments.length === 1) {
-    return { name: segments[0], version }
-  }
-  if (segments.length === 2) {
-    return { org: segments[0], name: segments[1], version }
-  }
-  throw new CliError('Invalid agent reference. Use org/agent or agent format.')
-}
 
 async function downloadAgentWithFallback(
   config: ResolvedConfig,
@@ -180,21 +160,21 @@ export function registerInstallCommand(program: Command): void {
         }
 
         const resolved = await getResolvedConfig()
-        const parsed = parseAgentRef(agentArg)
-        const configFile = await loadConfig()
-        const org = parsed.org ?? configFile.workspace ?? resolved.defaultOrg
-
-        if (!org) {
-          if (jsonMode) {
-            result.errors.push('Missing org. Use org/agent format or set default org.')
+        let agentCtx
+        try {
+          agentCtx = await resolveAgentContext(agentArg, resolved)
+        } catch (err) {
+          if (jsonMode && err instanceof CliError) {
+            result.errors.push(err.message)
             process.stdout.write(JSON.stringify(result, null, 2) + '\n')
             process.exit(ExitCodes.INVALID_INPUT)
           }
-          throw new CliError('Missing org. Use org/agent format or set default org.')
+          throw err
         }
+        const { org, agent: agentName, version, workspaceId } = agentCtx
 
-        result.agent = `${org}/${parsed.name}`
-        result.version = parsed.version
+        result.agent = `${org}/${agentName}`
+        result.version = version
 
         // Determine target formats
         let targetFormats: string[] = []
@@ -235,14 +215,11 @@ export function registerInstallCommand(program: Command): void {
         }
         result.scope = scope
 
-        // Resolve workspace context for the target org
-        const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
-
         // Download agent
-        log(`Fetching ${org}/${parsed.name}@${parsed.version}...\n`)
+        log(`Fetching ${org}/${agentName}@${version}...\n`)
         let agent: CanonicalAgent
         try {
-          agent = await downloadAgentWithFallback(resolved, org, parsed.name, parsed.version, workspaceId)
+          agent = await downloadAgentWithFallback(resolved, org, agentName, version, workspaceId)
         } catch (err) {
           if (jsonMode) {
             result.errors.push(err instanceof Error ? err.message : String(err))
@@ -336,7 +313,7 @@ export function registerInstallCommand(program: Command): void {
               } catch {
                 // File doesn't exist, will create new
               }
-              const agentRef = `${org}/${parsed.name}`
+              const agentRef = `${org}/${agentName}`
               file.content = mergeAgentsMdContent(existingContent, file.content, agentRef)
             }
 
@@ -345,8 +322,8 @@ export function registerInstallCommand(program: Command): void {
 
             // Track installation
             const installedAgent: InstalledAgent = {
-              agent: `${org}/${parsed.name}`,
-              version: parsed.version,
+              agent: `${org}/${agentName}`,
+              version: version,
               format: formatId,
               scope: effectiveScope,
               path: fullPath,
@@ -364,7 +341,7 @@ export function registerInstallCommand(program: Command): void {
         if (!options.dryRun) {
           if (filesWritten > 0) {
             await track('cli_agent_install', {
-              agent: `${org}/${parsed.name}`,
+              agent: `${org}/${agentName}`,
               formats: targetFormats,
               scope,
             })

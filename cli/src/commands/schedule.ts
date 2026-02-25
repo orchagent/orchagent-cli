@@ -284,6 +284,7 @@ export function registerScheduleCommand(program: Command): void {
     .option('--alert-webhook <url>', 'Webhook URL to POST on failure (HTTPS required)')
     .option('--alert-on-failure-count <n>', 'Number of consecutive failures before alerting (default: 3)', parseInt)
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
     .action(async (agentArg: string, options: {
       cron?: string
       webhook?: boolean
@@ -295,6 +296,7 @@ export function registerScheduleCommand(program: Command): void {
       alertWebhook?: string
       alertOnFailureCount?: number
       workspace?: string
+      json?: boolean
     }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
@@ -358,6 +360,11 @@ export function registerScheduleCommand(program: Command): void {
         }
       )
 
+      if (options.json) {
+        printJson(result)
+        return
+      }
+
       const s = result.schedule
       process.stdout.write(chalk.green('\u2713') + ` Schedule created\n\n`)
       process.stdout.write(`  ID:          ${s.id}\n`)
@@ -409,6 +416,7 @@ export function registerScheduleCommand(program: Command): void {
     .option('--alert-on-failure-count <n>', 'Number of consecutive failures before alerting', parseInt)
     .option('--clear-alert-webhook', 'Remove the alert webhook URL')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
     .action(async (partialScheduleId: string, options: {
       cron?: string
       timezone?: string
@@ -424,6 +432,7 @@ export function registerScheduleCommand(program: Command): void {
       alertOnFailureCount?: number
       clearAlertWebhook?: boolean
       workspace?: string
+      json?: boolean
     }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
@@ -482,6 +491,11 @@ export function registerScheduleCommand(program: Command): void {
         }
       )
 
+      if (options.json) {
+        printJson(result)
+        return
+      }
+
       const s = result.schedule
       process.stdout.write(chalk.green('\u2713') + ` Schedule updated\n\n`)
       process.stdout.write(`  ID:      ${s.id}\n`)
@@ -509,7 +523,8 @@ export function registerScheduleCommand(program: Command): void {
     .description('Delete a schedule')
     .option('-y, --yes', 'Skip confirmation prompt')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (partialScheduleId: string, options: { yes?: boolean; workspace?: string }) => {
+    .option('--json', 'Output as JSON (implies --yes)')
+    .action(async (partialScheduleId: string, options: { yes?: boolean; workspace?: string; json?: boolean }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -518,7 +533,7 @@ export function registerScheduleCommand(program: Command): void {
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
-      if (!options.yes) {
+      if (!options.yes && !options.json) {
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,
@@ -531,11 +546,16 @@ export function registerScheduleCommand(program: Command): void {
         }
       }
 
-      await request<{ deleted: boolean }>(
+      const result = await request<{ deleted: boolean }>(
         config,
         'DELETE',
         `/workspaces/${workspaceId}/schedules/${scheduleId}`
       )
+
+      if (options.json) {
+        printJson({ ...result, id: scheduleId })
+        return
+      }
 
       process.stdout.write(chalk.green('\u2713') + ` Schedule ${scheduleId} deleted\n`)
     })
@@ -547,7 +567,8 @@ export function registerScheduleCommand(program: Command): void {
     .option('--data <json>', 'Override input data as JSON')
     .addOption(new Option('--input <json>').hideHelp())
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (partialScheduleId: string, options: { data?: string; input?: string; workspace?: string }) => {
+    .option('--json', 'Output as JSON')
+    .action(async (partialScheduleId: string, options: { data?: string; input?: string; workspace?: string; json?: boolean }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -567,7 +588,9 @@ export function registerScheduleCommand(program: Command): void {
         }
       }
 
-      process.stdout.write('Triggering schedule...\n')
+      if (!options.json) {
+        process.stdout.write('Triggering schedule...\n')
+      }
 
       const result = await request<TriggerResponse>(
         config,
@@ -578,6 +601,11 @@ export function registerScheduleCommand(program: Command): void {
           headers: { 'Content-Type': 'application/json' },
         } : {}
       )
+
+      if (options.json) {
+        printJson(result)
+        return
+      }
 
       // Status-aware header message
       const isAsync = result.status === 'queued' || result.status === 'deduplicated'
@@ -770,7 +798,8 @@ export function registerScheduleCommand(program: Command): void {
     .command('test-alert <schedule-id>')
     .description('Send a test alert to the schedule\'s configured webhook URL')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (partialScheduleId: string, options: { workspace?: string }) => {
+    .option('--json', 'Output as JSON')
+    .action(async (partialScheduleId: string, options: { workspace?: string; json?: boolean }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -779,13 +808,20 @@ export function registerScheduleCommand(program: Command): void {
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
-      process.stdout.write('Sending test alert...\n')
+      if (!options.json) {
+        process.stdout.write('Sending test alert...\n')
+      }
 
       const result = await request<{ success: boolean }>(
         config,
         'POST',
         `/workspaces/${workspaceId}/schedules/${scheduleId}/test-alert`,
       )
+
+      if (options.json) {
+        printJson({ ...result, schedule_id: scheduleId })
+        return
+      }
 
       if (result.success) {
         process.stdout.write(chalk.green('\u2713') + ' Test alert delivered successfully\n')
@@ -800,7 +836,8 @@ export function registerScheduleCommand(program: Command): void {
     .description('Regenerate the webhook secret (invalidates old URL)')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .option('-y, --yes', 'Skip confirmation prompt')
-    .action(async (partialScheduleId: string, options: { workspace?: string; yes?: boolean }) => {
+    .option('--json', 'Output as JSON (implies --yes)')
+    .action(async (partialScheduleId: string, options: { workspace?: string; yes?: boolean; json?: boolean }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -809,7 +846,7 @@ export function registerScheduleCommand(program: Command): void {
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const scheduleId = await resolveScheduleId(config, partialScheduleId, workspaceId)
 
-      if (!options.yes) {
+      if (!options.yes && !options.json) {
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,
@@ -831,6 +868,11 @@ export function registerScheduleCommand(program: Command): void {
         'POST',
         `/workspaces/${workspaceId}/schedules/${scheduleId}/regenerate-webhook`,
       )
+
+      if (options.json) {
+        printJson({ ...result, schedule_id: scheduleId })
+        return
+      }
 
       process.stdout.write(chalk.green('\u2713') + ' Webhook secret regenerated\n\n')
       process.stdout.write(`  ${chalk.bold('New Webhook URL')} (save this — retrieve later with ${chalk.cyan('orch schedule info --reveal')}):\n`)

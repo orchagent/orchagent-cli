@@ -143,6 +143,22 @@ describe('orch diff command', () => {
     )
   })
 
+  it('BUG: handles @-prefixed version shorthand without double @', async () => {
+    // BUG: `orch diff joe/test-tool-py@v1 @v2` creates @@v2 (double @)
+    // because parseSecondRef passes raw "@v2" as the version string.
+    // The @ prefix should be stripped when used as version shorthand.
+    mockGetPublicAgent
+      .mockResolvedValueOnce(makePublicAgent({ version: 'v1' }))
+      .mockResolvedValueOnce(makePublicAgent({ version: 'v2' }))
+
+    await program.parseAsync(['node', 'test', 'diff', 'testorg/my-agent@v1', '@v2'])
+
+    // The second call should use version 'v2', NOT '@v2'
+    expect(mockGetPublicAgent).toHaveBeenCalledWith(
+      expect.any(Object), 'testorg', 'my-agent', 'v2'
+    )
+  })
+
   it('defaults second ref to latest when only one ref given', async () => {
     mockGetPublicAgent
       .mockResolvedValueOnce(makePublicAgent({ version: 'v1' }))

@@ -16,6 +16,7 @@ vi.mock('../lib/api', () => {
   return {
     ApiError,
     getAgentWithFallback: vi.fn(),
+    resolveWorkspaceIdForOrg: vi.fn(),
     request: vi.fn(),
     forkAgent: vi.fn(),
   }
@@ -26,7 +27,7 @@ vi.mock('../lib/key-store')
 
 import { registerForkCommand } from './fork'
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { getAgentWithFallback, request, forkAgent, ApiError } from '../lib/api'
+import { getAgentWithFallback, resolveWorkspaceIdForOrg, request, forkAgent, ApiError } from '../lib/api'
 import { track } from '../lib/analytics'
 import { printJson } from '../lib/output'
 import { saveServiceKey } from '../lib/key-store'
@@ -34,6 +35,7 @@ import { saveServiceKey } from '../lib/key-store'
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockLoadConfig = vi.mocked(loadConfig)
 const mockGetAgentWithFallback = vi.mocked(getAgentWithFallback)
+const mockResolveWorkspaceIdForOrg = vi.mocked(resolveWorkspaceIdForOrg)
 const mockRequest = vi.mocked(request)
 const mockForkAgent = vi.mocked(forkAgent)
 const mockTrack = vi.mocked(track)
@@ -80,6 +82,8 @@ describe('fork command', () => {
       service_key_prefix: 'sk_service',
     } as any)
 
+    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+
     mockTrack.mockResolvedValue(undefined)
     mockSaveServiceKey.mockResolvedValue('/home/.orchagent/keys/joe/my-discord-agent.json')
   })
@@ -108,7 +112,8 @@ describe('fork command', () => {
       expect.any(Object),
       'orchagent',
       'my-discord-agent',
-      'latest'
+      'latest',
+      undefined
     )
     expect(mockForkAgent).toHaveBeenCalledWith(
       expect.any(Object),
@@ -387,6 +392,88 @@ describe('fork command', () => {
     // Should use the config default
     expect(output).toContain('New agent: joe/my-discord-agent@v1')
     expect(output).toContain('Workspace: Personal (joe)')
+  })
+
+  it('resolves workspace ID when forking a private agent from a team workspace', async () => {
+    // Scenario: user is in team workspace "acme-corp", forking a private agent that lives there.
+    // Without workspaceId, getAgentWithFallback's org check would compare
+    // personal org slug ("joe") against team org slug ("acme-corp") and fail with 404.
+    mockLoadConfig.mockResolvedValue({ workspace: 'acme-corp' } as any)
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-acme')
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      id: 'private-agent-id',
+      org_slug: 'acme-corp',
+      name: 'internal-tool',
+      version: 'v3',
+    } as any)
+
+    mockForkAgent.mockResolvedValue({
+      agent: {
+        id: 'forked-agent-id',
+        org_slug: 'acme-corp',
+        name: 'internal-tool',
+        version: 'v3',
+      },
+      service_key: 'sk_service_xyz',
+      service_key_prefix: 'sk_service',
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'fork', 'acme-corp/internal-tool@v3'])
+
+    // Must resolve workspace ID for the source org
+    expect(mockResolveWorkspaceIdForOrg).toHaveBeenCalledWith(
+      expect.any(Object),
+      'acme-corp'
+    )
+
+    // Must pass workspace ID to getAgentWithFallback so the org check uses the team context
+    expect(mockGetAgentWithFallback).toHaveBeenCalledWith(
+      expect.any(Object),
+      'acme-corp',
+      'internal-tool',
+      'v3',
+      'ws-acme'  // <-- workspaceId must be passed
+    )
+  })
+
+  it('passes workspace ID for @latest resolution in team workspace', async () => {
+    // @latest is the most fragile path — requires listing agents in the correct workspace context
+    mockLoadConfig.mockResolvedValue({ workspace: 'acme-corp' } as any)
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-acme')
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      id: 'latest-agent-id',
+      org_slug: 'acme-corp',
+      name: 'internal-tool',
+      version: 'v5',
+    } as any)
+
+    mockForkAgent.mockResolvedValue({
+      agent: {
+        id: 'forked-latest-id',
+        org_slug: 'acme-corp',
+        name: 'internal-tool',
+        version: 'v5',
+      },
+      service_key: 'sk_service_latest',
+      service_key_prefix: 'sk_service',
+    } as any)
+
+    // No explicit version = @latest
+    await program.parseAsync(['node', 'test', 'fork', 'acme-corp/internal-tool'])
+
+    expect(mockResolveWorkspaceIdForOrg).toHaveBeenCalledWith(
+      expect.any(Object),
+      'acme-corp'
+    )
+    expect(mockGetAgentWithFallback).toHaveBeenCalledWith(
+      expect.any(Object),
+      'acme-corp',
+      'internal-tool',
+      'latest',
+      'ws-acme'
+    )
   })
 
   it('throws when multiple workspaces and no default', async () => {

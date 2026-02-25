@@ -3,6 +3,7 @@
  *
  * Tests cover:
  * - Agent name and workspace slug parsing
+ * - org/agent format parsing (T12-10)
  * - Dry-run output without API calls
  * - Blocker handling (exit code 1)
  * - Confirmation prompt (name mismatch rejection)
@@ -354,6 +355,96 @@ describe('transfer command', () => {
         '/agents?workspace_id=ws-1'
       )
       expect(mockListMyAgents).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('org/agent format (T12-10)', () => {
+    it('accepts org/agent format and resolves source workspace from org', async () => {
+      mockRequest
+        .mockResolvedValueOnce(mockWorkspaces as any) // GET /workspaces
+        .mockResolvedValueOnce(mockAgents as any) // GET /agents?workspace_id=ws-1
+
+      await program.parseAsync([
+        'node', 'test', 'transfer', 'my-ws/my-agent', '--to', 'team-ws', '--yes',
+      ])
+
+      // Should resolve org "my-ws" to ws-1 and list agents from that workspace
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        2,
+        expect.any(Object),
+        'GET',
+        '/agents?workspace_id=ws-1'
+      )
+      expect(mockListMyAgents).not.toHaveBeenCalled()
+      expect(mockTransferAgent).toHaveBeenCalledWith(
+        expect.any(Object),
+        'agent-1',
+        { target_workspace_id: 'ws-2', confirmation_name: 'my-agent' }
+      )
+    })
+
+    it('strips org prefix and matches agent by name only', async () => {
+      mockRequest
+        .mockResolvedValueOnce(mockWorkspaces as any)
+        .mockResolvedValueOnce(mockAgents as any)
+
+      await program.parseAsync([
+        'node', 'test', 'transfer', 'my-ws/my-agent', '--to', 'team-ws', '--dry-run',
+      ])
+
+      const output = stdoutSpy.mock.calls.map((c) => c[0]).join('')
+      expect(output).toContain('my-agent')
+      expect(output).toContain('DRY RUN')
+    })
+
+    it('errors when org from ref does not match a known workspace', async () => {
+      await expect(
+        program.parseAsync([
+          'node', 'test', 'transfer', 'unknown-org/my-agent', '--to', 'team-ws', '--yes',
+        ])
+      ).rejects.toThrow("Source workspace 'unknown-org' not found")
+    })
+
+    it('errors when org/agent format conflicts with --workspace flag', async () => {
+      await expect(
+        program.parseAsync([
+          'node', 'test', 'transfer', 'my-ws/my-agent', '--to', 'team-ws', '--workspace', 'team-ws', '--yes',
+        ])
+      ).rejects.toThrow('Conflicting source workspace')
+    })
+
+    it('allows org/agent when org matches --workspace flag', async () => {
+      mockRequest
+        .mockResolvedValueOnce(mockWorkspaces as any)
+        .mockResolvedValueOnce(mockAgents as any)
+
+      await program.parseAsync([
+        'node', 'test', 'transfer', 'my-ws/my-agent', '--to', 'team-ws', '--workspace', 'my-ws', '--yes',
+      ])
+
+      expect(mockTransferAgent).toHaveBeenCalled()
+    })
+
+    it('works with bare agent name (backwards compatible)', async () => {
+      await program.parseAsync([
+        'node', 'test', 'transfer', 'my-agent', '--to', 'team-ws', '--yes',
+      ])
+
+      // Should use listMyAgents (no workspace resolution from org)
+      expect(mockListMyAgents).toHaveBeenCalled()
+      expect(mockTransferAgent).toHaveBeenCalled()
+    })
+
+    it('agent not found error uses bare name (not org/agent)', async () => {
+      mockRequest
+        .mockResolvedValueOnce(mockWorkspaces as any)
+        .mockResolvedValueOnce([] as any) // empty agent list
+
+      await expect(
+        program.parseAsync([
+          'node', 'test', 'transfer', 'my-ws/nonexistent', '--to', 'team-ws', '--yes',
+        ])
+      ).rejects.toThrow("Agent 'nonexistent' not found")
     })
   })
 })

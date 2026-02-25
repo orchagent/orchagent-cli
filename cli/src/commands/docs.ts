@@ -7,17 +7,22 @@ const DOCS_ROUTES: Record<string, string> = {
   '': '/',
   'cli': '/using-agents/cli-commands',
   'agents': '/building-agents/agent-types',
+  'orchestration': '/building-agents/orchestration',
   'skills': '/building-agents/orchestration',
   'sdk': '/building-agents/sdk',
   'api': '/api-reference/overview',
   'quickstart': '/quickstart',
+  'scheduling': '/using-agents/scheduling',
+  'services': '/using-agents/services',
+  'security': '/concepts/security',
+  'billing': '/concepts/billing',
 }
 
 export function registerDocsCommand(program: Command): void {
   program
     .command('docs')
     .description('Open documentation in browser')
-    .argument('[topic]', 'Topic: cli, agents, skills, sdk, api, quickstart')
+    .argument('[topic]', 'Topic: cli, agents, orchestration, skills, sdk, api, quickstart, scheduling, services, security, billing')
     .action(async (topic?: string) => {
       if (topic && !(topic in DOCS_ROUTES)) {
         const validTopics = Object.keys(DOCS_ROUTES).filter(k => k).join(', ')

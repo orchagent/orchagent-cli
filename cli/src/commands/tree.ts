@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 import chalk from 'chalk'
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { request, resolveWorkspaceIdForOrg } from '../lib/api'
+import { ApiError, publicRequest, request, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
 
@@ -50,15 +50,28 @@ export function registerTreeCommand(program: Command): void {
       }
       const { agent, version } = parsed
 
-      // Resolve workspace context for team workspaces
-      const workspaceId = await resolveWorkspaceIdForOrg(config, org)
+      // Public-first fallback: try public tree endpoint (works for any public
+      // agent regardless of caller context), then fall back to authenticated
+      // endpoint with workspace header for private agents. Matches the pattern
+      // used by info/fork/estimate commands. (T12-04)
+      let tree: TreeResponse
+      try {
+        tree = await publicRequest<TreeResponse>(
+          config,
+          `/public/agents/${org}/${agent}/${version}/tree`,
+        )
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.status !== 404) throw err
 
-      const tree = await request<TreeResponse>(
-        config,
-        'GET',
-        `/agents/${org}/${agent}/${version}/tree`,
-        ...(workspaceId ? [{ headers: { 'X-Workspace-Id': workspaceId } }] : [])
-      )
+        // Public endpoint returned 404 — try authenticated endpoint for private agents
+        const workspaceId = await resolveWorkspaceIdForOrg(config, org)
+        tree = await request<TreeResponse>(
+          config,
+          'GET',
+          `/agents/${org}/${agent}/${version}/tree`,
+          workspaceId ? { headers: { 'X-Workspace-Id': workspaceId } } : undefined,
+        )
+      }
 
       if (options.json) {
         console.log(JSON.stringify(tree, null, 2))

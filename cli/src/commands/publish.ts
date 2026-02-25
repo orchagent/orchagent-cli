@@ -447,7 +447,7 @@ export async function checkDependencies(
  */
 export async function batchPublish(
   rootDir: string,
-  options: { profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean }
+  options: { profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean; verbose?: boolean }
 ): Promise<void> {
   process.stderr.write(`\nScanning for agents in ${rootDir}...\n`)
 
@@ -511,6 +511,7 @@ export async function batchPublish(
   if (options.docker) forwardArgs.push('--docker')
   if (options.localDownload === false) forwardArgs.push('--no-local-download')
   if (options.requiredSecrets === false) forwardArgs.push('--no-required-secrets')
+  if (options.verbose) forwardArgs.push('--verbose')
 
   const results: Array<{ name: string; dir: string; success: boolean; error?: string }> = []
 
@@ -603,7 +604,8 @@ export function registerPublishCommand(program: Command): void {
     .option('--no-local-download', 'Prevent users from downloading and running locally (default: allowed)')
     .option('--no-required-secrets', '(deprecated) No longer needed — required_secrets defaults to []')
     .option('--all', 'Publish all agents in subdirectories (dependency order)')
-    .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean; all?: boolean }) => {
+    .option('--verbose', 'Show detailed bundle contents (file list)')
+    .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean; all?: boolean; verbose?: boolean }) => {
       const cwd = process.cwd()
 
       // --all: batch publish all agents in subdirectories
@@ -731,6 +733,11 @@ export function registerPublishCommand(program: Command): void {
           process.stdout.write(`\n${chalk.green('✔')} Published ${org.slug}/${skillData.frontmatter.name}@${skillVersion} successfully!\n\n`)
           if (hasMultipleFiles) {
             process.stdout.write(`Files: ${skillFiles.length} files included\n`)
+            if (options.verbose) {
+              for (const f of skillFiles) {
+                process.stdout.write(`  ${f.path}\n`)
+              }
+            }
           }
           process.stdout.write(`Visibility: private\n`)
 
@@ -1142,6 +1149,12 @@ export function registerPublishCommand(program: Command): void {
           process.stderr.write(`  Files:       ${bundlePreview.fileCount} files\n`)
           process.stderr.write(`  Size:        ${(bundlePreview.totalSizeBytes / 1024).toFixed(1)} KB\n`)
           process.stderr.write(`  Entrypoint:  ${bundlePreview.entrypoint}\n`)
+          if (options.verbose && bundlePreview.files?.length) {
+            process.stderr.write(`  Bundled files:\n`)
+            for (const f of bundlePreview.files) {
+              process.stderr.write(`    ${f}\n`)
+            }
+          }
         }
 
         process.stderr.write('\nAgent Preview:\n')
@@ -1422,6 +1435,13 @@ export function registerPublishCommand(program: Command): void {
 
           process.stdout.write(`  Created bundle: ${bundleResult.fileCount} files, ${(bundleResult.sizeBytes / 1024).toFixed(1)}KB\n`)
 
+          if (options.verbose && bundleResult.files?.length) {
+            process.stdout.write(`  Bundled files:\n`)
+            for (const f of bundleResult.files) {
+              process.stdout.write(`    ${f}\n`)
+            }
+          }
+
           // Validate bundle size
           const validation = await validateBundle(bundlePath)
           if (!validation.valid) {
@@ -1508,12 +1528,16 @@ export function registerPublishCommand(program: Command): void {
       const secReview = (result as Record<string, unknown>).security_review as
         { verdict?: string; summary?: string } | undefined
       if (secReview?.verdict) {
-        if (secReview.verdict === 'passed') {
+        if (secReview.verdict === 'approved') {
           process.stdout.write(`Security: ${chalk.green('passed')}\n`)
         } else if (secReview.verdict === 'flagged') {
           process.stdout.write(`Security: ${chalk.yellow('flagged')} — ${secReview.summary || 'review recommended'}\n`)
+        } else if (secReview.verdict === 'error') {
+          process.stdout.write(`Security: ${chalk.gray('review unavailable')} — publish succeeded, review will be retried\n`)
+        } else if (secReview.verdict === 'skipped') {
+          process.stdout.write(`Security: ${chalk.gray('review skipped')} — ${secReview.summary || 'content not eligible for review'}\n`)
         } else {
-          process.stdout.write(`Security: ${secReview.verdict}\n`)
+          process.stdout.write(`Security: ${chalk.gray(secReview.verdict)} — ${secReview.summary || ''}\n`)
         }
       }
 

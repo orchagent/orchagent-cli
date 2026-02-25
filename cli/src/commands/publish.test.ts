@@ -3301,3 +3301,290 @@ describe('UX-9: model vs default_models warning', () => {
     expect(stderrOutput).not.toContain('"model" field')
   })
 })
+
+describe('T12-12: security verdict display in publish output', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let originalCwd: () => string
+
+  const mockFs = vi.mocked(fs)
+  const mockCreateAgent = vi.mocked(createAgent)
+  const mockGetOrg = vi.mocked(getOrg)
+  const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
+  const mockLoadConfig = vi.mocked(loadConfig)
+  const mockValidateAgentPublish = vi.mocked(validateAgentPublish)
+
+  function setupBasicMocks(securityReview?: { verdict: string; summary?: string }) {
+    const response: any = { id: 'agent-123' }
+    if (securityReview) {
+      response.security_review = securityReview
+    }
+    mockCreateAgent.mockResolvedValue(response)
+    mockGetOrg.mockResolvedValue({ id: 'org-123', slug: 'test-org', name: 'Test Org' })
+    mockGetResolvedConfig.mockResolvedValue({ apiKey: 'sk_test_123', apiUrl: 'https://api.test.com' })
+    mockLoadConfig.mockResolvedValue({})
+    mockValidateAgentPublish.mockResolvedValue({ valid: true, errors: [], warnings: [] })
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify({ name: 'my-agent', type: 'prompt' })
+      if (p.includes('prompt.md')) return 'Test prompt'
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    originalCwd = process.cwd
+    process.cwd = () => '/test/project'
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    process.cwd = originalCwd
+    vi.restoreAllMocks()
+  })
+
+  it('shows green "passed" for approved verdict', async () => {
+    setupBasicMocks({ verdict: 'approved', summary: 'No issues found' })
+    await program.parseAsync(['node', 'test', 'publish'])
+    const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(allOutput).toContain('Security')
+    expect(allOutput).toContain('passed')
+    // Must NOT show raw "approved" text
+    expect(allOutput).not.toContain('approved')
+  })
+
+  it('shows yellow "flagged" with summary', async () => {
+    setupBasicMocks({ verdict: 'flagged', summary: 'Possible shell injection in line 5' })
+    await program.parseAsync(['node', 'test', 'publish'])
+    const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(allOutput).toContain('flagged')
+    expect(allOutput).toContain('Possible shell injection in line 5')
+  })
+
+  it('shows explanatory message for error verdict, not raw "error"', async () => {
+    setupBasicMocks({ verdict: 'error', summary: 'LLM timeout during review' })
+    await program.parseAsync(['node', 'test', 'publish'])
+    const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    // Must NOT show raw confusing "Security: error"
+    expect(allOutput).not.toMatch(/Security: error\n/)
+    // Must explain the situation
+    expect(allOutput).toContain('review unavailable')
+  })
+
+  it('shows explanatory message for skipped verdict', async () => {
+    setupBasicMocks({ verdict: 'skipped', summary: 'Content exceeds review size limit' })
+    await program.parseAsync(['node', 'test', 'publish'])
+    const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    // Must NOT show raw "Security: skipped"
+    expect(allOutput).not.toMatch(/Security: skipped\n/)
+    // Must explain why it was skipped
+    expect(allOutput).toContain('skipped')
+    expect(allOutput).toContain('Content exceeds review size limit')
+  })
+
+  it('does not show security line when no security_review in response', async () => {
+    setupBasicMocks()
+    await program.parseAsync(['node', 'test', 'publish'])
+    const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(allOutput).not.toContain('Security')
+  })
+})
+
+describe('T12-15: --verbose bundle file list', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let originalCwd: () => string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+    })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetOrg.mockResolvedValue({ id: 'org-123', slug: 'test-org', name: 'Test Org' })
+    mockValidateAgentPublish.mockResolvedValue({ valid: true, errors: [], warnings: [] })
+
+    originalCwd = process.cwd
+    process.cwd = () => '/test/project'
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    process.cwd = originalCwd
+    vi.restoreAllMocks()
+  })
+
+  it('shows bundled file list for code_runtime agents with --verbose', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool',
+      required_secrets: [],
+    }
+
+    mockCreateAgent.mockResolvedValue({
+      agent: { id: 'agent-1', version: 'v1' },
+    } as any)
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({
+      fileCount: 3,
+      sizeBytes: 2048,
+      files: ['main.py', 'lib/utils.py', 'lib/helpers.py'],
+    } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123def456', bundle_size_bytes: 2048,
+    } as any)
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+
+    await program.parseAsync(['node', 'test', 'publish', '--verbose'])
+
+    const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(allOutput).toContain('main.py')
+    expect(allOutput).toContain('lib/utils.py')
+    expect(allOutput).toContain('lib/helpers.py')
+  })
+
+  it('does NOT show file list without --verbose', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool',
+      required_secrets: [],
+    }
+
+    mockCreateAgent.mockResolvedValue({
+      agent: { id: 'agent-1', version: 'v1' },
+    } as any)
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({
+      fileCount: 3,
+      sizeBytes: 2048,
+      files: ['main.py', 'lib/utils.py', 'lib/helpers.py'],
+    } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123def456', bundle_size_bytes: 2048,
+    } as any)
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    // Should show file count but not individual files
+    expect(allOutput).toContain('3 files')
+    expect(allOutput).not.toContain('lib/utils.py')
+  })
+
+  it('shows file list in dry-run + verbose for code_runtime', async () => {
+    const manifest = {
+      name: 'my-tool',
+      type: 'tool',
+      description: 'A tool',
+      required_secrets: [],
+    }
+
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockPreviewAgentVersion.mockResolvedValue({
+      next_version: 'v1',
+      org_slug: 'test-org',
+      existing_versions: [],
+    } as any)
+    mockPreviewBundle.mockResolvedValue({
+      fileCount: 2,
+      totalSizeBytes: 1024,
+      entrypoint: 'main.py',
+      excludePatterns: [],
+      files: ['main.py', 'helpers.py'],
+    } as any)
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+
+    await program.parseAsync(['node', 'test', 'publish', '--dry-run', '--verbose'])
+
+    const allOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(allOutput).toContain('main.py')
+    expect(allOutput).toContain('helpers.py')
+  })
+
+  it('shows skill file list with --verbose', async () => {
+    const skillMd = `---
+name: my-skill
+description: A skill
+---
+Skill prompt content.`
+
+    // collectSkillFiles mocks
+    mockFs.readdir.mockResolvedValue([
+      { name: 'SKILL.md', isFile: () => true, isDirectory: () => false },
+      { name: 'helpers.py', isFile: () => true, isDirectory: () => false },
+      { name: 'config.json', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockFs.stat.mockResolvedValue({ size: 200, isDirectory: () => false } as any)
+
+    mockCreateAgent.mockResolvedValue({
+      agent: { id: 'skill-1', version: 'v1' },
+    } as any)
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) return skillMd
+      return 'file content'
+    })
+
+    await program.parseAsync(['node', 'test', 'publish', '--verbose'])
+
+    const allOutput = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(allOutput).toContain('SKILL.md')
+    expect(allOutput).toContain('helpers.py')
+    expect(allOutput).toContain('config.json')
+  })
+})

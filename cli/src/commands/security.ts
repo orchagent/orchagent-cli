@@ -2,37 +2,14 @@ import { Command } from 'commander'
 import fs from 'fs/promises'
 import chalk from 'chalk'
 
-import { getResolvedConfig, loadConfig } from '../lib/config'
-import { safeFetchWithRetryForCalls, resolveWorkspaceIdForOrg } from '../lib/api'
+import { getResolvedConfig } from '../lib/config'
+import { safeFetchWithRetryForCalls } from '../lib/api'
 import { CliError } from '../lib/errors'
+import { resolveAgentContext } from '../lib/resolve-agent'
 import { printJson } from '../lib/output'
 import { createSpinner } from '../lib/spinner'
 import { detectLlmKey, validateProvider, type LlmProvider } from '../lib/llm'
 import { track } from '../lib/analytics'
-
-const DEFAULT_VERSION = 'latest'
-
-type AgentRef = {
-  org?: string
-  agent: string
-  version: string
-}
-
-function parseAgentRef(value: string): AgentRef {
-  const [ref, versionPart] = value.split('@')
-  const version = versionPart?.trim() || DEFAULT_VERSION
-  const segments = ref.split('/')
-  if (segments.length === 1) {
-    return { agent: segments[0], version }
-  }
-  if (segments.length === 2) {
-    return { org: segments[0], agent: segments[1], version }
-  }
-  if (segments.length === 3) {
-    return { org: segments[0], agent: segments[1], version: segments[2] }
-  }
-  throw new CliError('Invalid agent reference. Use org/agent/version or org/agent@version format.')
-}
 
 // Severity color mapping
 function severityColor(severity: string): string {
@@ -244,17 +221,9 @@ Examples:
           throw new CliError('Missing API key. Run `orchagent login` first.')
         }
 
-        const parsed = parseAgentRef(agentRef)
-        const configFile = await loadConfig()
-        const org = parsed.org ?? configFile.workspace ?? resolved.defaultOrg
-        if (!org) {
-          throw new CliError('Missing org. Use org/agent or set default org.')
-        }
+        const { org, agent: agentName, version, workspaceId } = await resolveAgentContext(agentRef, resolved)
 
-        const agentId = `${org}/${parsed.agent}/${parsed.version}`
-
-        // Resolve workspace context for the target org
-        const workspaceId = await resolveWorkspaceIdForOrg(resolved, org)
+        const agentId = `${org}/${agentName}/${version}`
 
         // Detect LLM key for the scan
         let llmKey: string | undefined
@@ -296,6 +265,13 @@ Examples:
         }
         if (options.maxAttacks) {
           requestBody.max_attacks = options.maxAttacks
+        }
+
+        // Send provider preference so gateway can narrow vault key search
+        // (even when no local key is found, the gateway resolves from vault)
+        const effectiveProvider = llmProvider || options.provider
+        if (effectiveProvider) {
+          requestBody.llm_provider = effectiveProvider
         }
 
         const url = `${resolved.apiUrl.replace(/\/$/, '')}/security/test`

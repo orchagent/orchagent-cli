@@ -483,4 +483,43 @@ describe('logs command', () => {
 
     await program.parseAsync(['node', 'test', 'logs'])
   })
+
+  // ─── T12-14: Replay/snapshot discoverability hints ────────────────────────
+
+  it('shows replay hint in single-run detail view', async () => {
+    const fullId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes(`/runs/${fullId}/logs`)) {
+        return makeRunLogsResponse({ run_id: fullId })
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', fullId])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('orch replay')
+    expect(output).toContain(fullId.slice(0, 8))
+  })
+
+  it('shows replay hint in run list footer', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('orch replay')
+  })
 })

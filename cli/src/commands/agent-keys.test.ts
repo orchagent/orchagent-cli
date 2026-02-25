@@ -47,6 +47,7 @@ describe('agent-keys command', () => {
     mockGetResolvedConfig.mockResolvedValue({
       apiKey: 'sk_test_123',
       apiUrl: 'https://api.test.com',
+      defaultOrg: 'joe',
     })
     mockLoadConfig.mockResolvedValue({})
     mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-123')

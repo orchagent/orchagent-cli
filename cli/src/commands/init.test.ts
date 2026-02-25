@@ -8,7 +8,7 @@
  * - Already initialized detection
  * - Tool type (code-runtime scaffolding)
  * - Prompt type (direct_llm scaffolding)
- * - Agent/agentic scaffolding behavior (code_runtime default, --loop for managed_loop)
+ * - Agent/agentic scaffolding behavior (managed_loop default, agentic for code_runtime)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -296,7 +296,7 @@ describe('init command', () => {
     })
   })
 
-  describe('agent type (code_runtime by default)', () => {
+  describe('agent type (managed_loop by default)', () => {
     it('sets type to agent in manifest', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
@@ -308,25 +308,25 @@ describe('init command', () => {
       expect(manifest.type).toBe('agent')
     })
 
-    it('includes runtime.command in manifest (code_runtime)', async () => {
+    it('includes loop config in manifest', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.loop).toEqual({ max_turns: 25 })
     })
 
-    it('does not include loop or supported_providers by default', async () => {
+    it('includes supported_providers and omits runtime by default', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.loop).toBeUndefined()
-      expect(manifest.supported_providers).toBeUndefined()
+      expect(manifest.supported_providers).toEqual(['any'])
+      expect(manifest.runtime).toBeUndefined()
     })
 
     it('includes empty required_secrets in manifest', async () => {
@@ -339,25 +339,22 @@ describe('init command', () => {
       expect(manifest.required_secrets).toEqual([])
     })
 
-    it('creates main.py with agent code template', async () => {
+    it('does not create main.py by default', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const mainCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('main.py')
       )
-      expect(mainCall).toBeDefined()
-      const content = mainCall![1] as string
-      expect(content).toContain('code-runtime agent')
-      expect(content).toContain('task')
+      expect(mainCall).toBeUndefined()
     })
 
-    it('does not create prompt.md', async () => {
+    it('creates prompt.md by default', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       const promptCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('prompt.md')
       )
-      expect(promptCall).toBeUndefined()
+      expect(promptCall).toBeDefined()
     })
 
     it('creates schema.json with task input field', async () => {
@@ -372,7 +369,7 @@ describe('init command', () => {
       expect(schema.output.properties).toHaveProperty('success')
     })
 
-    it('legacy agentic alias produces same result as agent type', async () => {
+    it('legacy agentic alias preserves code-runtime scaffold', async () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic'])
 
       const manifestCall = mockFs.writeFile.mock.calls.find(
@@ -384,8 +381,8 @@ describe('init command', () => {
       expect(manifest.loop).toBeUndefined()
     })
 
-    it('supports --language javascript', async () => {
-      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--language', 'javascript'])
+    it('agentic supports --language javascript for code-runtime scaffold', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic', '--language', 'javascript'])
 
       const mainCall = mockFs.writeFile.mock.calls.find(
         ([p]) => (p as string).endsWith('main.js')
@@ -400,6 +397,39 @@ describe('init command', () => {
       await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
 
       expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('schema.json'))
+    })
+  })
+
+  describe('regression: --type agent defaults to managed_loop', () => {
+
+    it('should create prompt.md for --type agent (not require --loop)', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const promptCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('prompt.md')
+      )
+      expect(promptCall).toBeDefined()
+    })
+
+    it('should include loop config in manifest for --type agent', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.loop).toBeDefined()
+      expect(manifest.runtime).toBeUndefined()
+    })
+
+    it('should include supported_providers for --type agent', async () => {
+      await program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent'])
+
+      const manifestCall = mockFs.writeFile.mock.calls.find(
+        ([p]) => (p as string).endsWith('orchagent.json')
+      )
+      const manifest = JSON.parse(manifestCall![1] as string)
+      expect(manifest.supported_providers).toEqual(['any'])
     })
   })
 
@@ -457,7 +487,7 @@ describe('init command', () => {
     it('throws when --loop is used with --language javascript', async () => {
       await expect(
         program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--loop', '--language', 'javascript'])
-      ).rejects.toThrow('JavaScript is not supported for --loop')
+      ).rejects.toThrow('JavaScript is not supported for managed-loop agents')
     })
   })
 
@@ -1244,16 +1274,22 @@ describe('init command', () => {
   })
 
   describe('JS agent type', () => {
-    it('does not throw for --type agent --language javascript (code_runtime)', async () => {
+    it('throws for --type agent --language javascript (managed_loop default)', async () => {
       await expect(
         program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--language', 'javascript'])
-      ).resolves.not.toThrow()
+      ).rejects.toThrow('JavaScript is not supported for managed-loop agents')
     })
 
     it('throws for --type agent --loop --language javascript', async () => {
       await expect(
         program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agent', '--loop', '--language', 'javascript'])
-      ).rejects.toThrow('JavaScript is not supported for --loop')
+      ).rejects.toThrow('JavaScript is not supported for managed-loop agents')
+    })
+
+    it('allows JavaScript for explicit code-runtime agent via --type agentic', async () => {
+      await expect(
+        program.parseAsync(['node', 'test', 'init', 'my-agent', '--type', 'agentic', '--language', 'javascript'])
+      ).resolves.not.toThrow()
     })
   })
 

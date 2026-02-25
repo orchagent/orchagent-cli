@@ -8,16 +8,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Command } from 'commander'
 
 vi.mock('../lib/config')
-vi.mock('../lib/api', () => ({
-  request: vi.fn(),
-}))
+vi.mock('../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/api')>()
+  return { ...actual, request: vi.fn() }
+})
 vi.mock('../lib/output', () => ({
   printJson: vi.fn(),
 }))
 
 import { registerReplayCommand } from './replay'
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { request } from '../lib/api'
+import { request, ApiError } from '../lib/api'
 import { printJson } from '../lib/output'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
@@ -408,5 +409,57 @@ describe('replay command', () => {
 
     const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
     expect(output).toContain('orch logs')
+  })
+
+  // ─── Snapshot discoverability (T12-14) ────────────────────────────
+
+  it('shows helpful context when replay fails with no snapshot (404)', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/replay')) {
+        throw new ApiError(
+          'No snapshot available for this run. Replay requires a captured snapshot.',
+          404
+        )
+      }
+      return {}
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'replay', FULL_RUN_ID, '--no-wait'])
+    ).rejects.toThrow(/cloud/)
+  })
+
+  it('shows helpful context when run not found (404)', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/replay')) {
+        throw new ApiError('Run not found', 404)
+      }
+      return {}
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'replay', FULL_RUN_ID, '--no-wait'])
+    ).rejects.toThrow(/not found/i)
+  })
+
+  it('includes snapshot explanation in help text', () => {
+    const replayCmd = program.commands.find(c => c.name() === 'replay')
+    // addHelpText('after', ...) stores the text in _helpAfterText (Commander internals)
+    // We check the full help output by calling createHelp().formatHelp()
+    let helpOutput = ''
+    replayCmd?.configureOutput({
+      writeOut: (str: string) => { helpOutput += str },
+      writeErr: () => {},
+    })
+    replayCmd?.outputHelp()
+
+    expect(helpOutput).toContain('cloud')
+    expect(helpOutput).toContain('snapshot')
   })
 })

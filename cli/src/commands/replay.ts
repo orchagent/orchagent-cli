@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { request } from '../lib/api'
+import { request, ApiError } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { printJson } from '../lib/output'
 import type { ResolvedConfig } from '../types'
@@ -182,6 +182,21 @@ export function registerReplayCommand(program: Command): void {
     .option('--override-policy <id>', 'Override provider policy ID for this replay')
     .option('--no-wait', 'Queue the replay and return immediately without waiting for results')
     .option('--json', 'Output as JSON')
+    .addHelpText('after', `
+How snapshots work:
+  Every cloud run automatically captures a snapshot of its input, config,
+  secrets, and agent version before execution. This snapshot enables
+  deterministic replay — even if the agent has been updated since.
+
+  Local runs (--local) do not create snapshots and cannot be replayed.
+  Runs created before snapshot support was added also cannot be replayed.
+
+Examples:
+  orch replay a1b2c3d4                  Replay and wait for results
+  orch replay a1b2c3d4 --no-wait        Queue and return immediately
+  orch replay a1b2c3d4 --reason "debug" Replay with audit reason
+  orch replay a1b2c3d4 --json           Output as JSON
+`)
     .action(
       async (
         runId: string,
@@ -213,19 +228,40 @@ export function registerReplayCommand(program: Command): void {
         }
 
         // Submit replay request
-        const body: Record<string, string | undefined> = {}
-        if (options.reason) body.reason = options.reason
-        if (options.overridePolicy) body.override_provider_policy_id = options.overridePolicy
+        const reqBody: Record<string, string | undefined> = {}
+        if (options.reason) reqBody.reason = options.reason
+        if (options.overridePolicy) reqBody.override_provider_policy_id = options.overridePolicy
 
-        const replay = await request<ReplayResponse>(
-          config,
-          'POST',
-          `/workspaces/${workspaceId}/runs/${resolvedRunId}/replay`,
-          {
-            body: JSON.stringify(body),
-            headers: { 'Content-Type': 'application/json' },
+        let replay: ReplayResponse
+        try {
+          replay = await request<ReplayResponse>(
+            config,
+            'POST',
+            `/workspaces/${workspaceId}/runs/${resolvedRunId}/replay`,
+            {
+              body: JSON.stringify(reqBody),
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) {
+            const isSnapshotMissing = err.message.toLowerCase().includes('snapshot')
+            if (isSnapshotMissing) {
+              throw new CliError(
+                `No snapshot available for run ${resolvedRunId.slice(0, 8)}.\n\n` +
+                `Snapshots are captured automatically for cloud runs. This run may have been:\n` +
+                `  - A local run (--local), which does not create snapshots\n` +
+                `  - Created before snapshot support was added\n\n` +
+                `Run \`orch logs ${resolvedRunId.slice(0, 8)}\` to inspect the original run.`
+              )
+            }
+            throw new CliError(
+              `Run ${resolvedRunId.slice(0, 8)} not found. ` +
+              `Check the run ID and workspace, or run \`orch logs\` to list recent runs.`
+            )
           }
-        )
+          throw err
+        }
 
         if (options.json && options.wait === false) {
           printJson(replay)

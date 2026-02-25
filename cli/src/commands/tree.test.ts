@@ -1,9 +1,9 @@
 /**
- * Tests for tree command — BUG-11-03: orch tree 404 in team workspaces.
+ * Tests for tree command — T12-04: orch tree 404 on cross-context agent lookups.
  *
- * Root cause: tree.ts didn't pass X-Workspace-Id header to request(),
- * so gateway used caller's personal org instead of workspace org for
- * agent lookup, returning 404 for agents in team workspaces.
+ * Fix: public-first fallback pattern. Try public tree endpoint first (works
+ * for any public agent regardless of caller context), then fall back to
+ * authenticated endpoint with workspace header for private agents.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -15,16 +15,26 @@ vi.mock('../lib/config', () => ({
 }))
 vi.mock('../lib/api', () => ({
   request: vi.fn(),
+  publicRequest: vi.fn(),
   resolveWorkspaceIdForOrg: vi.fn(),
+  ApiError: class ApiError extends Error {
+    status: number
+    constructor(message: string, status: number) {
+      super(message)
+      this.status = status
+      this.name = 'ApiError'
+    }
+  },
 }))
 
 import { registerTreeCommand } from './tree'
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { request, resolveWorkspaceIdForOrg } from '../lib/api'
+import { request, publicRequest, resolveWorkspaceIdForOrg, ApiError } from '../lib/api'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockLoadConfig = vi.mocked(loadConfig)
 const mockRequest = vi.mocked(request)
+const mockPublicRequest = vi.mocked(publicRequest)
 const mockResolveWorkspaceIdForOrg = vi.mocked(resolveWorkspaceIdForOrg)
 
 const treeResponse = {
@@ -58,7 +68,8 @@ describe('orch tree', () => {
       defaultOrg: 'test-org',
     })
     mockLoadConfig.mockResolvedValue({} as any)
-    mockRequest.mockResolvedValue(treeResponse)
+    // Default: public succeeds (most common path)
+    mockPublicRequest.mockResolvedValue(treeResponse)
   })
 
   afterEach(() => {
@@ -66,11 +77,36 @@ describe('orch tree', () => {
     vi.restoreAllMocks()
   })
 
-  it('sends X-Workspace-Id header when org resolves to a workspace', async () => {
+  // ------------------------------------------------------------------
+  // Public-first fallback pattern (T12-04)
+  // ------------------------------------------------------------------
+
+  it('tries public endpoint first for cross-context public agents', async () => {
+    mockPublicRequest.mockResolvedValue(treeResponse)
+
+    await program.parseAsync(['node', 'test', 'tree', 'other-org/public-agent@v1'])
+
+    expect(mockPublicRequest).toHaveBeenCalledWith(
+      expect.any(Object),
+      '/public/agents/other-org/public-agent/v1/tree',
+    )
+    // Authenticated endpoint should NOT be called when public succeeds
+    expect(mockRequest).not.toHaveBeenCalled()
+  })
+
+  it('falls back to authenticated endpoint when public returns 404 (private agent)', async () => {
+    mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
     mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-123')
+    mockRequest.mockResolvedValue(treeResponse)
 
     await program.parseAsync(['node', 'test', 'tree', 'team-org/my-agent@v1'])
 
+    // Public was tried first
+    expect(mockPublicRequest).toHaveBeenCalledWith(
+      expect.any(Object),
+      '/public/agents/team-org/my-agent/v1/tree',
+    )
+    // Then authenticated with workspace header
     expect(mockResolveWorkspaceIdForOrg).toHaveBeenCalledWith(
       expect.objectContaining({ apiKey: 'sk_test_123' }),
       'team-org'
@@ -83,22 +119,53 @@ describe('orch tree', () => {
     )
   })
 
-  it('does not send X-Workspace-Id header for personal orgs', async () => {
+  it('sends X-Workspace-Id header in fallback when org resolves to a workspace', async () => {
+    mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-123')
+    mockRequest.mockResolvedValue(treeResponse)
+
+    await program.parseAsync(['node', 'test', 'tree', 'team-org/my-agent@v1'])
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.any(Object),
+      'GET',
+      '/agents/team-org/my-agent/v1/tree',
+      { headers: { 'X-Workspace-Id': 'ws-team-123' } }
+    )
+  })
+
+  it('does not send X-Workspace-Id for personal orgs in fallback', async () => {
+    mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
     mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+    mockRequest.mockResolvedValue(treeResponse)
 
     await program.parseAsync(['node', 'test', 'tree', 'personal-org/my-agent@v1'])
 
-    // When no workspace, request is called without an options argument
     expect(mockRequest).toHaveBeenCalledWith(
       expect.any(Object),
       'GET',
       '/agents/personal-org/my-agent/v1/tree',
+      undefined,
     )
   })
 
+  it('propagates non-404 errors from public endpoint', async () => {
+    mockPublicRequest.mockRejectedValue(new ApiError('Server error', 500))
+
+    await expect(
+      program.parseAsync(['node', 'test', 'tree', 'team-org/my-agent@v1'])
+    ).rejects.toThrow('Server error')
+
+    // Should NOT fall through to authenticated endpoint on 500
+    expect(mockRequest).not.toHaveBeenCalled()
+  })
+
+  // ------------------------------------------------------------------
+  // Display and formatting tests
+  // ------------------------------------------------------------------
+
   it('displays tree output correctly', async () => {
-    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
-    mockRequest.mockResolvedValue({
+    mockPublicRequest.mockResolvedValue({
       ...treeResponse,
       dependencies: [
         {
@@ -122,7 +189,7 @@ describe('orch tree', () => {
   })
 
   it('outputs JSON when --json is specified', async () => {
-    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+    mockPublicRequest.mockResolvedValue(treeResponse)
 
     await program.parseAsync(['node', 'test', 'tree', 'team-org/my-agent@v1', '--json'])
 
@@ -136,14 +203,13 @@ describe('orch tree', () => {
   })
 
   it('defaults version to latest when not specified', async () => {
-    mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+    mockPublicRequest.mockResolvedValue(treeResponse)
 
     await program.parseAsync(['node', 'test', 'tree', 'team-org/my-agent'])
 
-    expect(mockRequest).toHaveBeenCalledWith(
+    expect(mockPublicRequest).toHaveBeenCalledWith(
       expect.any(Object),
-      'GET',
-      '/agents/team-org/my-agent/latest/tree',
+      '/public/agents/team-org/my-agent/latest/tree',
     )
   })
 })

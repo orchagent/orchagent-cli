@@ -2,7 +2,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { getAgentWithFallback, request, forkAgent, ApiError } from '../lib/api'
+import { getAgentWithFallback, resolveWorkspaceIdForOrg, request, forkAgent, ApiError } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
 import { track } from '../lib/analytics'
@@ -112,8 +112,10 @@ Examples:
       }
       const { agent, version } = parsed
 
+      const workspaceId = await resolveWorkspaceIdForOrg(config, org)
+
       write('Resolving source agent...\n')
-      const source = await getAgentWithFallback(config, org, agent, version)
+      const source = await getAgentWithFallback(config, org, agent, version, workspaceId)
       if (!source.id) {
         throw new CliError(
           `Could not resolve source agent ID for '${org}/${agent}@${version}'.`

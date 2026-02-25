@@ -316,8 +316,10 @@ function parseSecondRef(value: string, firstOrg: string, firstName: string): { o
     const parsed = parseAgentRef(value)
     return { org: parsed.org ?? firstOrg, agent: parsed.agent, version: parsed.version }
   }
-  // Otherwise treat as a version shorthand for the same agent
-  return { org: firstOrg, agent: firstName, version: value }
+  // Otherwise treat as a version shorthand for the same agent.
+  // Strip leading '@' — users naturally type `@v2` since the full form is `org/agent@v2`.
+  const version = value.startsWith('@') ? value.slice(1) : value
+  return { org: firstOrg, agent: firstName, version }
 }
 
 // ── Command ────────────────────────────────────────────────────
