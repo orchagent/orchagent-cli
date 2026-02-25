@@ -509,7 +509,7 @@ export async function batchPublish(
   if (options.skills) forwardArgs.push('--skills', options.skills)
   if (options.skillsLocked) forwardArgs.push('--skills-locked')
   if (options.docker) forwardArgs.push('--docker')
-  if (options.localDownload) forwardArgs.push('--local-download')
+  if (options.localDownload === false) forwardArgs.push('--no-local-download')
   if (options.requiredSecrets === false) forwardArgs.push('--no-required-secrets')
 
   const results: Array<{ name: string; dir: string; success: boolean; error?: string }> = []
@@ -600,7 +600,7 @@ export function registerPublishCommand(program: Command): void {
     .option('--skills <skills>', 'Default skills (comma-separated, e.g., org/skill@v1,org/other@v1)')
     .option('--skills-locked', 'Lock default skills (callers cannot override via headers)')
     .option('--docker', 'Include Dockerfile for custom environment (builds E2B template)')
-    .option('--local-download', 'Allow users to download and run locally (default: server-only)')
+    .option('--no-local-download', 'Prevent users from downloading and running locally (default: allowed)')
     .option('--no-required-secrets', '(deprecated) No longer needed — required_secrets defaults to []')
     .option('--all', 'Publish all agents in subdirectories (dependency order)')
     .action(async (options: { url?: string; profile?: string; dryRun?: boolean; skills?: string; skillsLocked?: boolean; docker?: boolean; localDownload?: boolean; requiredSecrets?: boolean; all?: boolean }) => {
@@ -722,7 +722,7 @@ export function registerPublishCommand(program: Command): void {
             skills_locked: options.skillsLocked || undefined,
             // SC-05: Include all skill files for UI preview
             skill_files: hasMultipleFiles ? skillFiles : undefined,
-            allow_local_download: options.localDownload || false,
+            allow_local_download: options.localDownload !== false,
           }, workspaceId)
           const skillVersion = skillResult.agent?.version || 'v1'
           const skillAgentId = skillResult.agent?.id
@@ -1202,7 +1202,7 @@ export function registerPublishCommand(program: Command): void {
             required_secrets: manifest.required_secrets,
             default_skills: skillsFromFlag || manifest.default_skills,
             skills_locked: manifest.skills_locked || options.skillsLocked || undefined,
-            allow_local_download: options.localDownload || false,
+            allow_local_download: options.localDownload !== false,
             environment: manifest.environment,
           }, workspaceId)
 
@@ -1314,7 +1314,7 @@ export function registerPublishCommand(program: Command): void {
           required_secrets: manifest.required_secrets,
           default_skills: skillsFromFlag || manifest.default_skills,
           skills_locked: manifest.skills_locked || options.skillsLocked || undefined,
-          allow_local_download: options.localDownload || false,
+          allow_local_download: options.localDownload !== false,
           // Environment pinning
           environment: manifest.environment,
         }, workspaceId)
