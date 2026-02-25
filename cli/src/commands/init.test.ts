@@ -179,7 +179,7 @@ describe('init command', () => {
       const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.type).toBe('tool')
       expect(manifest.run_mode).toBe('on_demand')
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
     })
 
     it('includes empty required_secrets in manifest', async () => {
@@ -377,7 +377,7 @@ describe('init command', () => {
       )
       const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.type).toBe('agent')
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
       expect(manifest.loop).toBeUndefined()
     })
 
@@ -510,7 +510,7 @@ describe('init command', () => {
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
     })
 
     it('includes manifest.dependencies with placeholder', async () => {
@@ -682,7 +682,7 @@ describe('init command', () => {
         ([p]) => (p as string).endsWith('orchagent.json')
       )
       const manifest = JSON.parse(manifestCall![1] as string)
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
     })
 
     it('includes supported_providers and required_secrets in manifest', async () => {
@@ -754,7 +754,7 @@ describe('init command', () => {
       const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.type).toBe('agent')
       expect(manifest.run_mode).toBe('always_on')
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
     })
 
     it('overrides --run-mode when --template discord is set', async () => {
@@ -914,7 +914,7 @@ describe('init command', () => {
       const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.type).toBe('agent')
       expect(manifest.version).toBe('v1')
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
       expect(manifest.required_secrets).toEqual([
         'ORCHAGENT_API_KEY',
         'DISCORD_WEBHOOK_URL',
@@ -1197,7 +1197,7 @@ describe('init command', () => {
         const manifest = JSON.parse(manifestCall![1] as string)
         expect(manifest.run_mode).toBe('always_on')
         expect(manifest.type).toBe('tool')
-        expect(manifest.runtime).toEqual({ command: 'python main.py' })
+        expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
       })
 
       it('shows service deploy in next steps', async () => {
@@ -1358,7 +1358,7 @@ describe('init command', () => {
       )
       const manifest = JSON.parse(manifestCall![1] as string)
       expect(manifest.type).toBe('agent')
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
       expect(manifest.manifest.dependencies).toHaveLength(3)
       expect(manifest.manifest.dependencies[0].id).toBe('org/agent-a')
       expect(manifest.manifest.max_hops).toBe(2)
@@ -1649,7 +1649,7 @@ describe('init command', () => {
       expect(manifest.type).toBe('tool')
       expect(manifest.name).toBe('my-job')
       expect(manifest.run_mode).toBe('on_demand')
-      expect(manifest.runtime).toEqual({ command: 'python main.py' })
+      expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
       expect(manifest.required_secrets).toEqual([])
       expect(manifest.tags).toContain('scheduled')
       expect(manifest.tags).toContain('cron')

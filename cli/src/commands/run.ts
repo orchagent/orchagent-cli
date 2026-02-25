@@ -32,6 +32,8 @@ import {
   callLlm,
   callLlmWithFallback,
   validateProvider,
+  detectProviderFromModel,
+  warnProviderModelMismatch,
   type LlmProvider,
   type ProviderConfig,
   PROVIDER_ENV_VARS,
@@ -938,6 +940,14 @@ async function executePromptLocally(
   providerOverride?: string,
   modelOverride?: string
 ): Promise<object> {
+  // Auto-detect provider from model name if not explicitly specified
+  if (!providerOverride && modelOverride) {
+    const detected = detectProviderFromModel(modelOverride)
+    if (detected) {
+      providerOverride = detected
+    }
+  }
+
   if (providerOverride) {
     validateProvider(providerOverride)
   }
@@ -964,7 +974,7 @@ async function executePromptLocally(
       )
     }
 
-    if (modelOverride && !providerOverride && allProviders.length > 1) {
+    if (modelOverride && allProviders.length > 1) {
       process.stderr.write(
         `Warning: --model specified without --provider. The model '${modelOverride}' will be used for all ${allProviders.length} fallback providers, which may cause errors if the model is incompatible.\n` +
         `Consider specifying --provider to ensure correct model/provider pairing.\n\n`
@@ -1044,6 +1054,14 @@ async function executeAgentLocally(
       'Python 3 is required for local agent execution.\n' +
       'Install Python 3: https://python.org/downloads'
     )
+  }
+
+  // Auto-detect provider from model name if not explicitly specified
+  if (!providerOverride && modelOverride) {
+    const detected = detectProviderFromModel(modelOverride)
+    if (detected) {
+      providerOverride = detected
+    }
   }
 
   // 2. Detect LLM provider + key
@@ -2354,20 +2372,8 @@ async function executeCloud(
       )
     }
     validateProvider(effectiveProvider)
-    if (options.model && effectiveProvider) {
-      const modelLower = options.model.toLowerCase()
-      const providerPatterns: Record<string, RegExp> = {
-        openai: /^(gpt-|o1-|o3-|davinci|text-)/,
-        anthropic: /^claude-/,
-        gemini: /^gemini-/,
-        ollama: /^(llama|mistral|deepseek|phi|qwen)/,
-      }
-      const expectedPattern = providerPatterns[effectiveProvider]
-      if (expectedPattern && !expectedPattern.test(modelLower)) {
-        process.stderr.write(
-          `Warning: Model '${options.model}' may not be a ${effectiveProvider} model.\n\n`
-        )
-      }
+    if (options.model) {
+      warnProviderModelMismatch(options.model, effectiveProvider)
     }
     llmKey = options.key
     llmProvider = effectiveProvider
@@ -2377,19 +2383,7 @@ async function executeCloud(
       validateProvider(effectiveProvider)
       providersToCheck = [effectiveProvider as LlmProvider]
       if (options.model) {
-        const modelLower = options.model.toLowerCase()
-        const providerPatterns: Record<string, RegExp> = {
-          openai: /^(gpt-|o1-|o3-|davinci|text-)/,
-          anthropic: /^claude-/,
-          gemini: /^gemini-/,
-          ollama: /^(llama|mistral|deepseek|phi|qwen)/,
-        }
-        const expectedPattern = providerPatterns[effectiveProvider]
-        if (expectedPattern && !expectedPattern.test(modelLower)) {
-          process.stderr.write(
-            `Warning: Model '${options.model}' may not be a ${effectiveProvider} model.\n\n`
-          )
-        }
+        warnProviderModelMismatch(options.model, effectiveProvider)
       }
     }
     const detected = await detectLlmKey(providersToCheck, resolved)
@@ -3093,18 +3087,12 @@ async function executeLocal(
   }
 
   if (options.model && options.provider) {
-    const modelLower = options.model.toLowerCase()
-    const providerPatterns: Record<string, RegExp> = {
-      openai: /^(gpt-|o1-|o3-|davinci|text-)/,
-      anthropic: /^claude-/,
-      gemini: /^gemini-/,
-      ollama: /^(llama|mistral|deepseek|phi|qwen)/,
-    }
-    const expectedPattern = providerPatterns[options.provider]
-    if (expectedPattern && !expectedPattern.test(modelLower)) {
-      process.stderr.write(
-        `Warning: Model '${options.model}' may not be a ${options.provider} model.\n\n`
-      )
+    warnProviderModelMismatch(options.model, options.provider)
+  } else if (options.model && !options.provider) {
+    const detected = detectProviderFromModel(options.model)
+    if (detected) {
+      options.provider = detected
+      process.stderr.write(`Auto-detected provider: ${detected} (from model '${options.model}')\n\n`)
     }
   }
 

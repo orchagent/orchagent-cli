@@ -13,7 +13,7 @@ export const TEMPLATE_MANIFEST = `{
   "type": "agent",
   "description": "Weekly GitHub activity summary delivered to Discord. Uses Claude to analyse commits, PRs, and issues — surfaces patterns, risks, and trends.",
   "runtime": {
-    "command": "python main.py"
+    "command": "python3 main.py"
   },
   "required_secrets": [
     "ORCHAGENT_API_KEY",

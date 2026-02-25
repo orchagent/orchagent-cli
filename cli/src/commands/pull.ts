@@ -10,7 +10,6 @@ import {
   publicRequest,
   request,
   listMyAgents,
-  getOrg,
   downloadCodeBundle,
   downloadCodeBundleAuthenticated,
   ApiError,
@@ -177,12 +176,15 @@ async function resolveAgent(
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
 
-  const userOrg = await getOrg(config, workspaceId)
-  if (userOrg.slug !== org) {
-    throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
+  // Try workspace-scoped search first, then fall back to personal org.
+  // This handles the case where the user is in a team workspace but the
+  // agent lives in their personal org (or vice versa).  The org_slug
+  // filter inside resolveFromMyAgents prevents cross-org contamination.
+  let data = await resolveFromMyAgents(config, agent, version, org, workspaceId)
+  if (!data && workspaceId) {
+    data = await resolveFromMyAgents(config, agent, version, org, undefined)
   }
 
-  const data = await resolveFromMyAgents(config, agent, version, org, workspaceId)
   if (!data) {
     throw new ApiError(`Agent '${org}/${agent}@${version}' not found`, 404)
   }
@@ -197,15 +199,13 @@ async function tryOwnerFallback(
   workspaceId?: string
 ): Promise<Omit<PullData, 'source'> | null> {
   try {
-    const myAgents = await listMyAgents(config, workspaceId)
-    let match: Agent | undefined
-    if (version === 'latest') {
-      match = myAgents
-        .filter(a => a.name === agent && a.org_slug === org)
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
-    } else {
-      match = myAgents.find(a => a.name === agent && a.version === version && a.org_slug === org)
+    let match = findOwnerMatch(await listMyAgents(config, workspaceId), agent, version, org)
+
+    // Retry without workspace restriction to find agents in personal org
+    if (!match && workspaceId) {
+      match = findOwnerMatch(await listMyAgents(config, undefined), agent, version, org)
     }
+
     if (!match) return null
 
     const agentData = await request<Agent>(config, 'GET', `/agents/${match.id}`)
@@ -213,6 +213,20 @@ async function tryOwnerFallback(
   } catch {
     return null
   }
+}
+
+function findOwnerMatch(
+  agents: Agent[],
+  agent: string,
+  version: string,
+  org: string
+): Agent | undefined {
+  if (version === 'latest') {
+    return agents
+      .filter(a => a.name === agent && a.org_slug === org)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+  }
+  return agents.find(a => a.name === agent && a.version === version && a.org_slug === org)
 }
 
 async function resolveFromMyAgents(

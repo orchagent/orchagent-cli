@@ -770,7 +770,7 @@ function runEntrypointWithInput(
 /**
  * Run fixture tests for code_runtime agents by executing the entrypoint
  * with fixture input as stdin and validating the JSON output.
- * Same interface as E2B: python main.py < input.json
+ * Same interface as E2B: python3 main.py < input.json
  */
 async function runCodeRuntimeFixtureTests(
   agentDir: string,
@@ -798,7 +798,7 @@ async function runCodeRuntimeFixtureTests(
       }
       const fixture = validateFixture(parsed, fixturePath)
 
-      // Run entrypoint with fixture input as stdin (same as E2B: python main.py < input.json)
+      // Run entrypoint with fixture input as stdin (same as E2B: python3 main.py < input.json)
       const inputJson = JSON.stringify(fixture.input)
       const result = await runEntrypointWithInput(agentDir, entrypoint, inputJson, verbose)
 

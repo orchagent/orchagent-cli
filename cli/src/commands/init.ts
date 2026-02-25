@@ -86,7 +86,7 @@ Reads JSON input from stdin, processes it, and writes JSON output to stdout.
 This is the standard orchagent tool protocol.
 
 Usage:
-  echo '{"input": "hello"}' | python main.py
+  echo '{"input": "hello"}' | python3 main.py
 """
 
 import json
@@ -166,7 +166,7 @@ IMPORTANT: Port 8080 is reserved by the platform health server.
            Use a different port (default: 3000).
 
 Local development:
-  python main.py
+  python3 main.py
 """
 
 import json
@@ -441,7 +441,7 @@ orchagent fan-out orchestrator.
 Calls multiple agents in parallel, combines their results.
 
 Usage:
-  echo '{"task": "analyze this"}' | python main.py
+  echo '{"task": "analyze this"}' | python3 main.py
 """
 
 import asyncio
@@ -535,7 +535,7 @@ orchagent pipeline orchestrator.
 Calls agents sequentially — each step's output feeds into the next.
 
 Usage:
-  echo '{"task": "process this data"}' | python main.py
+  echo '{"task": "process this data"}' | python3 main.py
 """
 
 import asyncio
@@ -624,7 +624,7 @@ orchagent map-reduce orchestrator.
 Splits input into chunks, processes each in parallel (map), then aggregates (reduce).
 
 Usage:
-  echo '{"items": ["item1", "item2", "item3"]}' | python main.py
+  echo '{"items": ["item1", "item2", "item3"]}' | python3 main.py
 """
 
 import asyncio
@@ -851,7 +851,7 @@ At least one platform token is required.
 
 \`\`\`sh
 pip install -r requirements.txt
-python main.py
+python3 main.py
 \`\`\`
 
 ### 5. Deploy
@@ -897,7 +897,7 @@ cp .env.example .env
 # Fill in DISCORD_BOT_TOKEN, ANTHROPIC_API_KEY, DISCORD_CHANNEL_IDS
 
 pip install -r requirements.txt
-python main.py
+python3 main.py
 \`\`\`
 
 ### 4. Deploy
@@ -1126,7 +1126,7 @@ Reads JSON input from stdin, processes the task, and writes JSON output to stdou
 This is a code-runtime agent — you control the logic and can call any LLM provider.
 
 Usage:
-  echo '{"task": "summarize this text"}' | python main.py
+  echo '{"task": "summarize this text"}' | python3 main.py
 """
 
 import json
@@ -1265,7 +1265,7 @@ Reads JSON input from stdin, calls dependency agents via the orchagent SDK,
 and writes JSON output to stdout.
 
 Usage:
-  echo '{"task": "do something"}' | python main.py
+  echo '{"task": "do something"}' | python3 main.py
 """
 
 import asyncio
@@ -1394,7 +1394,7 @@ Listens for messages in configured channels and responds using the Anthropic API
 Local development:
   1. Copy .env.example to .env and fill in your tokens
   2. pip install -r requirements.txt
-  3. python main.py
+  3. python3 main.py
 """
 
 import asyncio
@@ -1767,7 +1767,7 @@ export function registerInitCommand(program: Command): void {
           type: 'agent',
           description: 'Multi-platform support agent powered by Claude. Connects to Discord, Telegram, and/or Slack.',
           run_mode: 'always_on',
-          runtime: { command: 'python main.py' },
+          runtime: { command: 'python3 main.py' },
           entrypoint: 'main.py',
           supported_providers: ['anthropic'],
           default_models: { anthropic: 'claude-sonnet-4-5-20250929' },
@@ -1818,7 +1818,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${s}. Edit config.py with your product name and description\n`)
         process.stdout.write(`  ${s + 1}. Replace knowledge/ files with your own docs\n`)
         process.stdout.write(`  ${s + 2}. Copy .env.example to .env and add platform tokens\n`)
-        process.stdout.write(`  ${s + 3}. Test locally: pip install -r requirements.txt && python main.py\n`)
+        process.stdout.write(`  ${s + 3}. Test locally: pip install -r requirements.txt && python3 main.py\n`)
         process.stdout.write(`  ${s + 4}. Deploy: orch publish && orch service deploy\n`)
         process.stdout.write(AGENT_BUILDER_HINT)
         return
@@ -2000,7 +2000,7 @@ export function registerInitCommand(program: Command): void {
           type: 'agent',
           description: `A ${templateLabel} orchestrator agent`,
           run_mode: runMode,
-          runtime: { command: isJavaScript ? 'node main.js' : 'python main.py' },
+          runtime: { command: isJavaScript ? 'node main.js' : 'python3 main.py' },
           manifest: {
             manifest_version: 1,
             dependencies,
@@ -2076,7 +2076,7 @@ export function registerInitCommand(program: Command): void {
           type: 'tool',
           description: 'A scheduled job that runs on a cron schedule',
           run_mode: 'on_demand',
-          runtime: { command: isJavaScript ? 'node main.js' : 'python main.py' },
+          runtime: { command: isJavaScript ? 'node main.js' : 'python3 main.py' },
           required_secrets: [],
           tags: ['scheduled', 'cron'],
         }
@@ -2119,7 +2119,7 @@ export function registerInitCommand(program: Command): void {
           process.stdout.write(`  1. cd ${name}\n`)
         }
         const mainFile = isJavaScript ? 'main.js' : 'main.py'
-        const testCmd = isJavaScript ? 'node main.js' : 'python main.py'
+        const testCmd = isJavaScript ? 'node main.js' : 'python3 main.py'
         process.stdout.write(`  ${stepNum}. Edit ${mainFile} with your job logic\n`)
         process.stdout.write(`  ${stepNum + 1}. Test: echo '{}' | ${testCmd}\n`)
         process.stdout.write(`  ${stepNum + 2}. Publish: orch publish\n`)
@@ -2144,7 +2144,7 @@ export function registerInitCommand(program: Command): void {
 
       if (initMode.flavor !== 'code_runtime' && initMode.flavor !== 'orchestrator' && initMode.flavor !== 'discord' && runMode === 'always_on') {
         throw new CliError(
-          "run_mode=always_on requires runtime.command in orchagent.json (e.g. \"runtime\": { \"command\": \"python main.py\" }). Use --type tool or --type agentic for code-runtime agents."
+          "run_mode=always_on requires runtime.command in orchagent.json (e.g. \"runtime\": { \"command\": \"python3 main.py\" }). Use --type tool or --type agentic for code-runtime agents."
         )
       }
 
@@ -2160,7 +2160,7 @@ export function registerInitCommand(program: Command): void {
           manifest.runtime = { command: 'node main.js' }
           manifest.entrypoint = 'main.js'
         } else {
-          manifest.runtime = { command: 'python main.py' }
+          manifest.runtime = { command: 'python3 main.py' }
         }
         manifest.manifest = {
           manifest_version: 1,
@@ -2177,7 +2177,7 @@ export function registerInitCommand(program: Command): void {
         manifest.required_secrets = []
       } else if (initMode.flavor === 'discord') {
         manifest.description = 'An always-on Discord bot powered by Claude'
-        manifest.runtime = { command: 'python main.py' }
+        manifest.runtime = { command: 'python3 main.py' }
         manifest.supported_providers = ['anthropic']
         manifest.required_secrets = ['ANTHROPIC_API_KEY', 'DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_IDS']
         manifest.tags = ['discord', 'always-on']
@@ -2187,7 +2187,7 @@ export function registerInitCommand(program: Command): void {
           manifest.runtime = { command: 'node main.js' }
           manifest.entrypoint = 'main.js'
         } else {
-          manifest.runtime = { command: 'python main.py' }
+          manifest.runtime = { command: 'python3 main.py' }
         }
         manifest.required_secrets = []
       }
@@ -2295,7 +2295,7 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum}. Create a Discord bot at https://discord.com/developers/applications\n`)
         process.stdout.write(`  ${stepNum + 1}. Enable Message Content Intent in bot settings\n`)
         process.stdout.write(`  ${stepNum + 2}. Copy .env.example to .env and fill in your tokens\n`)
-        process.stdout.write(`  ${stepNum + 3}. Test locally: pip install -r requirements.txt && python main.py\n`)
+        process.stdout.write(`  ${stepNum + 3}. Test locally: pip install -r requirements.txt && python3 main.py\n`)
         process.stdout.write(`  ${stepNum + 4}. Deploy: orch publish\n`)
       } else if (initMode.flavor === 'code_runtime') {
         const stepNum = name ? 2 : 1
@@ -2304,7 +2304,7 @@ export function registerInitCommand(program: Command): void {
         }
         if (runMode === 'always_on') {
           const mainFile = isJavaScript ? 'main.js' : 'main.py'
-          const testCmd = isJavaScript ? 'node main.js' : 'python main.py'
+          const testCmd = isJavaScript ? 'node main.js' : 'python3 main.py'
           process.stdout.write(`  ${stepNum}. Edit ${mainFile} with your service logic\n`)
           process.stdout.write(`  ${stepNum + 1}. Test locally: ${testCmd}\n`)
           process.stdout.write(`  ${stepNum + 2}. Publish: orch publish\n`)
@@ -2319,7 +2319,7 @@ export function registerInitCommand(program: Command): void {
           const inputField = initMode.type === 'agent' ? 'task' : 'input'
           process.stdout.write(`  ${stepNum}. Edit main.py with your agent logic\n`)
           process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
-          process.stdout.write(`  ${stepNum + 2}. Test: echo '{"${inputField}": "test"}' | python main.py\n`)
+          process.stdout.write(`  ${stepNum + 2}. Test: echo '{"${inputField}": "test"}' | python3 main.py\n`)
           process.stdout.write(`  ${stepNum + 3}. Run: orchagent publish\n`)
         }
       } else {

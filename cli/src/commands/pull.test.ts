@@ -829,4 +829,155 @@ describe('pull command', () => {
       'ws-team-123'
     )
   })
+
+  // ─── BUG-13-02: orch pull returns 404 for private agents ─────────────────
+
+  describe('BUG-13-02: private agent resolution across workspaces', () => {
+    it('finds private agent in personal org without getOrg slug guard', async () => {
+      // User's personal org is 'joe'. resolveWorkspaceIdForOrg('joe') returns
+      // undefined because personal orgs aren't team workspaces.
+      // The old code called getOrg() which could return a mismatched slug and 404.
+      // The fix skips the getOrg check and goes straight to listMyAgents.
+      mockResolveWorkspaceIdForOrg.mockResolvedValue(undefined)
+
+      // Public endpoint → 404 (private agent)
+      mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
+
+      // listMyAgents without workspace returns personal org agents
+      mockListMyAgents.mockResolvedValueOnce([
+        {
+          id: 'agent-personal-1',
+          name: 'my-agent',
+          version: 'v2',
+          type: 'prompt',
+          org_slug: 'joe',
+          created_at: '2026-02-01T00:00:00Z',
+        } as any,
+      ])
+
+      mockRequest.mockResolvedValue({
+        id: 'agent-personal-1',
+        name: 'my-agent',
+        version: 'v2',
+        type: 'prompt',
+        execution_engine: 'direct_llm',
+        description: 'Personal agent',
+        prompt: 'Personal prompt.',
+      } as any)
+
+      await program.parseAsync([
+        'node', 'test', 'pull', 'joe/my-agent', '--output', outputDir,
+      ])
+
+      const prompt = await fs.readFile(path.join(outputDir, 'prompt.md'), 'utf-8')
+      expect(prompt).toBe('Personal prompt.')
+
+      // getOrg should NOT be called — no slug guard needed
+      expect(mockGetOrg).not.toHaveBeenCalled()
+    })
+
+    it('finds private agent when workspace-scoped list misses it but personal org has it', async () => {
+      // User is in team workspace
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-456')
+
+      // Public → 404
+      mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
+
+      // getOrg with team workspace returns team slug
+      mockGetOrg.mockResolvedValue({ id: 'org-team', name: 'Team', slug: 'team-acme', created_at: '2026-01-01' })
+
+      // Workspace-scoped list → agent not found in team
+      // Personal org list → agent found
+      mockListMyAgents
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          {
+            id: 'agent-joe-1',
+            name: 'my-agent',
+            version: 'v1',
+            type: 'agent',
+            org_slug: 'joe',
+            created_at: '2026-01-15T00:00:00Z',
+          } as any,
+        ])
+
+      mockRequest.mockResolvedValue({
+        id: 'agent-joe-1',
+        name: 'my-agent',
+        version: 'v1',
+        type: 'agent',
+        execution_engine: 'direct_llm',
+        description: 'Joe agent',
+        prompt: 'Joe prompt.',
+      } as any)
+
+      await program.parseAsync([
+        'node', 'test', 'pull', 'joe/my-agent', '--output', outputDir,
+      ])
+
+      const prompt = await fs.readFile(path.join(outputDir, 'prompt.md'), 'utf-8')
+      expect(prompt).toBe('Joe prompt.')
+    })
+
+    it('403 owner fallback finds agent in personal org when team workspace has no match', async () => {
+      // 403 with DOWNLOAD_DISABLED
+      mockPublicRequest.mockRejectedValue(
+        new ApiError('Download disabled', 403, {
+          error: { code: 'DOWNLOAD_DISABLED', message: 'Download disabled' },
+        })
+      )
+
+      // Team workspace context
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-789')
+
+      // Workspace-scoped list → no match
+      // Personal org list → match found
+      mockListMyAgents
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          {
+            id: 'agent-owner-1',
+            name: 'my-agent',
+            version: 'v3',
+            type: 'agent',
+            org_slug: 'joe',
+            created_at: '2026-01-01T00:00:00Z',
+          } as any,
+        ])
+
+      mockRequest.mockResolvedValue({
+        id: 'agent-owner-1',
+        name: 'my-agent',
+        version: 'v3',
+        type: 'agent',
+        execution_engine: 'direct_llm',
+        description: 'Owner agent',
+        prompt: 'Owner prompt.',
+      } as any)
+
+      await program.parseAsync([
+        'node', 'test', 'pull', 'joe/my-agent', '--output', outputDir,
+      ])
+
+      const prompt = await fs.readFile(path.join(outputDir, 'prompt.md'), 'utf-8')
+      expect(prompt).toBe('Owner prompt.')
+    })
+
+    it('still returns 404 when agent does not exist in any workspace', async () => {
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-456')
+      mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
+      mockGetOrg.mockResolvedValue({ id: 'org-team', name: 'Team', slug: 'team-acme', created_at: '2026-01-01' })
+
+      // Both workspace and personal org lists return nothing
+      mockListMyAgents
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+
+      await expect(
+        program.parseAsync([
+          'node', 'test', 'pull', 'joe/my-agent', '--output', outputDir,
+        ])
+      ).rejects.toThrow('not found')
+    })
+  })
 })

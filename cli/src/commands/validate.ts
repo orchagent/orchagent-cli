@@ -181,6 +181,7 @@ Options:
                 const org = await getOrg(config, workspaceId)
                 const depResults = await checkDependencies(config, deps, org.slug, workspaceId)
                 const notFound = depResults.filter(r => r.status === 'not_found')
+                const notFoundCrossOrg = depResults.filter(r => r.status === 'not_found_cross_org')
                 const notCallable = depResults.filter(r => r.status === 'found_not_callable')
 
                 if (notFound.length > 0) {
@@ -188,6 +189,14 @@ Options:
                     serverIssues.push({
                       level: 'warning',
                       message: `Unpublished dependency: ${dep.ref}`,
+                    })
+                  }
+                }
+                if (notFoundCrossOrg.length > 0) {
+                  for (const dep of notFoundCrossOrg) {
+                    serverIssues.push({
+                      level: 'warning',
+                      message: `Dependency not found (unpublished or not accessible from this workspace): ${dep.ref}`,
                     })
                   }
                 }

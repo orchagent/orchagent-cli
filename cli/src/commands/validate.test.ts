@@ -231,7 +231,7 @@ describe('normalizeRunMode', () => {
 
 describe('inferExecutionEngine', () => {
   it('infers code_runtime from runtime.command', () => {
-    const m = makeManifest({ runtime: { command: 'python main.py' } })
+    const m = makeManifest({ runtime: { command: 'python3 main.py' } })
     expect(inferExecutionEngine(m, 'prompt')).toEqual({ engine: 'code_runtime', conflict: false })
   })
 
@@ -241,7 +241,7 @@ describe('inferExecutionEngine', () => {
   })
 
   it('detects conflict when both runtime.command and loop are set', () => {
-    const m = makeManifest({ runtime: { command: 'python main.py' }, loop: { max_turns: 10 } })
+    const m = makeManifest({ runtime: { command: 'python3 main.py' }, loop: { max_turns: 10 } })
     expect(inferExecutionEngine(m, 'prompt')).toEqual({ engine: null, conflict: true })
   })
 
@@ -499,7 +499,7 @@ describe('validateAgentProject', () => {
 
   describe('execution engine', () => {
     it('errors when both runtime.command and loop are set', async () => {
-      mockPromptAgent({ runtime: { command: 'python main.py' }, loop: { max_turns: 5 } })
+      mockPromptAgent({ runtime: { command: 'python3 main.py' }, loop: { max_turns: 5 } })
       const result = await validateAgentProject('/test/project')
       expect(result.valid).toBe(false)
       expect(result.issues).toContainEqual(
@@ -668,7 +668,7 @@ describe('validateAgentProject', () => {
     })
 
     it('warns about reserved port 8080', async () => {
-      mockToolAgent({ run_mode: 'always_on', runtime: { command: 'python main.py' } })
+      mockToolAgent({ run_mode: 'always_on', runtime: { command: 'python3 main.py' } })
       mockScanReservedPort.mockResolvedValue(true)
       const result = await validateAgentProject('/test/project')
       expect(result.issues).toContainEqual(
@@ -873,6 +873,31 @@ describe('orch validate command', () => {
     expect(mockCheckDependencies).toHaveBeenCalled()
     const output = allStderr()
     expect(output).toContain('Unpublished dependency')
+  })
+
+  it('shows cross-org warning for dependencies in a different org (BUG-13-03)', async () => {
+    const m = makeManifest({
+      type: 'prompt',
+      manifest: { dependencies: [{ id: 'other-org/private-agent', version: 'v1' }] },
+    })
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith('orchagent.json')) return JSON.stringify(m)
+      if (p.endsWith('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.endsWith('prompt.md')) return 'System prompt'
+      if (p.endsWith('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    })
+    mockGetOrg.mockResolvedValue({ id: 'org-1', slug: 'joe', name: 'Joe' } as any)
+    mockCheckDependencies.mockResolvedValue([
+      { ref: 'other-org/private-agent@v1', status: 'not_found_cross_org' },
+    ])
+
+    await program.parseAsync(['node', 'test', 'validate'])
+    expect(mockCheckDependencies).toHaveBeenCalled()
+    const output = allStderr()
+    expect(output).not.toContain('Unpublished dependency')
+    expect(output).toContain('not accessible from this workspace')
   })
 
   it('shows server validation with --server flag', async () => {

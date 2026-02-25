@@ -20,7 +20,7 @@ Schedule examples:
   orch schedule create org/my-job --cron "0 */6 * * *"  # Every 6 hours
 
 Local test:
-  echo '{}' | python main.py
+  echo '{}' | python3 main.py
 """
 
 import json

@@ -336,3 +336,42 @@ export function validateProvider(provider: string): void {
     )
   }
 }
+
+/**
+ * Model-name patterns for auto-detecting the LLM provider.
+ * Tested against the lowercased model string.
+ */
+export const MODEL_PROVIDER_PATTERNS: Record<string, RegExp> = {
+  openai: /^(gpt-|o1-|o3-|o4-|davinci|text-)/,
+  anthropic: /^claude-/,
+  gemini: /^gemini-/,
+  ollama: /^(llama|mistral|deepseek|phi|qwen)/,
+}
+
+/**
+ * Auto-detect the LLM provider from a model name using prefix patterns.
+ * Returns the provider string if a match is found, or null if ambiguous/unknown.
+ */
+export function detectProviderFromModel(model: string): string | null {
+  const modelLower = model.toLowerCase()
+  for (const [provider, pattern] of Object.entries(MODEL_PROVIDER_PATTERNS)) {
+    if (pattern.test(modelLower)) {
+      return provider
+    }
+  }
+  return null
+}
+
+/**
+ * Warn if a model name doesn't match the expected provider's pattern.
+ * Used when both --model and --provider are explicitly specified.
+ */
+export function warnProviderModelMismatch(model: string, provider: string): void {
+  const modelLower = model.toLowerCase()
+  const expectedPattern = MODEL_PROVIDER_PATTERNS[provider]
+  if (expectedPattern && !expectedPattern.test(modelLower)) {
+    process.stderr.write(
+      `Warning: Model '${model}' may not be a ${provider} model.\n\n`
+    )
+  }
+}

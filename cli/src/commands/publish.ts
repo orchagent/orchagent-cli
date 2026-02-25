@@ -375,12 +375,12 @@ function commandForEntrypoint(entrypoint: string): string {
   if (entrypoint.endsWith('.js') || entrypoint.endsWith('.mjs') || entrypoint.endsWith('.cjs') || entrypoint.endsWith('.ts')) {
     return `node ${entrypoint}`
   }
-  return `python ${entrypoint}`
+  return `python3 ${entrypoint}`
 }
 
 export type DepCheckResult = {
   ref: string
-  status: 'found_callable' | 'found_not_callable' | 'not_found'
+  status: 'found_callable' | 'found_not_callable' | 'not_found' | 'not_found_cross_org'
 }
 
 /**
@@ -431,12 +431,83 @@ export async function checkDependencies(
         return { ref, status: agent.callable ? 'found_callable' : 'found_not_callable' }
       } catch (err: unknown) {
         if ((err as { status?: number })?.status === 404) {
-          return { ref, status: 'not_found' }
+          // Could be unpublished OR published-but-private — we can't tell from a 404
+          return { ref, status: 'not_found_cross_org' }
         }
         // Network/unexpected error — don't false alarm
         return { ref, status: 'found_callable' }
       }
     })
+  )
+}
+
+/**
+ * Provider names the platform supports for LLM vault keys.
+ * Must stay in sync with gateway's _PROVIDER_TO_SECRET_NAME (db.py).
+ */
+const PROVIDER_TO_SECRET_NAME: Record<string, string> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+}
+
+/**
+ * After a successful publish, check whether the target workspace has LLM vault
+ * keys that match the agent's supported_providers. If not, print a warning so
+ * the user knows cloud runs will fail.
+ *
+ * Best-effort: API errors are silently swallowed (the agent is already published).
+ */
+export async function checkWorkspaceLlmKeys(
+  config: ResolvedConfig,
+  workspaceId: string,
+  workspaceSlug: string,
+  executionEngine: ExecutionEngine,
+  supportedProviders: string[]
+): Promise<void> {
+  // Only direct_llm and managed_loop engines need LLM keys
+  if (executionEngine !== 'direct_llm' && executionEngine !== 'managed_loop') {
+    return
+  }
+
+  let secrets: Array<{ secret_type: string; llm_provider: string | null }>
+  try {
+    const result = await request<{
+      secrets: Array<{ secret_type: string; llm_provider: string | null }>
+    }>(config, 'GET', `/workspaces/${workspaceId}/secrets`)
+    secrets = result.secrets
+    if (!Array.isArray(secrets)) return
+  } catch {
+    return // Can't reach API or unexpected response — skip warning silently
+  }
+
+  const llmKeys = secrets.filter(s => s.secret_type === 'llm_key' && s.llm_provider)
+  const availableProviders = new Set(llmKeys.map(s => s.llm_provider!))
+
+  // Determine which providers the agent needs
+  const needsAny = supportedProviders.includes('any')
+  if (needsAny) {
+    // 'any' means any single provider works
+    if (availableProviders.size > 0) return
+  } else {
+    // Check if at least one of the supported providers has a key
+    const hasMatch = supportedProviders.some(p => availableProviders.has(p))
+    if (hasMatch) return
+  }
+
+  // Build the warning message
+  const providerList = needsAny
+    ? Object.keys(PROVIDER_TO_SECRET_NAME).join(', ')
+    : supportedProviders.join(', ')
+
+  const exampleSecretName = needsAny
+    ? 'ANTHROPIC_API_KEY'
+    : (PROVIDER_TO_SECRET_NAME[supportedProviders[0]] || `${supportedProviders[0].toUpperCase()}_API_KEY`)
+
+  process.stderr.write(
+    chalk.yellow(`\n⚠ No LLM vault keys found in workspace '${workspaceSlug}' for providers: ${providerList}\n`) +
+    `  Cloud runs will fail until you add keys.\n` +
+    `  Add a key: ${chalk.cyan(`orch secrets set ${exampleSecretName} <key>`)}\n`
   )
 }
 
@@ -1040,6 +1111,7 @@ export function registerPublishCommand(program: Command): void {
       if (manifestDeps?.length) {
         const depResults = await checkDependencies(config, manifestDeps, org.slug, workspaceId)
         const notFound = depResults.filter(r => r.status === 'not_found')
+        const notFoundCrossOrg = depResults.filter(r => r.status === 'not_found_cross_org')
         const notCallable = depResults.filter(r => r.status === 'found_not_callable')
 
         if (notFound.length > 0) {
@@ -1053,6 +1125,17 @@ export function registerPublishCommand(program: Command): void {
           )
         }
 
+        if (notFoundCrossOrg.length > 0) {
+          process.stderr.write(chalk.yellow(`\n⚠ Dependencies not found (unpublished or not accessible from this workspace):\n`))
+          for (const dep of notFoundCrossOrg) {
+            process.stderr.write(chalk.yellow(`  - ${dep.ref}\n`))
+          }
+          process.stderr.write(
+            `\n  If the dependency is published in another workspace, ensure it's in the same\n` +
+            `  workspace as this orchestrator, or use agent access grants.\n\n`
+          )
+        }
+
         if (notCallable.length > 0) {
           process.stderr.write(chalk.yellow(`\n⚠ Dependencies have callable: false:\n`))
           for (const dep of notCallable) {
@@ -1063,6 +1146,26 @@ export function registerPublishCommand(program: Command): void {
             `  agent-to-agent calls at runtime. Set callable: true (or remove\n` +
             `  the field to use the default) and republish each dependency.\n\n`
           )
+        }
+      }
+
+      // UX-13-02: Warn when managed-loop orchestrator has dependencies but no custom_tools.
+      // Without custom_tools, the LLM has no way to call its declared dependencies.
+      if (executionEngine === 'managed_loop' && manifestDeps?.length) {
+        const mergedTools = Array.isArray((loopConfig as any)?.custom_tools) ? (loopConfig as any).custom_tools : []
+        if (mergedTools.length === 0) {
+          process.stderr.write(chalk.yellow(
+            `\n⚠ This managed-loop agent declares dependencies but no custom_tools.\n` +
+            `  Without custom_tools, the LLM cannot call dependencies at runtime —\n` +
+            `  it will waste turns exploring the filesystem instead.\n\n` +
+            `  Use 'orch scaffold orchestration' to auto-generate the correct\n` +
+            `  custom_tools configuration, or add them manually to your loop config:\n\n` +
+            `    "loop": {\n` +
+            `      "custom_tools": [\n` +
+            `        { "name": "call_worker", "description": "...", "command": "python3 /home/user/helpers/orch_call.py org/worker@v1" }\n` +
+            `      ]\n` +
+            `    }\n\n`
+          ))
         }
       }
 
@@ -1510,6 +1613,15 @@ export function registerPublishCommand(program: Command): void {
           process.stderr.write(chalk.yellow(`⚠ ${warning}\n`))
         }
       }
+
+      // Warn if workspace has no LLM vault keys for this agent's providers (UX-13-01)
+      await checkWorkspaceLlmKeys(
+        config,
+        workspaceId || org.id,
+        org.slug,
+        executionEngine,
+        supportedProviders
+      )
 
       // Show required secrets with setup instructions (F-18)
       if (manifest.required_secrets?.length) {

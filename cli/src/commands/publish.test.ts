@@ -20,7 +20,7 @@ vi.mock('../lib/bundle')
 vi.mock('../lib/key-store')
 
 import fs from 'fs/promises'
-import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, scanReservedPort, checkDependencies, detectSdkCompatible } from './publish'
+import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, scanReservedPort, checkDependencies, detectSdkCompatible, checkWorkspaceLlmKeys } from './publish'
 import { CliError } from '../lib/errors'
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { createAgent, getOrg, previewAgentVersion, validateAgentPublish, uploadCodeBundle, request, getPublicAgent } from '../lib/api'
@@ -381,7 +381,7 @@ describe('publish command', () => {
           name: 'my-tool',
           type: 'tool',
           run_mode: 'on_demand',
-          runtime: { command: 'python main.py' },
+          runtime: { command: 'python3 main.py' },
           url: 'https://my-agent.run.app',
         }),
         undefined
@@ -1205,8 +1205,10 @@ Skill prompt.`
 
       await program.parseAsync(['node', 'test', 'publish'])
 
-      // Should NOT call request for workspace resolution
-      expect(mockRequest).not.toHaveBeenCalled()
+      // Should NOT call request for workspace resolution (vault key check may call request)
+      expect(mockRequest).not.toHaveBeenCalledWith(
+        expect.any(Object), 'GET', '/workspaces'
+      )
 
       // Should pass undefined workspace to createAgent
       expect(mockCreateAgent).toHaveBeenCalledWith(
@@ -1497,7 +1499,7 @@ describe('publish command - schema auto-migration', () => {
       type: 'agent',
       description: 'Agent with secrets',
       required_secrets: ['DISCORD_WEBHOOK_URL', 'GITHUB_TOKEN'],
-      runtime: { command: 'python main.py' },
+      runtime: { command: 'python3 main.py' },
     }
 
     mockFs.readFile.mockImplementation(async (filePath: unknown) => {
@@ -1538,7 +1540,7 @@ describe('publish command - schema auto-migration', () => {
       type: 'agent',
       description: 'Agent with secrets',
       required_secrets: ['API_KEY', 'DB_URL'],
-      runtime: { command: 'python main.py' },
+      runtime: { command: 'python3 main.py' },
     }
 
     mockFs.readFile.mockImplementation(async (filePath: unknown) => {
@@ -1889,7 +1891,7 @@ describe('required_secrets enforcement (C-1)', () => {
       name: 'my-agent',
       type: 'agent',
       description: 'An agent',
-      runtime: { command: 'python main.py' },
+      runtime: { command: 'python3 main.py' },
     }
 
     mockFs.readFile.mockImplementation(async (filePath: any) => {
@@ -1950,7 +1952,7 @@ describe('required_secrets enforcement (C-1)', () => {
       name: 'my-agent',
       type: 'agent',
       description: 'An agent',
-      runtime: { command: 'python main.py' },
+      runtime: { command: 'python3 main.py' },
       required_secrets: [],
     }
 
@@ -2194,7 +2196,7 @@ describe('checkDependencies', () => {
     expect(mockRequest).not.toHaveBeenCalled()
   })
 
-  it('returns not_found for cross-org dep that 404s on public endpoint', async () => {
+  it('returns not_found_cross_org for cross-org dep that 404s on public endpoint', async () => {
     mockGetPublicAgent.mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }))
 
     const results = await checkDependencies(
@@ -2204,7 +2206,28 @@ describe('checkDependencies', () => {
     )
 
     expect(results).toEqual([
-      { ref: 'other-org/missing@v1', status: 'not_found' },
+      { ref: 'other-org/missing@v1', status: 'not_found_cross_org' },
+    ])
+  })
+
+  it('distinguishes same-org not_found from cross-org not_found_cross_org', async () => {
+    // Same-org: return empty list so dep is not_found
+    mockRequest.mockResolvedValue([] as any)
+    // Cross-org: 404
+    mockGetPublicAgent.mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }))
+
+    const results = await checkDependencies(
+      config,
+      [
+        { id: 'myorg/missing-local', version: 'v1' },
+        { id: 'other-org/private-agent', version: 'v2' },
+      ],
+      'myorg'
+    )
+
+    expect(results).toEqual([
+      { ref: 'myorg/missing-local@v1', status: 'not_found' },
+      { ref: 'other-org/private-agent@v2', status: 'not_found_cross_org' },
     ])
   })
 
@@ -2332,7 +2355,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
       name: 'orchestrator',
       type: 'agent',
       required_secrets: ['ANTHROPIC_API_KEY'],
-      runtime: { command: 'python main.py' },
+      runtime: { command: 'python3 main.py' },
       manifest: {
         manifest_version: 1,
         dependencies: [{ id: 'test-org/missing-worker', version: 'v1' }],
@@ -2374,7 +2397,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
       name: 'orchestrator',
       type: 'agent',
       required_secrets: ['ANTHROPIC_API_KEY'],
-      runtime: { command: 'python main.py' },
+      runtime: { command: 'python3 main.py' },
       manifest: {
         manifest_version: 1,
         dependencies: [{ id: 'test-org/not-callable-worker', version: 'v1' }],
@@ -2418,7 +2441,7 @@ describe('publish command - dependency warnings (F-9b)', () => {
       name: 'orchestrator',
       type: 'agent',
       required_secrets: ['ANTHROPIC_API_KEY'],
-      runtime: { command: 'python main.py' },
+      runtime: { command: 'python3 main.py' },
       manifest: {
         manifest_version: 1,
         dependencies: [{ id: 'test-org/good-worker', version: 'v1' }],
@@ -2477,8 +2500,197 @@ describe('publish command - dependency warnings (F-9b)', () => {
     const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
     expect(stderrOutput).not.toContain('Unpublished dependencies')
     expect(stderrOutput).not.toContain('callable: false')
-    // Should not have fetched agent list
-    expect(mockRequest).not.toHaveBeenCalled()
+    // Should not have fetched agent list for dependency checking
+    expect(mockRequest).not.toHaveBeenCalledWith(
+      expect.any(Object), 'GET', '/agents', expect.any(Object)
+    )
+  })
+
+  it('shows cross-org message for dependencies in a different org (BUG-13-03)', async () => {
+    const manifest = {
+      name: 'orchestrator',
+      type: 'agent',
+      required_secrets: ['ANTHROPIC_API_KEY'],
+      runtime: { command: 'python3 main.py' },
+      manifest: {
+        manifest_version: 1,
+        dependencies: [{ id: 'other-org/private-agent', version: 'v1' }],
+        max_hops: 2,
+        timeout_ms: 60000,
+        per_call_downstream_cap: 50,
+      },
+    }
+
+    // Cross-org dep: 404 on public endpoint (could be private)
+    mockGetPublicAgent.mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }))
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123', bundle_size_bytes: 100,
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    // Should NOT show the misleading "Unpublished dependencies" message
+    expect(stderrOutput).not.toContain('Unpublished dependencies')
+    // Should show the accurate cross-org message
+    expect(stderrOutput).toContain('not found (unpublished or not accessible from this workspace)')
+    expect(stderrOutput).toContain('other-org/private-agent@v1')
+    expect(stderrOutput).toContain('agent access grants')
+  })
+})
+
+describe('UX-13-02: managed-loop deps without custom_tools warning', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let originalCwd: () => string
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerPublishCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({ apiKey: 'sk_test_123', apiUrl: 'https://api.test.com' })
+    mockLoadConfig.mockResolvedValue({})
+    mockGetOrg.mockResolvedValue({ id: 'org-123', slug: 'test-org', name: 'Test Org' })
+    mockCreateAgent.mockResolvedValue({ id: 'agent-123' })
+    mockValidateAgentPublish.mockResolvedValue({ valid: true, errors: [], warnings: [] })
+    originalCwd = process.cwd
+    process.cwd = () => '/test/project'
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    process.cwd = originalCwd
+    vi.restoreAllMocks()
+  })
+
+  it('warns when managed-loop has deps but no custom_tools', async () => {
+    const manifest = {
+      name: 'my-orchestrator',
+      type: 'agent',
+      required_secrets: [],
+      loop: { max_turns: 10 },
+      manifest: {
+        manifest_version: 1,
+        dependencies: [{ id: 'acme/worker', version: 'v1' }],
+        max_hops: 2,
+        timeout_ms: 60000,
+        per_call_downstream_cap: 50,
+      },
+    }
+
+    // Mock dep check: same org, found & callable
+    mockRequest.mockResolvedValue({ agents: [{ name: 'worker', callable: true }], secrets: [] })
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You orchestrate tasks.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).toContain('no custom_tools')
+    expect(stderrOutput).toContain('orch scaffold orchestration')
+  })
+
+  it('does not warn when managed-loop has deps AND custom_tools', async () => {
+    const manifest = {
+      name: 'my-orchestrator',
+      type: 'agent',
+      required_secrets: [],
+      loop: {
+        max_turns: 10,
+        custom_tools: [
+          { name: 'call_worker', description: 'Call worker', command: 'python3 /home/user/helpers/orch_call.py acme/worker@v1' },
+        ],
+      },
+      manifest: {
+        manifest_version: 1,
+        dependencies: [{ id: 'acme/worker', version: 'v1' }],
+        max_hops: 2,
+        timeout_ms: 60000,
+        per_call_downstream_cap: 50,
+      },
+    }
+
+    mockRequest.mockResolvedValue({ agents: [{ name: 'worker', callable: true }], secrets: [] })
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('prompt.md')) return 'You orchestrate tasks.'
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('no custom_tools')
+  })
+
+  it('does not warn for code_runtime orchestrator without custom_tools', async () => {
+    const manifest = {
+      name: 'code-orchestrator',
+      type: 'tool',
+      required_secrets: ['ANTHROPIC_API_KEY'],
+      runtime: { command: 'python3 main.py' },
+      manifest: {
+        manifest_version: 1,
+        dependencies: [{ id: 'acme/worker', version: 'v1' }],
+        max_hops: 2,
+        timeout_ms: 60000,
+        per_call_downstream_cap: 50,
+      },
+    }
+
+    mockGetPublicAgent.mockResolvedValue({ name: 'worker', callable: true } as any)
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-test' as any)
+    mockFs.rm.mockResolvedValue(undefined)
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 100 } as any)
+    mockValidateBundle.mockResolvedValue({ valid: true } as any)
+    mockUploadCodeBundle.mockResolvedValue({
+      success: true, code_hash: 'abc123', bundle_size_bytes: 100,
+    } as any)
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+
+    mockFs.readFile.mockImplementation(async (filePath: any) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      return ''
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    const stderrOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(stderrOutput).not.toContain('no custom_tools')
   })
 })
 
@@ -2925,7 +3137,7 @@ describe('dry-run server-side validation (BUG-11)', () => {
       name: 'my-agent',
       type: 'agent',
       description: 'An agent',
-      runtime: { command: 'python main.py' },
+      runtime: { command: 'python3 main.py' },
     }
 
     mockFs.readFile.mockImplementation(async (filePath: any) => {
@@ -3586,5 +3798,178 @@ Skill prompt content.`
     expect(allOutput).toContain('SKILL.md')
     expect(allOutput).toContain('helpers.py')
     expect(allOutput).toContain('config.json')
+  })
+})
+
+// ============================================
+// checkWorkspaceLlmKeys (UX-13-01)
+// ============================================
+
+describe('checkWorkspaceLlmKeys', () => {
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  const baseConfig = { apiKey: 'sk_test_123', apiUrl: 'https://api.test.com' }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+  })
+
+  afterEach(() => {
+    stderrSpy.mockRestore()
+  })
+
+  it('shows warning when workspace has no LLM keys for direct_llm agent', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['anthropic'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('No LLM vault keys found')
+    expect(output).toContain("workspace 'my-team'")
+    expect(output).toContain('anthropic')
+    expect(output).toContain('ANTHROPIC_API_KEY')
+  })
+
+  it('shows warning when workspace has no LLM keys for managed_loop agent', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'managed_loop', ['anthropic'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('No LLM vault keys found')
+    expect(output).toContain('anthropic')
+  })
+
+  it('does NOT warn when matching LLM key exists', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { secret_type: 'llm_key', llm_provider: 'anthropic' },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['anthropic'])
+
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('does NOT warn for code_runtime agents', async () => {
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'code_runtime', ['any'])
+
+    // Should not even call the API
+    expect(mockRequest).not.toHaveBeenCalled()
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('warns when provider "any" is used and no LLM keys exist', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['any'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('No LLM vault keys found')
+    expect(output).toContain('anthropic, openai, gemini')
+  })
+
+  it('does NOT warn when provider "any" is used and at least one LLM key exists', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { secret_type: 'llm_key', llm_provider: 'openai' },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['any'])
+
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('warns when supported_providers has no matching key', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { secret_type: 'llm_key', llm_provider: 'openai' },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'managed_loop', ['anthropic'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('No LLM vault keys found')
+    expect(output).toContain('anthropic')
+    expect(output).toContain('ANTHROPIC_API_KEY')
+  })
+
+  it('does NOT warn when one of multiple supported providers matches', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { secret_type: 'llm_key', llm_provider: 'gemini' },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['anthropic', 'gemini'])
+
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('ignores custom secrets (non-LLM keys)', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { secret_type: 'custom', llm_provider: null },
+        { secret_type: 'custom', llm_provider: null },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['anthropic'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('No LLM vault keys found')
+  })
+
+  it('silently swallows API errors (agent already published)', async () => {
+    mockRequest.mockRejectedValue(new Error('Network error'))
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['anthropic'])
+
+    // No warning, no crash
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('suggests correct secret name for openai provider', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['openai'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('OPENAI_API_KEY')
+  })
+
+  it('suggests correct secret name for gemini provider', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'managed_loop', ['gemini'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('GEMINI_API_KEY')
+  })
+
+  it('handles unknown provider gracefully in suggestion', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['mistral'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('No LLM vault keys found')
+    expect(output).toContain('MISTRAL_API_KEY')
+  })
+
+  it('calls the correct API path with workspace ID', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-abc-123', 'my-team', 'direct_llm', ['anthropic'])
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      baseConfig,
+      'GET',
+      '/workspaces/ws-abc-123/secrets'
+    )
   })
 })
