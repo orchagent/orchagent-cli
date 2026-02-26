@@ -703,3 +703,186 @@ describe('IDEA-013: orch info shows environment pinning', () => {
     expect(output).toContain('Node 20')
   })
 })
+
+describe('Surface secrets in orch info', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerInfoCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockGetResolvedConfig.mockResolvedValue({
+      apiKey: 'sk_test_123',
+      apiUrl: 'https://api.test.com',
+      defaultOrg: 'test-org',
+    })
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('displays required secrets', async () => {
+    mockGetPublicAgent.mockResolvedValue({
+      id: 'agent-secrets-1',
+      org_name: 'OrchAgent',
+      org_slug: 'orchagent',
+      name: 'cto-agent',
+      version: 'v1',
+      type: 'agent',
+      description: 'AI CTO agent',
+      supported_providers: ['anthropic'],
+      required_secrets: ['MONITOR_URLS', 'ANTHROPIC_API_KEY'],
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'info', 'orchagent/cto-agent'])
+
+    const output = allStdout(stdoutSpy)
+    expect(output).toContain('Secrets (required):')
+    expect(output).toContain('MONITOR_URLS')
+    expect(output).toContain('ANTHROPIC_API_KEY')
+  })
+
+  it('displays optional secrets', async () => {
+    mockGetPublicAgent.mockResolvedValue({
+      id: 'agent-secrets-2',
+      org_name: 'OrchAgent',
+      org_slug: 'orchagent',
+      name: 'cto-agent',
+      version: 'v1',
+      type: 'agent',
+      description: 'AI CTO agent',
+      supported_providers: ['anthropic'],
+      required_secrets: ['MONITOR_URLS'],
+      optional_secrets: ['DISCORD_WEBHOOK_URL', 'SLACK_WEBHOOK_URL'],
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'info', 'orchagent/cto-agent'])
+
+    const output = allStdout(stdoutSpy)
+    expect(output).toContain('Secrets (optional):')
+    expect(output).toContain('DISCORD_WEBHOOK_URL')
+    expect(output).toContain('SLACK_WEBHOOK_URL')
+  })
+
+  it('displays both required and optional secrets together', async () => {
+    mockGetPublicAgent.mockResolvedValue({
+      id: 'agent-secrets-3',
+      org_name: 'OrchAgent',
+      org_slug: 'orchagent',
+      name: 'cto-agent',
+      version: 'v1',
+      type: 'agent',
+      description: 'AI CTO agent',
+      supported_providers: ['anthropic'],
+      required_secrets: ['MONITOR_URLS', 'ANTHROPIC_API_KEY'],
+      optional_secrets: ['DISCORD_WEBHOOK_URL', 'BACKUP_S3_ENDPOINT'],
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'info', 'orchagent/cto-agent'])
+
+    const output = allStdout(stdoutSpy)
+    expect(output).toContain('Secrets (required): MONITOR_URLS, ANTHROPIC_API_KEY')
+    expect(output).toContain('Secrets (optional): DISCORD_WEBHOOK_URL, BACKUP_S3_ENDPOINT')
+  })
+
+  it('does not display secrets section when none exist', async () => {
+    mockGetPublicAgent.mockResolvedValue({
+      id: 'agent-secrets-4',
+      org_name: 'Joe',
+      org_slug: 'joe',
+      name: 'simple-agent',
+      version: 'v1',
+      type: 'prompt',
+      description: 'A simple agent',
+      supported_providers: ['any'],
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'info', 'joe/simple-agent'])
+
+    const output = allStdout(stdoutSpy)
+    expect(output).not.toContain('Secrets')
+  })
+
+  it('includes secrets in JSON output', async () => {
+    mockGetPublicAgent.mockResolvedValue({
+      id: 'agent-secrets-5',
+      org_name: 'OrchAgent',
+      org_slug: 'orchagent',
+      name: 'cto-agent',
+      version: 'v1',
+      type: 'agent',
+      description: 'AI CTO agent',
+      supported_providers: ['anthropic'],
+      required_secrets: ['MONITOR_URLS'],
+      optional_secrets: ['DISCORD_WEBHOOK_URL'],
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'info', 'orchagent/cto-agent', '--json'])
+
+    const jsonOutput = stdoutSpy.mock.calls.find(call =>
+      call[0].toString().includes('"name"')
+    )
+    expect(jsonOutput).toBeTruthy()
+    const parsed = JSON.parse(jsonOutput![0] as string)
+    expect(parsed.required_secrets).toEqual(['MONITOR_URLS'])
+    expect(parsed.optional_secrets).toEqual(['DISCORD_WEBHOOK_URL'])
+  })
+
+  it('shows secrets via private agent fallback path', async () => {
+    const { ApiError } = await import('../lib/api')
+    mockGetPublicAgent.mockRejectedValue(new ApiError('Not found', 404))
+    mockGetOrg.mockResolvedValue({
+      id: 'org-1',
+      name: 'Joe',
+      slug: 'joe',
+      created_at: '2026-01-01T00:00:00Z',
+    })
+    mockListMyAgents.mockResolvedValue([
+      {
+        id: 'private-agent-secrets',
+        name: 'private-cto',
+        version: 'v1',
+        type: 'agent',
+        description: 'Private CTO agent',
+        supported_providers: ['anthropic'],
+        created_at: '2026-01-01T00:00:00Z',
+        required_secrets: ['MONITOR_URLS', 'ANTHROPIC_API_KEY'],
+        optional_secrets: ['DISCORD_WEBHOOK_URL'],
+      } as any,
+    ])
+
+    await program.parseAsync(['node', 'test', 'info', 'joe/private-cto@v1'])
+
+    const output = allStdout(stdoutSpy)
+    expect(output).toContain('Secrets (required): MONITOR_URLS, ANTHROPIC_API_KEY')
+    expect(output).toContain('Secrets (optional): DISCORD_WEBHOOK_URL')
+  })
+
+  it('handles null/undefined secrets gracefully', async () => {
+    mockGetPublicAgent.mockResolvedValue({
+      id: 'agent-secrets-null',
+      org_name: 'Joe',
+      org_slug: 'joe',
+      name: 'null-secrets',
+      version: 'v1',
+      type: 'prompt',
+      description: 'Agent with null secrets',
+      supported_providers: ['any'],
+      required_secrets: null,
+      optional_secrets: null,
+    } as any)
+
+    await program.parseAsync(['node', 'test', 'info', 'joe/null-secrets'])
+
+    const output = allStdout(stdoutSpy)
+    expect(output).not.toContain('Secrets')
+  })
+})

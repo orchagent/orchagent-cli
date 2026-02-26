@@ -56,6 +56,9 @@ type AgentDownload = {
   default_skills?: string[]
   custom_tools?: CustomTool[]
   environment?: EnvironmentPinning
+  // Secrets
+  required_secrets?: string[]
+  optional_secrets?: string[]
 }
 
 function formatSchema(schema: Schema, indent: string = '  '): string {
@@ -156,6 +159,8 @@ async function getAgentInfo(
       default_skills: (meta.default_skills as string[] | undefined) || [],
       custom_tools: extractCustomTools(manifest),
       environment: manifest?.environment as EnvironmentPinning | undefined,
+      required_secrets: (meta.required_secrets as string[] | undefined) || [],
+      optional_secrets: (meta.optional_secrets as string[] | undefined) || [],
     }
   } catch (err) {
     if (!(err instanceof ApiError) || err.status !== 404) throw err
@@ -208,6 +213,8 @@ async function getAgentInfo(
     default_skills: targetAgent.default_skills || [],
     custom_tools: extractCustomTools(agentManifest),
     environment: agentManifest?.environment as EnvironmentPinning | undefined,
+    required_secrets: targetAgent.required_secrets || [],
+    optional_secrets: targetAgent.optional_secrets || [],
   }
 }
 
@@ -256,6 +263,16 @@ export function registerInfoCommand(program: Command): void {
         process.stdout.write(`Callable: ${chalk.green('yes')} — other agents can invoke this via the orchagent SDK\n`)
       }
       process.stdout.write(`Providers: ${agentData.supported_providers.join(', ')}\n`)
+
+      // Display secrets
+      const hasRequired = agentData.required_secrets && agentData.required_secrets.length > 0
+      const hasOptional = agentData.optional_secrets && agentData.optional_secrets.length > 0
+      if (hasRequired) {
+        process.stdout.write(`Secrets (required): ${agentData.required_secrets!.join(', ')}\n`)
+      }
+      if (hasOptional) {
+        process.stdout.write(`Secrets (optional): ${agentData.optional_secrets!.join(', ')}\n`)
+      }
 
       if (agentData.type === 'tool') {
         // Don't show internal routing URLs - they confuse users
