@@ -6,6 +6,7 @@ import readline from 'readline/promises'
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request } from '../lib/api'
 import { CliError } from '../lib/errors'
+import { resolveJsonBody } from '../lib/json-input'
 import { printJson } from '../lib/output'
 import { parseAgentRef } from '../lib/agent-ref'
 import { getAgentWithFallback } from '../lib/api'
@@ -326,11 +327,8 @@ export function registerScheduleCommand(program: Command): void {
       const rawInput = options.data ?? options.input
       let inputData: Record<string, unknown> | undefined
       if (rawInput) {
-        try {
-          inputData = JSON.parse(rawInput)
-        } catch {
-          throw new CliError('Invalid JSON in --data. Use single quotes: --data \'{"key": "value"}\'')
-        }
+        const resolved = await resolveJsonBody(rawInput)
+        inputData = JSON.parse(resolved)
       }
 
       const scheduleType = options.webhook ? 'webhook' : 'cron'

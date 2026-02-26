@@ -10,6 +10,7 @@ import {
 } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
+import { resolveJsonBody } from '../lib/json-input'
 import { createElapsedSpinner } from '../lib/spinner'
 import { printJson } from '../lib/output'
 import packageJson from '../../package.json'
@@ -254,12 +255,7 @@ export function registerHealthCommand(program: Command): void {
       let body: string
 
       if (options.data) {
-        try {
-          JSON.parse(options.data)
-          body = options.data
-        } catch {
-          throw new CliError('Invalid JSON in --data option.')
-        }
+        body = await resolveJsonBody(options.data)
       } else {
         const sample = generateSampleInput(inputSchema)
         body = JSON.stringify(sample || {})

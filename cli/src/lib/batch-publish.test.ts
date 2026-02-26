@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('fs/promises')
 
 import fs from 'fs/promises'
-import { discoverAgents, topoSort, formatPublishPlan } from './batch-publish'
+import { discoverAgents, topoSort, formatPublishPlan, formatDryRunSummary } from './batch-publish'
 import type { DiscoveredAgent } from './batch-publish'
 
 const mockFs = vi.mocked(fs)
@@ -501,5 +501,143 @@ describe('formatPublishPlan', () => {
     const output = formatPublishPlan(agents)
     expect(output).toContain('Found 1 agent to publish')
     expect(output).not.toContain('agents to publish')
+  })
+})
+
+describe('formatDryRunSummary', () => {
+  it('shows publish order with numbered steps', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'leaf', name: 'leaf-tool', isSkill: false, dependencyRefs: [] },
+      { dir: '/b', dirName: 'orch', name: 'orchestrator', isSkill: false, dependencyRefs: ['joe/leaf-tool'] },
+    ]
+
+    const output = formatDryRunSummary(agents, 'joe')
+    expect(output).toContain('Publish order (2 agents)')
+    expect(output).toContain('1.')
+    expect(output).toContain('joe/leaf-tool')
+    expect(output).toContain('2.')
+    expect(output).toContain('joe/orchestrator')
+    expect(output).toContain('no circular dependencies')
+  })
+
+  it('shows local dependency arrows', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'leaf', name: 'leaf-tool', isSkill: false, dependencyRefs: [] },
+      { dir: '/b', dirName: 'orch', name: 'orchestrator', isSkill: false, dependencyRefs: ['joe/leaf-tool'] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    // orchestrator should show local dep on leaf-tool
+    expect(output).toContain('leaf-tool')
+    // leaf-tool has no deps — shouldn't have an arrow
+    const lines = output.split('\n')
+    const leafLine = lines.find(l => l.includes('1.') && l.includes('leaf-tool'))
+    expect(leafLine).toBeDefined()
+    expect(leafLine).not.toContain('→')
+  })
+
+  it('identifies external dependencies', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'orch', name: 'orchestrator', isSkill: false, dependencyRefs: ['joe/leaf-tool', 'other-org/external'] },
+      { dir: '/b', dirName: 'leaf', name: 'leaf-tool', isSkill: false, dependencyRefs: [] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).toContain('External dependencies')
+    expect(output).toContain('other-org/external')
+    expect(output).toContain('orchestrator')
+  })
+
+  it('does not show external section when all deps are local', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'leaf', name: 'leaf-tool', isSkill: false, dependencyRefs: [] },
+      { dir: '/b', dirName: 'orch', name: 'orchestrator', isSkill: false, dependencyRefs: ['joe/leaf-tool'] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).not.toContain('External dependencies')
+  })
+
+  it('shows correct count for mixed agents and skills', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'my-skill', name: 'my-skill', isSkill: true, dependencyRefs: [] },
+      { dir: '/b', dirName: 'tool', name: 'my-tool', isSkill: false, dependencyRefs: [] },
+      { dir: '/c', dirName: 'orch', name: 'my-orch', isSkill: false, dependencyRefs: [] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).toContain('2 agents')
+    expect(output).toContain('1 skill')
+  })
+
+  it('handles singular agent count', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'solo', name: 'solo', isSkill: false, dependencyRefs: [] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).toContain('Publish order (1 agent)')
+    expect(output).toContain('1 agent ready to publish')
+  })
+
+  it('handles singular skill count', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'skill', name: 'my-skill', isSkill: true, dependencyRefs: [] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).toContain('1 skill')
+  })
+
+  it('marks external deps inline with (external) label', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'orch', name: 'orchestrator', isSkill: false, dependencyRefs: ['acme/external-tool'] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).toContain('(external)')
+    expect(output).toContain('acme/external-tool')
+  })
+
+  it('shows directory names', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/project/my-dir', dirName: 'my-dir', name: 'agent-name', isSkill: false, dependencyRefs: [] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).toContain('my-dir/')
+  })
+
+  it('shows org prefix when provided', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'tool', name: 'my-tool', isSkill: false, dependencyRefs: [] },
+    ]
+
+    const output = formatDryRunSummary(agents, 'joe')
+    expect(output).toContain('joe/my-tool')
+  })
+
+  it('works without org prefix', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'tool', name: 'my-tool', isSkill: false, dependencyRefs: [] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).toContain('my-tool')
+    // Should not have org/name pattern (only name alone)
+    expect(output).not.toMatch(/\w+\/my-tool/)
+  })
+
+  it('shows multiple external deps from different agents', () => {
+    const agents: DiscoveredAgent[] = [
+      { dir: '/a', dirName: 'a', name: 'agent-a', isSkill: false, dependencyRefs: ['ext/tool-1'] },
+      { dir: '/b', dirName: 'b', name: 'agent-b', isSkill: false, dependencyRefs: ['ext/tool-2'] },
+    ]
+
+    const output = formatDryRunSummary(agents)
+    expect(output).toContain('ext/tool-1')
+    expect(output).toContain('ext/tool-2')
+    expect(output).toContain('agent-a')
+    expect(output).toContain('agent-b')
   })
 })

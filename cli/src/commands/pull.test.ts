@@ -256,7 +256,7 @@ describe('pull command', () => {
     const manifest = JSON.parse(await fs.readFile(path.join(outputDir, 'orchagent.json'), 'utf-8'))
     expect(manifest.name).toBe('my-agent')
     expect(manifest.entrypoint).toBe('main.py')
-    expect(manifest.runtime).toEqual({ command: 'python main.py' })
+    expect(manifest.runtime).toEqual({ command: 'python3 main.py' })
 
     // No prompt.md for code_runtime
     await expect(fs.access(path.join(outputDir, 'prompt.md'))).rejects.toThrow()

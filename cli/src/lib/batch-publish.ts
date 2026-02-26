@@ -254,3 +254,80 @@ export function formatPublishPlan(sorted: DiscoveredAgent[], orgSlug?: string): 
   lines.push('')
   return lines.join('\n')
 }
+
+/**
+ * Format an enhanced dry-run summary for --all --dry-run.
+ * Shows publish ordering, local/external dependencies, and graph health.
+ */
+export function formatDryRunSummary(sorted: DiscoveredAgent[], orgSlug?: string): string {
+  const lines: string[] = []
+  const localNames = new Set(sorted.map(a => a.name))
+
+  // Collect external deps (referenced but not in the project)
+  const externalDeps = new Map<string, string[]>() // ref → [agent names that reference it]
+  for (const agent of sorted) {
+    for (const ref of agent.dependencyRefs) {
+      const depName = ref.includes('/') ? ref.split('/')[1] : ref
+      if (!localNames.has(depName)) {
+        const consumers = externalDeps.get(ref) || []
+        consumers.push(agent.name)
+        externalDeps.set(ref, consumers)
+      }
+    }
+  }
+
+  // Publish order table
+  lines.push('')
+  lines.push(chalk.bold(`  Publish order (${sorted.length} agent${sorted.length === 1 ? '' : 's'}):`))
+  lines.push('')
+
+  for (let i = 0; i < sorted.length; i++) {
+    const agent = sorted[i]
+    const type = agent.isSkill ? 'skill' : 'agent'
+    const prefix = orgSlug ? `${orgSlug}/` : ''
+
+    // Separate local and external deps for clarity
+    const localDeps: string[] = []
+    const extDeps: string[] = []
+    for (const ref of agent.dependencyRefs) {
+      const depName = ref.includes('/') ? ref.split('/')[1] : ref
+      if (localNames.has(depName)) {
+        localDeps.push(depName)
+      } else {
+        extDeps.push(ref)
+      }
+    }
+
+    let depInfo = ''
+    if (localDeps.length > 0 || extDeps.length > 0) {
+      const parts: string[] = []
+      if (localDeps.length > 0) parts.push(localDeps.join(', '))
+      if (extDeps.length > 0) parts.push(extDeps.map(d => `${d} ${chalk.yellow('(external)')}`).join(', '))
+      depInfo = ` ${chalk.gray('→')} ${parts.join(', ')}`
+    }
+
+    lines.push(`  ${chalk.bold(`${i + 1}.`)} ${prefix}${agent.name} ${chalk.gray(`[${type}]`)}${depInfo}`)
+    lines.push(`     ${chalk.gray(agent.dirName + '/')}`)
+  }
+
+  // External dependencies section
+  if (externalDeps.size > 0) {
+    lines.push('')
+    lines.push(chalk.yellow(`  External dependencies (must already be published):`))
+    for (const [ref, consumers] of externalDeps) {
+      lines.push(`    ${ref} ${chalk.gray(`← ${consumers.join(', ')}`)}`)
+    }
+  }
+
+  // Summary
+  lines.push('')
+  const skillCount = sorted.filter(a => a.isSkill).length
+  const agentCount = sorted.length - skillCount
+  const parts: string[] = []
+  if (agentCount > 0) parts.push(`${agentCount} agent${agentCount === 1 ? '' : 's'}`)
+  if (skillCount > 0) parts.push(`${skillCount} skill${skillCount === 1 ? '' : 's'}`)
+  lines.push(chalk.green(`  ✓ ${parts.join(', ')} ready to publish (no circular dependencies)`))
+  lines.push('')
+
+  return lines.join('\n')
+}

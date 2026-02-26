@@ -438,6 +438,35 @@ describe('trace command', () => {
     ).rejects.toThrow('Missing API key')
   })
 
+  it('accepts req_xxx format and strips prefix', async () => {
+    mockRequest.mockImplementation(async (_config, _method, path) => {
+      const p = path as string
+      if (p === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (p.includes('/runs?') && p.includes('run_id_prefix')) {
+        // Verify the prefix search uses the hex suffix, not the full req_xxx
+        expect(p).toContain('run_id_prefix=ed7ceed0f439')
+        return { runs: [{ id: FULL_RUN_ID }], total: 1 }
+      }
+      if (p === `/workspaces/${WORKSPACE_ID}/runs/${FULL_RUN_ID}`) {
+        return makeRunDetail()
+      }
+      if (p.includes('/events')) {
+        return { events: [], total: 0, cursor: '0', next_cursor: null }
+      }
+      if (p.endsWith('/trace')) {
+        return { trace: makeTraceHeader() }
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'trace', 'req_ed7ceed0f439'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain(`Trace for run ${FULL_RUN_ID}`)
+  })
+
   it('rejects invalid run ID format', async () => {
     mockRequest.mockImplementation(async (_config, _method, path) => {
       if (path === '/workspaces') {

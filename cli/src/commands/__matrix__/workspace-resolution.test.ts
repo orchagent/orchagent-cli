@@ -48,14 +48,36 @@ describe('workspace resolution matrix (CLI core helpers)', () => {
   it('agent fallback returns own private agent when public endpoint 404s', async () => {
     const fetchMock = vi.fn()
     fetchMock
+      // public endpoint 404
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'Not found' } }), { status: 404, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ slug: 'acme' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      // listMyAgents (workspace context) — finds the agent
       .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'a1', name: 'private-agent', version: 'v3', created_at: '2026-02-20T00:00:00Z', org_slug: 'acme' }]), { status: 200, headers: { 'Content-Type': 'application/json' } }))
 
     vi.stubGlobal('fetch', fetchMock)
 
     const agent = await getAgentWithFallback(CONFIG, 'acme', 'private-agent', 'latest', 'ws-1')
     expect(agent).toMatchObject({ name: 'private-agent', version: 'v3' })
+
+    vi.unstubAllGlobals()
+  })
+
+  it('agent fallback checks personal org when workspace misses (BUG-13b-03)', async () => {
+    const fetchMock = vi.fn()
+    fetchMock
+      // public endpoint 404
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'Not found' } }), { status: 404, headers: { 'Content-Type': 'application/json' } }))
+      // listMyAgents (workspace context) — no match
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      // listMyAgents (personal org fallback) — found
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'a2', name: 'my-tool', version: 'v1', created_at: '2026-02-20T00:00:00Z', org_slug: 'joe' }]), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const agent = await getAgentWithFallback(CONFIG, 'joe', 'my-tool', 'v1', 'ws-acme')
+    expect(agent).toMatchObject({ name: 'my-tool', version: 'v1' })
+
+    // Verify: 3 fetch calls (public 404, workspace list, personal list)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
 
     vi.unstubAllGlobals()
   })

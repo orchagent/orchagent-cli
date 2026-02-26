@@ -497,16 +497,18 @@ export async function getAgentWithFallback(
     throw new ApiError(`Agent '${org}/${agentName}@${version}' not found`, 404)
   }
 
-  const userOrg = await getOrg(config, workspaceId)
-  if (userOrg.slug !== org) {
-    throw new ApiError(`Agent '${org}/${agentName}@${version}' not found`, 404)
+  // Try authenticated lookup in the resolved workspace context
+  const myAgent = await getMyAgent(config, agentName, version, workspaceId)
+  if (myAgent) return myAgent
+
+  // Fallback: if workspace was specified, also check personal org —
+  // handles cross-workspace lookups (e.g., team context looking up personal agent)
+  if (workspaceId) {
+    const personalAgent = await getMyAgent(config, agentName, version)
+    if (personalAgent) return personalAgent
   }
 
-  const myAgent = await getMyAgent(config, agentName, version, workspaceId)
-  if (!myAgent) {
-    throw new ApiError(`Agent '${org}/${agentName}@${version}' not found`, 404)
-  }
-  return myAgent
+  throw new ApiError(`Agent '${org}/${agentName}@${version}' not found`, 404)
 }
 
 /**

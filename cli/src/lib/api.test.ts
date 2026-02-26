@@ -506,7 +506,7 @@ describe('getAgentWithFallback with workspaceId', () => {
     mockFetch.mockReset()
   })
 
-  it('passes workspaceId to getOrg and getMyAgent on fallback', async () => {
+  it('passes workspaceId to listMyAgents on fallback', async () => {
     // First call: getPublicAgent returns 404
     mockFetch.mockResolvedValueOnce({
       ok: false,
@@ -514,12 +514,7 @@ describe('getAgentWithFallback with workspaceId', () => {
       statusText: 'Not Found',
       text: () => Promise.resolve('{}'),
     })
-    // Second call: getOrg with workspace header
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: () => Promise.resolve({ id: 'org-123', slug: 'team-org' }),
-    })
-    // Third call: listMyAgents with workspace header
+    // Second call: listMyAgents with workspace header
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve([
@@ -531,13 +526,90 @@ describe('getAgentWithFallback with workspaceId', () => {
 
     expect(result).toEqual(expect.objectContaining({ name: 'my-agent' }))
 
-    // Verify getOrg was called with X-Workspace-Id
-    const getOrgCall = mockFetch.mock.calls[1]
-    expect(getOrgCall[1].headers['X-Workspace-Id']).toBe('ws-123')
+    // No getOrg call — slug guard removed (BUG-13b-03)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
 
     // Verify listMyAgents was called with X-Workspace-Id
-    const listAgentsCall = mockFetch.mock.calls[2]
+    const listAgentsCall = mockFetch.mock.calls[1]
     expect(listAgentsCall[1].headers['X-Workspace-Id']).toBe('ws-123')
+  })
+
+  it('falls back to personal org when workspace lookup misses (BUG-13b-03)', async () => {
+    // Scenario: user in team workspace "acme" but agent lives in personal org "joe".
+    // workspace listMyAgents returns no match, personal org listMyAgents finds it.
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      text: () => Promise.resolve('{}'),
+    })
+    // First listMyAgents (workspace context) — agent not here
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([]),
+    })
+    // Second listMyAgents (no workspace — personal org) — agent found
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([
+        { id: 'agent-personal', name: 'my-tool', version: 'v2', created_at: '2026-02-01' },
+      ]),
+    })
+
+    const result = await getAgentWithFallback(config, 'joe', 'my-tool', 'v2', 'ws-acme')
+
+    expect(result).toEqual(expect.objectContaining({ id: 'agent-personal', name: 'my-tool' }))
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+
+    // First listMyAgents had workspace header
+    expect(mockFetch.mock.calls[1][1].headers['X-Workspace-Id']).toBe('ws-acme')
+    // Second listMyAgents has NO workspace header (personal org fallback)
+    expect(mockFetch.mock.calls[2][1].headers['X-Workspace-Id']).toBeUndefined()
+  })
+
+  it('throws 404 when agent not found in workspace or personal org', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      text: () => Promise.resolve('{}'),
+    })
+    // workspace listMyAgents — empty
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([]),
+    })
+    // personal org listMyAgents — also empty
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([]),
+    })
+
+    await expect(
+      getAgentWithFallback(config, 'unknown-org', 'missing', 'v1', 'ws-123')
+    ).rejects.toThrow("Agent 'unknown-org/missing@v1' not found")
+  })
+
+  it('skips personal fallback when no workspaceId provided', async () => {
+    // No workspaceId → only one listMyAgents call, no fallback
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      text: () => Promise.resolve('{}'),
+    })
+    // listMyAgents (personal org) — empty
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve([]),
+    })
+
+    await expect(
+      getAgentWithFallback(config, 'joe', 'my-tool', 'v1')
+    ).rejects.toThrow("Agent 'joe/my-tool@v1' not found")
+
+    // Only 2 calls: public endpoint + one listMyAgents (no fallback)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
   })
 
   it('returns public agent when available (no workspace needed)', async () => {

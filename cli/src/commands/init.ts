@@ -2331,6 +2331,10 @@ export function registerInitCommand(program: Command): void {
         process.stdout.write(`  ${stepNum + 1}. Edit schema.json with your input/output schemas\n`)
         process.stdout.write(`  ${stepNum + 2}. Run: orchagent publish\n`)
       }
+      if (initMode.flavor === 'managed_loop') {
+        process.stdout.write(`\n  Note: supported_providers: ["any"] means anthropic, openai, or gemini\n`)
+        process.stdout.write(`        Your vault key determines which is used (set with: orch secrets set)\n`)
+      }
       process.stdout.write(AGENT_BUILDER_HINT)
     })
 }

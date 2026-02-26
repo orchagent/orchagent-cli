@@ -294,6 +294,11 @@ export function registerDagCommand(program: Command): void {
 
         const workspaceId = await resolveWorkspaceId(config, options.workspace)
 
+        // Accept req_xxx format (gateway request_id shown in run output)
+        if (/^req_[0-9a-f]+$/i.test(runId)) {
+          runId = runId.slice(4)
+        }
+
         // Resolve short run IDs
         let resolvedRunId = runId
         if (isUuid(runId)) {

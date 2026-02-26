@@ -242,6 +242,27 @@ describe('orch dag', () => {
     expect(jsonArg.node_count).toBe(3)
   })
 
+  it('accepts req_xxx format and strips prefix', async () => {
+    mockRequest
+      .mockResolvedValueOnce({
+        workspaces: [{ id: WORKSPACE_ID, slug: 'joe', name: 'Joe' }],
+      })
+      .mockResolvedValueOnce({
+        runs: [{ id: FULL_RUN_ID }],
+        total: 1,
+      })
+      .mockResolvedValueOnce(makeDagResponse())
+
+    const output = await runCommand('req_a1b2c3d4e5f6')
+
+    expect(output).toContain('orchestrator')
+    // Verify the short ID resolution was called (3 requests: workspace, prefix search, dag)
+    expect(mockRequest).toHaveBeenCalledTimes(3)
+    // Verify prefix search used hex suffix without req_ prefix
+    const prefixCall = mockRequest.mock.calls[1]
+    expect(prefixCall[2]).toContain('run_id_prefix=a1b2c3d4e5f6')
+  })
+
   it('throws error for invalid run ID format', async () => {
     mockRequest.mockResolvedValueOnce({
       workspaces: [{ id: WORKSPACE_ID, slug: 'joe', name: 'Joe' }],

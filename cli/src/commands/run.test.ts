@@ -930,7 +930,7 @@ describe('Bug 3: EISDIR validation on cloud runs', () => {
         'node', 'test', 'run', 'test-org/test-agent',
         '--data', '@/tmp/src/',
       ])
-    ).rejects.toThrow('Cannot upload a directory for cloud execution')
+    ).rejects.toThrow('Expected a file but got a directory')
   })
 })
 
@@ -3371,11 +3371,19 @@ describe('UX-007: --verbose flag in streaming mode', () => {
     // canonicalAgentType now correctly preserves 'prompt' type
     expect(output).toContain('type=prompt')
     expect(output).toContain('engine=direct_llm')
-    // Non-streaming verbose shows stdout/stderr from metadata
+    // Non-streaming verbose shows stdout/stderr in dedicated sections
     expect(output).toContain('--- stderr ---')
     expect(output).toContain('sandbox stderr here')
     expect(output).toContain('--- stdout ---')
     expect(output).toContain('sandbox stdout here')
+
+    // UX-13b-01: JSON payload should NOT contain metadata.stdout/stderr
+    // (they're shown in the dedicated sections above, not duplicated in JSON)
+    const jsonOutput = stdoutSpy.mock.calls.map(c => String(c[0])).join('')
+    expect(jsonOutput).not.toContain('sandbox stdout here')
+    expect(jsonOutput).not.toContain('sandbox stderr here')
+    // But other metadata fields (e.g. processing_time_ms) should still be in JSON
+    expect(jsonOutput).toContain('processing_time_ms')
   })
 
   it('non-streaming hides stdout/stderr without --verbose', async () => {
@@ -3521,6 +3529,226 @@ describe('UX-007: --verbose flag in streaming mode', () => {
     const output = stderrOutput()
     // Pre-request verbose header is suppressed in --json mode
     expect(output).not.toContain('[verbose]')
+  })
+
+  // ── UX-13b-01: verbose mode stdout deduplication ──
+
+  it('UX-13b-01: verbose strips metadata.stdout/stderr from JSON but shows in sections', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'my-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({
+        data: { result: 'ok' },
+        metadata: {
+          stdout: 'agent stdout output',
+          stderr: 'agent stderr output',
+          processing_time_ms: 1500,
+          execution_time_ms: 1200,
+        },
+      }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/my-agent',
+      '--data', '{}',
+      '--verbose',
+    ])
+
+    // Dedicated sections on stderr should show the output
+    const errOutput = stderrOutput()
+    expect(errOutput).toContain('--- stdout ---')
+    expect(errOutput).toContain('agent stdout output')
+    expect(errOutput).toContain('--- stderr ---')
+    expect(errOutput).toContain('agent stderr output')
+
+    // JSON on stdout should NOT contain metadata.stdout/stderr (deduplication)
+    const jsonOutput = stdoutSpy.mock.calls.map(c => String(c[0])).join('')
+    expect(jsonOutput).not.toContain('agent stdout output')
+    expect(jsonOutput).not.toContain('agent stderr output')
+    // But other metadata fields should remain
+    expect(jsonOutput).toContain('processing_time_ms')
+    expect(jsonOutput).toContain('execution_time_ms')
+    expect(jsonOutput).toContain('"result": "ok"')
+  })
+
+  it('UX-13b-01: --json mode still includes metadata.stdout/stderr in payload', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      execution_engine: 'managed_loop',
+      name: 'my-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({
+        data: { result: 'ok' },
+        metadata: {
+          stdout: 'full stdout preserved',
+          stderr: 'full stderr preserved',
+        },
+      }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/my-agent',
+      '--data', '{}',
+      '--json',
+    ])
+
+    // --json returns the complete payload with stdout/stderr intact
+    const jsonOutput = stdoutSpy.mock.calls.map(c => String(c[0])).join('')
+    expect(jsonOutput).toContain('full stdout preserved')
+    expect(jsonOutput).toContain('full stderr preserved')
+  })
+
+  it('UX-13b-01: non-verbose mode keeps metadata.stdout/stderr in JSON payload', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      execution_engine: 'direct_llm',
+      name: 'prompter',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({
+        output: 'result',
+        metadata: {
+          stdout: 'still in json',
+          stderr: 'still in json too',
+        },
+      }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/prompter',
+      '--data', '{}',
+    ])
+
+    // Without --verbose, metadata.stdout/stderr stay in the JSON output
+    const jsonOutput = stdoutSpy.mock.calls.map(c => String(c[0])).join('')
+    expect(jsonOutput).toContain('still in json')
+    expect(jsonOutput).toContain('still in json too')
+    // And no dedicated sections on stderr
+    const errOutput = stderrOutput()
+    expect(errOutput).not.toContain('--- stdout ---')
+    expect(errOutput).not.toContain('--- stderr ---')
+  })
+
+  it('UX-13b-01: code_runtime verbose skips stdout section when data matches stdout', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      execution_engine: 'code_runtime',
+      name: 'my-tool',
+      version: 'v2',
+      supported_providers: ['any'],
+    } as any)
+
+    const toolOutput = '{"score": 42, "label": "positive"}'
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({
+        data: toolOutput,
+        metadata: {
+          stdout: toolOutput,
+          stderr: 'pip install complete',
+        },
+      }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/my-tool@v2',
+      '--data', '{}',
+      '--verbose',
+    ])
+
+    const errOutput = stderrOutput()
+    // stderr section should still show (different content from data)
+    expect(errOutput).toContain('--- stderr ---')
+    expect(errOutput).toContain('pip install complete')
+    // stdout section should be SKIPPED because stdout === data for code_runtime
+    expect(errOutput).not.toContain('--- stdout ---')
+  })
+
+  it('UX-13b-01: code_runtime verbose shows stdout when it differs from data', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      execution_engine: 'code_runtime',
+      name: 'my-tool',
+      version: 'v2',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({
+        data: { score: 42 },
+        metadata: {
+          stdout: 'debug line 1\ndebug line 2\n{"score": 42}',
+          stderr: '',
+        },
+      }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/my-tool@v2',
+      '--data', '{}',
+      '--verbose',
+    ])
+
+    const errOutput = stderrOutput()
+    // stdout differs from data (has extra debug lines) — should show
+    expect(errOutput).toContain('--- stdout ---')
+    expect(errOutput).toContain('debug line 1')
+  })
+
+  it('UX-13b-01: verbose with no metadata.stdout/stderr shows "No sandbox output"', async () => {
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      execution_engine: 'direct_llm',
+      name: 'prompter',
+      version: 'v1',
+      supported_providers: ['any'],
+    } as any)
+
+    mockSafeFetchWithRetryForCalls.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      text: async () => JSON.stringify({
+        output: 'result',
+        metadata: { processing_time_ms: 500 },
+      }),
+    } as any)
+
+    await program.parseAsync([
+      'node', 'test', 'run', 'test-org/prompter',
+      '--data', '{}',
+      '--verbose',
+    ])
+
+    const errOutput = stderrOutput()
+    expect(errOutput).toContain('No sandbox output captured')
   })
 })
 
@@ -3926,10 +4154,9 @@ describe('run command --estimate and --estimate-only', () => {
     expect(mockGetAgentCostEstimate).toHaveBeenCalled()
   })
 
-  it('--estimate-only throws error when estimate fetch fails', async () => {
-    mockGetAgentCostEstimate.mockRejectedValue(new Error('API Error'))
+  it('--estimate-only throws network error when estimate fetch fails with generic error', async () => {
+    mockGetAgentCostEstimate.mockRejectedValue(new Error('fetch failed'))
 
-    // Mock agent metadata
     mockGetAgentWithFallback.mockResolvedValue({
       type: 'prompt',
       name: 'test-agent',
@@ -3939,10 +4166,98 @@ describe('run command --estimate and --estimate-only', () => {
 
     mockResolveWorkspaceIdForOrg.mockResolvedValue('workspace-123')
 
-    // Should throw an error when estimate fails with --estimate-only
     await expect(
       program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1', '--estimate-only'])
-    ).rejects.toThrow()
+    ).rejects.toThrow('Network error')
+  })
+
+  it('--estimate-only throws specific message for 404 ApiError', async () => {
+    const notFoundErr = new (ApiError as any)()
+    notFoundErr.status = 404
+    mockGetAgentCostEstimate.mockRejectedValue(notFoundErr)
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    })
+
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('workspace-123')
+
+    await expect(
+      program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1', '--estimate-only'])
+    ).rejects.toThrow('Agent not found')
+  })
+
+  it('--estimate-only throws specific message for 429 ApiError', async () => {
+    const rateLimitErr = new (ApiError as any)()
+    rateLimitErr.status = 429
+    mockGetAgentCostEstimate.mockRejectedValue(rateLimitErr)
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    })
+
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('workspace-123')
+
+    await expect(
+      program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1', '--estimate-only'])
+    ).rejects.toThrow('Rate limited')
+  })
+
+  it('--estimate shows specific error detail and proceeds on API failure', async () => {
+    const serverErr = new (ApiError as any)()
+    serverErr.status = 500
+    mockGetAgentCostEstimate.mockRejectedValue(serverErr)
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    })
+
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('workspace-123')
+
+    // --estimate (not --estimate-only) should proceed without throwing
+    // The run itself will fail because we don't mock the full run flow,
+    // but we can check the error message was written before it proceeds
+    try {
+      await program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1', '--estimate', '--data', '{}'])
+    } catch {
+      // Run will fail after estimate — that's fine, we're testing the estimate message
+    }
+
+    const stderrOutput = stderrSpy.mock.calls.map(c => c[0]).join('')
+    expect(stderrOutput).toContain('API error (500)')
+    expect(stderrOutput).toContain('Proceeding with run')
+  })
+
+  it('--estimate shows network error detail and proceeds on generic failure', async () => {
+    mockGetAgentCostEstimate.mockRejectedValue(new Error('ECONNREFUSED'))
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+    })
+
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('workspace-123')
+
+    try {
+      await program.parseAsync(['node', 'test', 'run', 'test-org/test-agent@v1', '--estimate', '--data', '{}'])
+    } catch {
+      // Run will fail after estimate — that's fine
+    }
+
+    const stderrOutput = stderrSpy.mock.calls.map(c => c[0]).join('')
+    expect(stderrOutput).toContain('Network error')
+    expect(stderrOutput).toContain('Proceeding with run')
   })
 
   it('--estimate shows warning for agents with no run history', async () => {

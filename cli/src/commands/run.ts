@@ -23,6 +23,7 @@ import {
   getAgentCostEstimate,
 } from '../lib/api'
 import { CliError, jsonInputError, ExitCodes } from '../lib/errors'
+import { resolveJsonBody } from '../lib/json-input'
 import { printJson } from '../lib/output'
 import { createSpinner, createElapsedSpinner, withSpinner } from '../lib/spinner'
 import {
@@ -409,32 +410,6 @@ async function buildMultipartBody(
   return {
     body: form,
     sourceLabel: filePaths.length === 1 ? filePaths[0] : `${filePaths.length} files`,
-  }
-}
-
-async function resolveJsonBody(input: string): Promise<string> {
-  let raw = input
-  if (input.startsWith('@')) {
-    const source = input.slice(1)
-    if (!source) {
-      throw new CliError('Invalid JSON input. Use a JSON string or @file.')
-    }
-    if (source === '-') {
-      const stdinData = await readStdin()
-      if (!stdinData) {
-        throw new CliError('No stdin provided for JSON input.')
-      }
-      raw = stdinData.toString('utf8')
-    } else {
-      await validateFilePath(source)
-      raw = await fs.readFile(source, 'utf8')
-    }
-  }
-
-  try {
-    return JSON.stringify(JSON.parse(raw))
-  } catch {
-    throw jsonInputError('data')
   }
 }
 
@@ -2334,12 +2309,21 @@ async function executeCloud(
         process.stderr.write('Run cancelled.\n')
         return
       }
-    } catch {
-      // Non-fatal: if estimate fails, proceed with the run (or exit if --estimate-only)
+    } catch (err) {
+      // Provide specific error messages based on failure type
+      const detail =
+        err instanceof ApiError && err.status === 404
+          ? 'Agent not found.'
+          : err instanceof ApiError && err.status === 429
+            ? 'Rate limited — try again shortly.'
+            : err instanceof ApiError
+              ? `API error (${err.status}).`
+              : 'Network error — check your connection.'
+
       if (options.estimateOnly) {
-        throw new CliError('Could not fetch cost estimate.')
+        throw new CliError(`Could not fetch cost estimate: ${detail}`)
       }
-      process.stderr.write(chalk.gray('Could not fetch cost estimate. Proceeding...\n\n'))
+      process.stderr.write(chalk.gray(`Could not fetch cost estimate: ${detail} Proceeding with run...\n\n`))
     }
   }
 
@@ -3020,7 +3004,20 @@ async function executeCloud(
     return
   }
 
-  printJson(payload)
+  // In verbose mode, strip stdout/stderr from the JSON payload since they'll
+  // be displayed in dedicated colored sections below (avoids duplication)
+  if (options.verbose && typeof payload === 'object' && payload !== null && 'metadata' in payload) {
+    const payloadObj = payload as Record<string, unknown>
+    const meta = payloadObj.metadata as Record<string, unknown> | undefined
+    if (meta && (meta.stdout || meta.stderr)) {
+      const { stdout: _s, stderr: _e, ...cleanMeta } = meta
+      printJson({ ...payloadObj, metadata: cleanMeta })
+    } else {
+      printJson(payload)
+    }
+  } else {
+    printJson(payload)
+  }
 
   // Display timing metadata on stderr (non-json mode only)
   if (typeof payload === 'object' && payload !== null && 'metadata' in payload) {
@@ -3033,7 +3030,14 @@ async function executeCloud(
         if (stderr) {
           process.stderr.write(chalk.bold.yellow('\n--- stderr ---') + '\n' + stderr + '\n')
         }
-        if (stdout) {
+        // For code_runtime agents, stdout IS the data — skip if it would
+        // duplicate what's already visible in the JSON data field
+        const dataStr = typeof (payload as Record<string, unknown>).data === 'string'
+          ? (payload as Record<string, unknown>).data as string
+          : JSON.stringify((payload as Record<string, unknown>).data)
+        const stdoutDuplicatesData = isCodeRuntimeAgent && stdout && dataStr &&
+          stdout.trim() === dataStr.trim()
+        if (stdout && !stdoutDuplicatesData) {
           process.stderr.write(chalk.bold.cyan('\n--- stdout ---') + '\n' + stdout + '\n')
         }
         if (!stderr && !stdout) {

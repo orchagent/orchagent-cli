@@ -179,6 +179,38 @@ describe('orch health', () => {
       expect(sentBody).toEqual({ query: 'hello world' })
     })
 
+    it('reads input from @file via --data', async () => {
+      const fs = await import('fs/promises')
+      const path = await import('path')
+      const os = await import('os')
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'health-test-'))
+      const filePath = path.join(tmpDir, 'input.json')
+      await fs.writeFile(filePath, '{"from": "file"}')
+
+      mockGetAgentWithFallback.mockResolvedValue({
+        id: 'agent-file',
+        org_name: 'Joe',
+        org_slug: 'joe',
+        name: 'file-input',
+        version: 'v1',
+        type: 'prompt',
+        supported_providers: ['any'],
+      } as any)
+
+      mockFetch.mockResolvedValue(makeResponse(200, { result: 'ok' }))
+
+      await program.parseAsync([
+        'node', 'test', 'health', 'joe/file-input',
+        '--data', `@${filePath}`,
+      ])
+
+      const fetchCall = mockFetch.mock.calls[0]
+      const sentBody = JSON.parse(fetchCall[1]?.body as string)
+      expect(sentBody).toEqual({ from: 'file' })
+
+      await fs.rm(tmpDir, { recursive: true, force: true })
+    })
+
     it('extracts run_id from response body', async () => {
       mockGetAgentWithFallback.mockResolvedValue({
         id: 'agent-4',

@@ -12,7 +12,7 @@ import { CliError, ExitCodes } from '../lib/errors'
 import { track } from '../lib/analytics'
 import { createCodeBundle, detectEntrypoint, validateBundle, previewBundle } from '../lib/bundle'
 import { saveServiceKey } from '../lib/key-store'
-import { discoverAgents, topoSort, formatPublishPlan } from '../lib/batch-publish'
+import { discoverAgents, topoSort, formatPublishPlan, formatDryRunSummary } from '../lib/batch-publish'
 import type { AgentManifest, Agent, ResolvedConfig } from '../types'
 
 /**
@@ -566,12 +566,23 @@ export async function batchPublish(
     // Non-critical — just won't show org prefix
   }
 
+  // Dry-run: show ordering preview and exit (no subprocesses)
+  if (options.dryRun) {
+    const summary = formatDryRunSummary(sorted, orgSlug)
+    process.stderr.write(summary)
+
+    await track('cli_publish_all', {
+      total: sorted.length,
+      succeeded: 0,
+      failed: 0,
+      skipped: sorted.length,
+      dry_run: true,
+    })
+    return
+  }
+
   const plan = formatPublishPlan(sorted, orgSlug)
   process.stderr.write(plan)
-
-  if (options.dryRun) {
-    process.stderr.write(chalk.cyan('DRY RUN — running orch publish --dry-run in each directory:\n\n'))
-  }
 
   // Build the CLI args to forward (exclude --all)
   const forwardArgs: string[] = []

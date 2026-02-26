@@ -178,6 +178,31 @@ describe('schedule subcommands --json output (T12-09)', () => {
     expect(output).toContain('sched-uuid-001')
   })
 
+  it('schedule create --data @file reads JSON from file', async () => {
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const os = await import('os')
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sched-test-'))
+    const filePath = path.join(tmpDir, 'input.json')
+    await fs.writeFile(filePath, '{"query": "from file"}')
+
+    await program.parseAsync([
+      'node', 'test', 'schedule', 'create', 'myorg/my-agent',
+      '--cron', '0 9 * * 1', '--data', `@${filePath}`, '--json',
+    ])
+
+    // Verify the request body includes input_data from the file
+    const createCall = mockRequest.mock.calls.find(
+      c => c[1] === 'POST' && (c[2] as string).endsWith('/schedules')
+    )
+    expect(createCall).toBeTruthy()
+    const opts = createCall![3] as { body: string }
+    const parsedBody = JSON.parse(opts.body)
+    expect(parsedBody.input_data).toEqual({ query: 'from file' })
+
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
   // ── schedule update ──
 
   it('schedule update --json outputs valid JSON', async () => {

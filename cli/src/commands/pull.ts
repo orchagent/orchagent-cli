@@ -97,7 +97,7 @@ function commandForEntrypoint(entrypoint: string): string {
   ) {
     return `node ${entrypoint}`
   }
-  return `python ${entrypoint}`
+  return `python3 ${entrypoint}`
 }
 
 // ─── Agent Resolution ───────────────────────────────────────────────────────
