@@ -8,6 +8,14 @@ import { CliError } from '../lib/errors'
 import { printJson } from '../lib/output'
 import type { ResolvedConfig } from '../types'
 
+// Known LLM key names → provider. Must stay in sync with gateway's
+// _PROVIDER_TO_SECRET_NAME (db.py) and publish.ts PROVIDER_TO_SECRET_NAME.
+const LLM_KEY_NAME_TO_PROVIDER: Record<string, string> = {
+  ANTHROPIC_API_KEY: 'anthropic',
+  OPENAI_API_KEY: 'openai',
+  GEMINI_API_KEY: 'gemini',
+}
+
 // ============================================
 // TYPES
 // ============================================
@@ -229,11 +237,13 @@ export function registerSecretsCommand(program: Command): void {
           }
         }
       } else {
-        // Create new secret
+        // Create new secret — auto-classify LLM keys by name
+        const llmProvider = LLM_KEY_NAME_TO_PROVIDER[name]
         const body: Record<string, string> = {
           name,
           value,
-          secret_type: 'custom',
+          secret_type: llmProvider ? 'llm_key' : 'custom',
+          ...(llmProvider && { llm_provider: llmProvider }),
         }
         if (options.description !== undefined) {
           body.description = options.description

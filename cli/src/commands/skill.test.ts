@@ -2,12 +2,28 @@
  * Tests for the skill command.
  *
  * Bug 8: Verify that duplicate frontmatter is stripped during skill install.
+ * U-2: Verify that skill create prompts for confirmation before writing.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Command } from 'commander'
 import fs from 'fs/promises'
 import os from 'os'
+
+const mockQuestion = vi.fn()
+const mockClose = vi.fn()
+vi.mock('readline/promises', () => ({
+  default: {
+    createInterface: vi.fn(() => ({
+      question: mockQuestion,
+      close: mockClose,
+    })),
+  },
+  createInterface: vi.fn(() => ({
+    question: mockQuestion,
+    close: mockClose,
+  })),
+}))
 
 vi.mock('fs/promises')
 vi.mock('../lib/config', () => {
@@ -361,5 +377,133 @@ describe('BUG-C: orch skill list', () => {
     const output = allStdout()
     expect(output).not.toContain('/explore')
     expect(output).not.toContain('discover')
+  })
+})
+
+describe('U-2: orch skill create confirmation prompt', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let originalIsTTY: boolean | undefined
+
+  function allStdout(): string {
+    return stdoutSpy.mock.calls.map(c => c[0]).join('')
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerSkillCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    mockFs.writeFile.mockResolvedValue(undefined)
+    // SKILL.md does not exist by default
+    mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    originalIsTTY = process.stdout.isTTY
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    Object.defineProperty(process.stdout, 'isTTY', { value: originalIsTTY, writable: true })
+    vi.restoreAllMocks()
+  })
+
+  it('prompts for confirmation in TTY mode and creates file on "y"', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true })
+    mockQuestion.mockResolvedValue('y')
+
+    await program.parseAsync(['node', 'test', 'skill', 'create', 'my-skill'])
+
+    expect(mockQuestion).toHaveBeenCalledTimes(1)
+    expect(mockQuestion.mock.calls[0][0]).toContain('SKILL.md')
+    expect(mockClose).toHaveBeenCalled()
+    expect(mockFs.writeFile).toHaveBeenCalled()
+    expect(allStdout()).toContain('Created skill')
+  })
+
+  it('prompts for confirmation in TTY mode and aborts on "n"', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true })
+    mockQuestion.mockResolvedValue('n')
+
+    await program.parseAsync(['node', 'test', 'skill', 'create', 'my-skill'])
+
+    expect(mockQuestion).toHaveBeenCalledTimes(1)
+    expect(mockClose).toHaveBeenCalled()
+    expect(mockFs.writeFile).not.toHaveBeenCalled()
+    expect(allStdout()).toContain('Aborted')
+  })
+
+  it('aborts on empty input (default is No)', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true })
+    mockQuestion.mockResolvedValue('')
+
+    await program.parseAsync(['node', 'test', 'skill', 'create', 'my-skill'])
+
+    expect(mockFs.writeFile).not.toHaveBeenCalled()
+    expect(allStdout()).toContain('Aborted')
+  })
+
+  it('accepts "yes" (full word) as confirmation', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true })
+    mockQuestion.mockResolvedValue('yes')
+
+    await program.parseAsync(['node', 'test', 'skill', 'create', 'my-skill'])
+
+    expect(mockFs.writeFile).toHaveBeenCalled()
+    expect(allStdout()).toContain('Created skill')
+  })
+
+  it('--yes flag skips confirmation in TTY mode', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true })
+
+    await program.parseAsync(['node', 'test', 'skill', 'create', 'my-skill', '--yes'])
+
+    expect(mockQuestion).not.toHaveBeenCalled()
+    expect(mockFs.writeFile).toHaveBeenCalled()
+    expect(allStdout()).toContain('Created skill')
+  })
+
+  it('-y shorthand skips confirmation', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true })
+
+    await program.parseAsync(['node', 'test', 'skill', 'create', 'my-skill', '-y'])
+
+    expect(mockQuestion).not.toHaveBeenCalled()
+    expect(mockFs.writeFile).toHaveBeenCalled()
+  })
+
+  it('skips confirmation in non-TTY mode (scripts/CI)', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: undefined, writable: true })
+
+    await program.parseAsync(['node', 'test', 'skill', 'create', 'my-skill'])
+
+    expect(mockQuestion).not.toHaveBeenCalled()
+    expect(mockFs.writeFile).toHaveBeenCalled()
+    expect(allStdout()).toContain('Created skill')
+  })
+
+  it('still errors if SKILL.md already exists (before confirmation)', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true })
+    mockFs.access.mockResolvedValue(undefined) // file exists
+
+    await expect(
+      program.parseAsync(['node', 'test', 'skill', 'create', 'my-skill'])
+    ).rejects.toThrow()
+
+    // Should not prompt — error happens before confirmation
+    expect(mockQuestion).not.toHaveBeenCalled()
+    expect(mockFs.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('uses directory name when no name argument provided', async () => {
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, writable: true })
+    mockQuestion.mockResolvedValue('y')
+
+    await program.parseAsync(['node', 'test', 'skill', 'create'])
+
+    expect(mockFs.writeFile).toHaveBeenCalled()
+    // The template should contain the cwd basename as the skill name
+    const writeCall = mockFs.writeFile.mock.calls[0]
+    const content = writeCall[1] as string
+    expect(content).toContain('name:')
   })
 })

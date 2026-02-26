@@ -470,10 +470,15 @@ export async function checkWorkspaceLlmKeys(
     return
   }
 
-  let secrets: Array<{ secret_type: string; llm_provider: string | null }>
+  // Reverse map: secret name → provider (e.g. ANTHROPIC_API_KEY → anthropic)
+  const SECRET_NAME_TO_PROVIDER: Record<string, string> = Object.fromEntries(
+    Object.entries(PROVIDER_TO_SECRET_NAME).map(([provider, name]) => [name, provider])
+  )
+
+  let secrets: Array<{ name?: string; secret_type: string; llm_provider: string | null }>
   try {
     const result = await request<{
-      secrets: Array<{ secret_type: string; llm_provider: string | null }>
+      secrets: Array<{ name?: string; secret_type: string; llm_provider: string | null }>
     }>(config, 'GET', `/workspaces/${workspaceId}/secrets`)
     secrets = result.secrets
     if (!Array.isArray(secrets)) return
@@ -481,8 +486,18 @@ export async function checkWorkspaceLlmKeys(
     return // Can't reach API or unexpected response — skip warning silently
   }
 
-  const llmKeys = secrets.filter(s => s.secret_type === 'llm_key' && s.llm_provider)
-  const availableProviders = new Set(llmKeys.map(s => s.llm_provider!))
+  // Resolve providers from both secret_type metadata AND secret name.
+  // Gateway resolves LLM keys by name, but `orch secrets set` creates them
+  // with secret_type='custom'. Match by name to avoid false warnings.
+  const availableProviders = new Set<string>()
+  for (const s of secrets) {
+    if (s.secret_type === 'llm_key' && s.llm_provider) {
+      availableProviders.add(s.llm_provider)
+    }
+    if (s.name && s.name in SECRET_NAME_TO_PROVIDER) {
+      availableProviders.add(SECRET_NAME_TO_PROVIDER[s.name])
+    }
+  }
 
   // Determine which providers the agent needs
   const needsAny = supportedProviders.includes('any')

@@ -249,6 +249,80 @@ describe('secrets command', () => {
       )
     })
 
+    it('auto-classifies ANTHROPIC_API_KEY as llm_key with provider (B-2)', async () => {
+      mockRequest
+        .mockResolvedValueOnce(mockWorkspaces as any)
+        .mockResolvedValueOnce({ secrets: [] } as any) // not existing
+        .mockResolvedValueOnce({ secret: { id: 'sec-new', name: 'ANTHROPIC_API_KEY' } } as any)
+
+      await program.parseAsync(['node', 'test', 'secrets', 'set', 'ANTHROPIC_API_KEY', 'sk-ant-xxx'])
+
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        3,
+        expect.any(Object),
+        'POST',
+        '/workspaces/ws-1/secrets',
+        {
+          body: JSON.stringify({
+            name: 'ANTHROPIC_API_KEY',
+            value: 'sk-ant-xxx',
+            secret_type: 'llm_key',
+            llm_provider: 'anthropic',
+          }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      )
+    })
+
+    it('auto-classifies OPENAI_API_KEY as llm_key with provider (B-2)', async () => {
+      mockRequest
+        .mockResolvedValueOnce(mockWorkspaces as any)
+        .mockResolvedValueOnce({ secrets: [] } as any)
+        .mockResolvedValueOnce({ secret: { id: 'sec-new', name: 'OPENAI_API_KEY' } } as any)
+
+      await program.parseAsync(['node', 'test', 'secrets', 'set', 'OPENAI_API_KEY', 'sk-xxx'])
+
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        3,
+        expect.any(Object),
+        'POST',
+        '/workspaces/ws-1/secrets',
+        {
+          body: JSON.stringify({
+            name: 'OPENAI_API_KEY',
+            value: 'sk-xxx',
+            secret_type: 'llm_key',
+            llm_provider: 'openai',
+          }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      )
+    })
+
+    it('keeps custom type for non-LLM key names (B-2)', async () => {
+      mockRequest
+        .mockResolvedValueOnce(mockWorkspaces as any)
+        .mockResolvedValueOnce({ secrets: [] } as any)
+        .mockResolvedValueOnce({ secret: { id: 'sec-new', name: 'STRIPE_KEY' } } as any)
+
+      await program.parseAsync(['node', 'test', 'secrets', 'set', 'STRIPE_KEY', 'sk-stripe'])
+
+      expect(mockRequest).toHaveBeenNthCalledWith(
+        3,
+        expect.any(Object),
+        'POST',
+        '/workspaces/ws-1/secrets',
+        {
+          body: JSON.stringify({
+            name: 'STRIPE_KEY',
+            value: 'sk-stripe',
+            secret_type: 'custom',
+          }),
+          headers: { 'Content-Type': 'application/json' },
+        }
+      )
+    })
+
     it('updates an existing secret', async () => {
       mockRequest
         .mockResolvedValueOnce(mockWorkspaces as any)

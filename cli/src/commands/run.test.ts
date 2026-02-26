@@ -434,7 +434,7 @@ describe('LLM utilities - getDefaultModel', () => {
   })
 
   it('returns default model for Anthropic', () => {
-    expect(getDefaultModel('anthropic')).toBe('claude-opus-4-5-20251101')
+    expect(getDefaultModel('anthropic')).toBe('claude-sonnet-4-6')
   })
 
   it('returns default model for Gemini', () => {
@@ -523,7 +523,7 @@ describe('LLM utilities - constants', () => {
 
   it('has correct default models', () => {
     expect(DEFAULT_MODELS.openai).toBe('gpt-5.2')
-    expect(DEFAULT_MODELS.anthropic).toBe('claude-opus-4-5-20251101')
+    expect(DEFAULT_MODELS.anthropic).toBe('claude-sonnet-4-6')
     expect(DEFAULT_MODELS.gemini).toBe('gemini-2.5-pro')
   })
 })

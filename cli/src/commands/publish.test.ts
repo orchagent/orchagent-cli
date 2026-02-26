@@ -3961,6 +3961,58 @@ describe('checkWorkspaceLlmKeys', () => {
     expect(output).toContain('MISTRAL_API_KEY')
   })
 
+  // B-2: secrets created via `orch secrets set` have secret_type='custom' not 'llm_key',
+  // but the gateway resolves LLM keys by NAME. Publish check should match by name too.
+  it('recognizes LLM keys by name even when secret_type is custom (B-2)', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { name: 'ANTHROPIC_API_KEY', secret_type: 'custom', llm_provider: null },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['anthropic'])
+
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('recognizes OPENAI_API_KEY by name with secret_type custom (B-2)', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { name: 'OPENAI_API_KEY', secret_type: 'custom', llm_provider: null },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['openai'])
+
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('recognizes LLM key by name for provider "any" with secret_type custom (B-2)', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { name: 'GEMINI_API_KEY', secret_type: 'custom', llm_provider: null },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['any'])
+
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('still warns when custom secrets are NOT LLM key names (B-2)', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [
+        { name: 'STRIPE_SECRET_KEY', secret_type: 'custom', llm_provider: null },
+        { name: 'DISCORD_TOKEN', secret_type: 'custom', llm_provider: null },
+      ],
+    })
+
+    await checkWorkspaceLlmKeys(baseConfig, 'ws-123', 'my-team', 'direct_llm', ['anthropic'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('No LLM vault keys found')
+  })
+
   it('calls the correct API path with workspace ID', async () => {
     mockRequest.mockResolvedValue({ secrets: [] })
 

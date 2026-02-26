@@ -1,4 +1,5 @@
 import ora, { type Ora } from 'ora'
+import { CliError } from './errors'
 
 // Global flag to control spinner visibility (set via --no-progress)
 let progressEnabled = true
@@ -96,7 +97,9 @@ export async function withSpinner<T>(
       : options?.failText || (err instanceof Error ? err.message : 'Failed')
     spinner.fail(failMsg)
     // Mark as already displayed so exitWithError doesn't print again
-    if (err instanceof Error) {
+    if (err instanceof CliError) {
+      err.displayed = true
+    } else if (err instanceof Error) {
       ;(err as Error & { _displayed?: boolean })._displayed = true
     }
     throw err

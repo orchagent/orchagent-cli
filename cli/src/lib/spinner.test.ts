@@ -48,8 +48,37 @@ vi.mock('ora', () => {
 import {
   formatElapsed,
   createElapsedSpinner,
+  withSpinner,
   setProgressEnabled,
 } from './spinner'
+import { CliError } from './errors'
+
+describe('withSpinner', () => {
+  beforeEach(() => {
+    setProgressEnabled(true)
+  })
+
+  it('sets displayed=true on CliError so exitWithError deduplicates', async () => {
+    const cliErr = new CliError('Something went wrong')
+
+    await expect(
+      withSpinner('Working...', async () => { throw cliErr })
+    ).rejects.toThrow(cliErr)
+
+    // exitWithError checks err.displayed for CliError instances
+    expect(cliErr.displayed).toBe(true)
+  })
+
+  it('sets _displayed=true on generic Error for deduplication', async () => {
+    const genericErr = new Error('generic failure')
+
+    await expect(
+      withSpinner('Working...', async () => { throw genericErr })
+    ).rejects.toThrow(genericErr)
+
+    expect((genericErr as Error & { _displayed?: boolean })._displayed).toBe(true)
+  })
+})
 
 describe('formatElapsed', () => {
   it('formats sub-minute times with one decimal', () => {

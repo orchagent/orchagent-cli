@@ -323,7 +323,8 @@ export function registerSkillCommand(program: Command): void {
   skill
     .command('create [name]')
     .description('Create a new skill from template')
-    .action(async (name?: string) => {
+    .option('-y, --yes', 'Skip confirmation prompt')
+    .action(async (name: string | undefined, options: { yes?: boolean }) => {
       const cwd = process.cwd()
       const skillName = name || path.basename(cwd)
       const skillPath = path.join(cwd, 'SKILL.md')
@@ -334,6 +335,21 @@ export function registerSkillCommand(program: Command): void {
         throw new CliError('SKILL.md already exists')
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+      }
+
+      // Confirm before writing to CWD (TTY only, skip with --yes)
+      if (!options.yes && process.stdout.isTTY) {
+        const readline = await import('readline/promises')
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        })
+        const answer = await rl.question(`Create ${skillPath}? (y/N): `)
+        rl.close()
+        if (answer.trim().toLowerCase() !== 'y' && answer.trim().toLowerCase() !== 'yes') {
+          process.stdout.write('Aborted.\n')
+          return
+        }
       }
 
       const template = `---

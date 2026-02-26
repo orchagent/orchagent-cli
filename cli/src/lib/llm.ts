@@ -32,10 +32,10 @@ export const PROVIDER_ENV_VARS: Record<string, string> = {
   ollama: 'OLLAMA_HOST',
 }
 
-// Default models for each provider (best models)
+// Default models for each provider
 export const DEFAULT_MODELS: Record<string, string> = {
   openai: 'gpt-5.2',
-  anthropic: 'claude-opus-4-5-20251101',
+  anthropic: 'claude-sonnet-4-6',
   gemini: 'gemini-2.5-pro',
   ollama: 'llama3.2',
 }
