@@ -351,6 +351,8 @@ export async function createAgent(
     manifest?: object
     // Workspace secrets to inject as env vars in sandbox
     required_secrets?: string[]
+    // Optional secrets that unlock additional features
+    optional_secrets?: string[]
     // Skills configuration
     default_skills?: string[]
     skills_locked?: boolean
@@ -692,6 +694,7 @@ export async function validateAgentPublish(
     supported_providers?: string[]
     default_models?: Record<string, string>
     required_secrets?: string[]
+    optional_secrets?: string[]
     default_skills?: string[]
     skills_locked?: boolean
     sdk_compatible?: boolean

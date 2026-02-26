@@ -51,6 +51,8 @@ export type PublicAgent = {
   output_schema?: object
   org_id?: string
   allow_local_download?: boolean
+  required_secrets?: string[]
+  optional_secrets?: string[]
 }
 
 export type LlmProvider = 'openai' | 'anthropic' | 'gemini' | 'any'
@@ -109,6 +111,8 @@ export type AgentManifest = {
   run_command?: string     // Command to run locally (e.g., "python -m leak_finder.cli")
   // Workspace secrets to inject as env vars in sandbox
   required_secrets?: string[]
+  // Optional secrets that unlock additional features
+  optional_secrets?: string[]
   // Skills composition: default skills to inject
   default_skills?: string[]
   skills_locked?: boolean
@@ -169,6 +173,7 @@ export type Agent = {
   entrypoint?: string
   is_public?: boolean
   required_secrets?: string[]
+  optional_secrets?: string[]
   default_skills?: string[]
   skills_locked?: boolean
   allow_local_download?: boolean
