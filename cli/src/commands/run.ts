@@ -2272,7 +2272,7 @@ async function executeCloud(
   // --estimate-only: show cost estimate and exit without running
   if (options.estimate || options.estimateOnly) {
     try {
-      const est = await getAgentCostEstimate(resolved, org, agentName, version)
+      const est = await getAgentCostEstimate(resolved, org, agentName, version, workspaceId)
       const e = est.estimate
       if (e.sample_size === 0) {
         process.stderr.write(chalk.yellow('\nNo run history available for cost estimation.\n'))
@@ -3413,7 +3413,7 @@ export function registerRunCommand(program: Command): void {
     // Local-only options
     .option('--download-only', 'Just download the agent, do not execute (local only)')
     .option('--with-deps', 'Automatically download all dependencies (local only)')
-    .option('--here', 'Scan current directory (local only)')
+    .option('--here', 'Send current directory as path input, for tool agents with a path field (local only)')
     .option('--path <dir>', 'Shorthand for --data \'{"path": "<dir>"}\' (local only)')
     .addHelpText('after', `
 Examples:

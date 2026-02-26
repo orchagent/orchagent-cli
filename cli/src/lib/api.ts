@@ -307,10 +307,10 @@ export async function getAgentCostEstimate(
   workspaceId?: string
 ): Promise<CostEstimateResponse> {
   const path = `/public/agents/${org}/${agent}/${version}/cost-estimate`
-  if (workspaceId && config.apiKey) {
-    return request<CostEstimateResponse>(config, 'GET', path, {
-      headers: { 'X-Workspace-Id': workspaceId },
-    })
+  if (config.apiKey) {
+    const headers: Record<string, string> = {}
+    if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+    return request<CostEstimateResponse>(config, 'GET', path, { headers })
   }
   return publicRequest<CostEstimateResponse>(config, path)
 }

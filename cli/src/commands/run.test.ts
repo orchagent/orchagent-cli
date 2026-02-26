@@ -4150,8 +4150,38 @@ describe('run command --estimate and --estimate-only', () => {
     expect(stderrOutput).toContain('Cost Estimate')
     expect(stderrOutput).toContain('25 runs')
 
-    // Verify getAgentCostEstimate was called
-    expect(mockGetAgentCostEstimate).toHaveBeenCalled()
+    // Verify getAgentCostEstimate was called with workspaceId
+    expect(mockGetAgentCostEstimate).toHaveBeenCalledWith(
+      expect.any(Object), 'test-org', 'test-agent', 'v1', 'workspace-123'
+    )
+  })
+
+  it('--estimate passes workspaceId to getAgentCostEstimate for private agent resolution', async () => {
+    mockGetAgentCostEstimate.mockResolvedValue({
+      estimate: {
+        sample_size: 10,
+        avg_cost_usd: 0.01,
+        p50_cost_usd: 0.008,
+        p95_cost_usd: 0.03,
+        period_days: 30,
+      },
+    })
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'prompt',
+      name: 'private-agent',
+      version: 'v2',
+      supported_providers: ['any'],
+    })
+
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('team-ws-456')
+
+    await program.parseAsync(['node', 'test', 'run', 'myteam/private-agent@v2', '--estimate-only'])
+
+    // The workspace ID must be passed so private agents in team workspaces can be found
+    expect(mockGetAgentCostEstimate).toHaveBeenCalledWith(
+      expect.any(Object), 'myteam', 'private-agent', 'v2', 'team-ws-456'
+    )
   })
 
   it('--estimate-only throws network error when estimate fetch fails with generic error', async () => {

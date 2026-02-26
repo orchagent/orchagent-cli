@@ -963,6 +963,142 @@ describe('pull command', () => {
       expect(prompt).toBe('Owner prompt.')
     })
 
+    it('BUG-14-01: passes workspace header to GET /agents/{id} for workspace-scoped agent', async () => {
+      // User is in team workspace 'joe' (not their personal org).
+      // Agent lives in the team workspace. listMyAgents finds it because
+      // X-Workspace-Id is sent. But GET /agents/{id} must ALSO send the
+      // workspace header, otherwise the gateway scopes to the personal org
+      // and returns 404.
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-joe-workspace')
+
+      // Public endpoint → 404 (private agent)
+      mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
+
+      // Workspace-scoped list → agent found in team workspace
+      mockListMyAgents.mockResolvedValueOnce([
+        {
+          id: 'agent-ws-1',
+          name: 'my-agent',
+          version: 'v1',
+          type: 'prompt',
+          org_slug: 'joe',
+          created_at: '2026-02-20T00:00:00Z',
+        } as any,
+      ])
+
+      mockRequest.mockResolvedValue({
+        id: 'agent-ws-1',
+        name: 'my-agent',
+        version: 'v1',
+        type: 'prompt',
+        execution_engine: 'direct_llm',
+        description: 'Workspace agent',
+        prompt: 'Workspace prompt.',
+      } as any)
+
+      await program.parseAsync([
+        'node', 'test', 'pull', 'joe/my-agent', '--output', outputDir,
+      ])
+
+      const prompt = await fs.readFile(path.join(outputDir, 'prompt.md'), 'utf-8')
+      expect(prompt).toBe('Workspace prompt.')
+
+      // Key assertion: GET /agents/{id} must include workspace header
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.any(Object),
+        'GET',
+        '/agents/agent-ws-1',
+        { headers: { 'X-Workspace-Id': 'ws-joe-workspace' } }
+      )
+    })
+
+    it('BUG-14-01: 403 owner fallback passes workspace header to GET /agents/{id}', async () => {
+      // 403 with DOWNLOAD_DISABLED + team workspace context
+      mockPublicRequest.mockRejectedValue(
+        new ApiError('Download disabled', 403, {
+          error: { code: 'DOWNLOAD_DISABLED', message: 'Download disabled' },
+        })
+      )
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-owner')
+
+      // Workspace-scoped list → agent found
+      mockListMyAgents.mockResolvedValueOnce([
+        {
+          id: 'agent-owner-ws',
+          name: 'my-agent',
+          version: 'v3',
+          type: 'agent',
+          org_slug: 'joe',
+          created_at: '2026-01-01T00:00:00Z',
+        } as any,
+      ])
+
+      mockRequest.mockResolvedValue({
+        id: 'agent-owner-ws',
+        name: 'my-agent',
+        version: 'v3',
+        type: 'agent',
+        execution_engine: 'direct_llm',
+        description: 'Owner workspace agent',
+        prompt: 'Owner ws prompt.',
+      } as any)
+
+      await program.parseAsync([
+        'node', 'test', 'pull', 'joe/my-agent', '--output', outputDir,
+      ])
+
+      // Key assertion: GET /agents/{id} must include workspace header
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.any(Object),
+        'GET',
+        '/agents/agent-owner-ws',
+        { headers: { 'X-Workspace-Id': 'ws-team-owner' } }
+      )
+    })
+
+    it('BUG-14-01: does NOT send workspace header when agent found in personal org fallback', async () => {
+      // User is in team workspace, but agent lives in personal org
+      mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-456')
+
+      mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))
+
+      // Workspace-scoped list → empty (agent not in team workspace)
+      // Personal org list → agent found
+      mockListMyAgents
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          {
+            id: 'agent-personal-2',
+            name: 'my-agent',
+            version: 'v1',
+            type: 'agent',
+            org_slug: 'joe',
+            created_at: '2026-01-15T00:00:00Z',
+          } as any,
+        ])
+
+      mockRequest.mockResolvedValue({
+        id: 'agent-personal-2',
+        name: 'my-agent',
+        version: 'v1',
+        type: 'agent',
+        execution_engine: 'direct_llm',
+        description: 'Personal agent',
+        prompt: 'Personal prompt.',
+      } as any)
+
+      await program.parseAsync([
+        'node', 'test', 'pull', 'joe/my-agent', '--output', outputDir,
+      ])
+
+      // Key assertion: GET /agents/{id} must NOT include workspace header
+      // (agent lives in personal org, sending workspace header would 404)
+      const getCall = mockRequest.mock.calls.find(c => c[1] === 'GET' && c[2] === '/agents/agent-personal-2')
+      expect(getCall).toBeDefined()
+      const headers = getCall![3]?.headers ?? {}
+      expect(headers['X-Workspace-Id']).toBeUndefined()
+    })
+
     it('still returns 404 when agent does not exist in any workspace', async () => {
       mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-team-456')
       mockPublicRequest.mockRejectedValue(new ApiError('Not found', 404))

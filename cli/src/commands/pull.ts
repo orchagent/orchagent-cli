@@ -200,15 +200,22 @@ async function tryOwnerFallback(
 ): Promise<Omit<PullData, 'source'> | null> {
   try {
     let match = findOwnerMatch(await listMyAgents(config, workspaceId), agent, version, org)
+    let effectiveWorkspaceId = workspaceId
 
     // Retry without workspace restriction to find agents in personal org
     if (!match && workspaceId) {
       match = findOwnerMatch(await listMyAgents(config, undefined), agent, version, org)
+      effectiveWorkspaceId = undefined
     }
 
     if (!match) return null
 
-    const agentData = await request<Agent>(config, 'GET', `/agents/${match.id}`)
+    // Pass workspace context so GET /agents/{id} uses the correct org scope.
+    // Without this header, the gateway scopes to the caller's personal org,
+    // which 404s when the agent lives in a team workspace.
+    const headers: Record<string, string> = {}
+    if (effectiveWorkspaceId) headers['X-Workspace-Id'] = effectiveWorkspaceId
+    const agentData = await request<Agent>(config, 'GET', `/agents/${match.id}`, { headers })
     return mapAgentToPullData(agentData)
   } catch {
     return null
@@ -251,7 +258,12 @@ async function resolveFromMyAgents(
     target = found
   }
 
-  const agentData = await request<Agent>(config, 'GET', `/agents/${target.id}`)
+  // Pass workspace context so GET /agents/{id} uses the correct org scope.
+  // Without this header, the gateway scopes to the caller's personal org,
+  // which 404s when the agent lives in a team workspace.
+  const headers: Record<string, string> = {}
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+  const agentData = await request<Agent>(config, 'GET', `/agents/${target.id}`, { headers })
   return mapAgentToPullData(agentData)
 }
 
