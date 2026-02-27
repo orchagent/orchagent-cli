@@ -362,6 +362,8 @@ export async function createAgent(
     allow_local_download?: boolean
     // Environment pinning (python_version, node_version, pip_flags, npm_flags)
     environment?: { python_version?: string; node_version?: string; pip_flags?: string; npm_flags?: string }
+    // Per-task model assignment (e.g. { "default": "claude-haiku-4-5", "code_editing": "claude-opus-4-6" })
+    model_tasks?: Record<string, string>
   },
   workspaceId?: string
 ): Promise<{ agent: Agent; service_key?: string; services_updated?: number }> {

@@ -122,6 +122,8 @@ export type AgentManifest = {
     include?: string[]     // Glob patterns to include
     exclude?: string[]     // Glob patterns to exclude
   }
+  // Per-task model assignment (e.g. { "default": "claude-haiku-4-5-20251001", "code_editing": "claude-opus-4-6" })
+  model_tasks?: Record<string, string>
   // Environment pinning (optional runtime version/flag constraints)
   environment?: {
     python_version?: string   // e.g., "3.9", "3.11"

@@ -906,6 +906,26 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
+      // Validate model_tasks: "default" key required, all values non-empty strings
+      if (manifest.model_tasks !== undefined) {
+        if (typeof manifest.model_tasks !== 'object' || manifest.model_tasks === null || Array.isArray(manifest.model_tasks)) {
+          validationErrors.push('model_tasks must be an object mapping task names to model IDs')
+        } else {
+          const tasks = manifest.model_tasks
+          if (!tasks.default) {
+            validationErrors.push('model_tasks must include a "default" key')
+          }
+          for (const [taskName, modelId] of Object.entries(tasks)) {
+            if (typeof modelId !== 'string' || modelId.trim() === '') {
+              validationErrors.push(`model_tasks.${taskName} must be a non-empty string (model ID)`)
+            }
+            if (!/^[a-z0-9_]+$/.test(taskName)) {
+              validationErrors.push(`model_tasks key "${taskName}" must contain only lowercase letters, numbers, and underscores`)
+            }
+          }
+        }
+      }
+
       // Warn about deprecated prompt field
       if (manifest.prompt) {
         process.stderr.write(chalk.yellow('Warning: "prompt" field in orchagent.json is ignored. Use prompt.md file instead.\n'))
@@ -1461,6 +1481,8 @@ export function registerPublishCommand(program: Command): void {
           allow_local_download: options.localDownload !== false,
           // Environment pinning
           environment: manifest.environment,
+          // Per-task model assignment
+          model_tasks: manifest.model_tasks,
         }, workspaceId)
       } catch (err) {
         // Improve SECURITY_BLOCKED error display
