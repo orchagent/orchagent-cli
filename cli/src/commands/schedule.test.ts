@@ -19,21 +19,35 @@ vi.mock('../lib/config', () => ({
 vi.mock('../lib/api', () => ({
   request: vi.fn(),
   getAgentWithFallback: vi.fn(),
+  listMyAgents: vi.fn(),
 }))
 
 vi.mock('../lib/agent-ref', () => ({
   parseAgentRef: vi.fn(),
 }))
 
+const { mockRlQuestion, mockRlClose } = vi.hoisted(() => ({
+  mockRlQuestion: vi.fn(),
+  mockRlClose: vi.fn(),
+}))
+vi.mock('readline/promises', () => {
+  const createInterface = vi.fn(() => ({
+    question: mockRlQuestion,
+    close: mockRlClose,
+  }))
+  return { default: { createInterface }, createInterface }
+})
+
 import { registerScheduleCommand } from './schedule'
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { request, getAgentWithFallback } from '../lib/api'
+import { request, getAgentWithFallback, listMyAgents } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockLoadConfig = vi.mocked(loadConfig)
 const mockRequest = vi.mocked(request)
 const mockGetAgentWithFallback = vi.mocked(getAgentWithFallback)
+const mockListMyAgents = vi.mocked(listMyAgents)
 const mockParseAgentRef = vi.mocked(parseAgentRef)
 
 function allStdout(spy: ReturnType<typeof vi.spyOn>): string {
@@ -127,6 +141,10 @@ function setupMocks() {
     version: 'v1',
     name: 'my-agent',
   } as never)
+
+  mockListMyAgents.mockResolvedValue([
+    { id: 'agent-uuid-001', name: 'my-agent', version: 'v1', created_at: '2026-02-26T12:06:00Z' },
+  ] as never)
 }
 
 // ── tests ──────────────────────────────────────────────────────────
@@ -316,5 +334,95 @@ describe('schedule subcommands --json output (T12-09)', () => {
 
     const output = allStdout(stdoutSpy)
     expect(output).toContain('Webhook secret regenerated')
+  })
+})
+
+// ── version warning tests ─────────────────────────────────────────
+
+describe('schedule create version warning', () => {
+  let program: Command
+  let stdoutSpy: ReturnType<typeof vi.spyOn>
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  const MULTI_VERSION_AGENTS = [
+    { id: 'agent-uuid-002', name: 'my-agent', version: 'v2', created_at: '2026-02-26T12:08:00Z' },
+    { id: 'agent-uuid-001', name: 'my-agent', version: 'v1', created_at: '2026-02-26T12:06:00Z' },
+  ]
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    program = new Command()
+    program.exitOverride()
+    registerScheduleCommand(program)
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    setupMocks()
+  })
+
+  afterEach(() => {
+    stdoutSpy.mockRestore()
+    stderrSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  it('warns when scheduling a non-latest version (interactive)', async () => {
+    // User specified v1 but v2 exists
+    mockParseAgentRef.mockReturnValue({ org: 'myorg', agent: 'my-agent', version: 'v1' })
+    mockGetAgentWithFallback.mockResolvedValue({
+      id: 'agent-uuid-001', version: 'v1', name: 'my-agent',
+    } as never)
+    mockListMyAgents.mockResolvedValue(MULTI_VERSION_AGENTS as never)
+
+    // Mock readline to answer "n" (keep v1)
+    mockRlQuestion.mockResolvedValue('n')
+
+    await program.parseAsync([
+      'node', 'test', 'schedule', 'create', 'myorg/my-agent@v1',
+      '--cron', '0 9 * * 1',
+    ])
+
+    const output = allStdout(stdoutSpy)
+    expect(output).toContain('Scheduling v1')
+    expect(output).toContain('newer version')
+    expect(output).toContain('v2')
+    expect(mockRlQuestion).toHaveBeenCalledWith('Use latest (v2) instead? (Y/n): ')
+  })
+
+  it('does not warn when scheduling the latest version', async () => {
+    mockParseAgentRef.mockReturnValue({ org: 'myorg', agent: 'my-agent', version: 'v2' })
+    mockGetAgentWithFallback.mockResolvedValue({
+      id: 'agent-uuid-002', version: 'v2', name: 'my-agent',
+    } as never)
+    mockListMyAgents.mockResolvedValue(MULTI_VERSION_AGENTS as never)
+
+    await program.parseAsync([
+      'node', 'test', 'schedule', 'create', 'myorg/my-agent@v2',
+      '--cron', '0 9 * * 1',
+    ])
+
+    const output = allStdout(stdoutSpy)
+    expect(output).not.toContain('newer version')
+    expect(output).toContain('Schedule created')
+  })
+
+  it('skips version warning in --json mode', async () => {
+    mockParseAgentRef.mockReturnValue({ org: 'myorg', agent: 'my-agent', version: 'v1' })
+    mockGetAgentWithFallback.mockResolvedValue({
+      id: 'agent-uuid-001', version: 'v1', name: 'my-agent',
+    } as never)
+    mockListMyAgents.mockResolvedValue(MULTI_VERSION_AGENTS as never)
+
+    await program.parseAsync([
+      'node', 'test', 'schedule', 'create', 'myorg/my-agent@v1',
+      '--cron', '0 9 * * 1', '--json',
+    ])
+
+    const output = allStdout(stdoutSpy)
+    // Should be clean JSON, no warning text
+    const parsed = JSON.parse(output)
+    expect(parsed.schedule).toBeDefined()
+    expect(output).not.toContain('newer version')
+    // listMyAgents should NOT have been called (skipped entirely)
+    expect(mockListMyAgents).not.toHaveBeenCalled()
   })
 })

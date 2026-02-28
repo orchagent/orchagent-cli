@@ -4,7 +4,7 @@ import chalk from 'chalk'
 import readline from 'readline/promises'
 
 import { getResolvedConfig, loadConfig } from '../lib/config'
-import { request } from '../lib/api'
+import { request, listMyAgents } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { resolveJsonBody } from '../lib/json-input'
 import { printJson } from '../lib/output'
@@ -321,7 +321,40 @@ export function registerScheduleCommand(program: Command): void {
       }
 
       // Resolve agent to get the ID (pass workspace context for private agents)
-      const agent = await getAgentWithFallback(config, org, ref.agent, ref.version, workspaceId)
+      let agent = await getAgentWithFallback(config, org, ref.agent, ref.version, workspaceId)
+
+      // Warn if scheduling a non-latest version (skip in --json mode)
+      if (ref.version !== 'latest' && !options.json) {
+        const allAgents = await listMyAgents(config, workspaceId)
+        const versions = allAgents
+          .filter((a) => a.name === ref.agent)
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+
+        if (versions.length > 1 && versions[0].version !== ref.version) {
+          const latest = versions[0]
+          const current = versions.find((a) => a.version === ref.version)
+          const fmtDate = (iso: string) => new Date(iso).toLocaleString()
+          const currentDate = current ? ` (published ${fmtDate(current.created_at)})` : ''
+          const latestDate = ` (published ${fmtDate(latest.created_at)})`
+
+          process.stdout.write(
+            chalk.yellow(`\u26a0  Scheduling ${ref.version}${currentDate}. `) +
+            `A newer version is available: ${chalk.bold(latest.version)}${latestDate}.\n`
+          )
+
+          const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+          })
+          const answer = await rl.question(`Use latest (${latest.version}) instead? (Y/n): `)
+          rl.close()
+
+          if (answer.trim().toLowerCase() !== 'n' && answer.trim().toLowerCase() !== 'no') {
+            agent = latest
+            ref.version = latest.version
+          }
+        }
+      }
 
       // Parse input data (--data is primary, --input is deprecated alias)
       const rawInput = options.data ?? options.input
