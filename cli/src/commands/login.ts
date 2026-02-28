@@ -91,7 +91,7 @@ async function browserBasedLogin(port: number): Promise<void> {
   const isFirstLogin = !existing.api_key
   const resolved = await getResolvedConfig()
 
-  process.stdout.write('Opening browser for authentication...\n')
+  process.stdout.write('Opening browser for authentication...\n\n')
 
   try {
     const result = await startBrowserAuth(resolved.apiUrl, port)

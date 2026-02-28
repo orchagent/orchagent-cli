@@ -173,12 +173,12 @@ export async function startBrowserAuth(
   // Step 2: Start local server to receive callback
   const tokenPromise = waitForCallback(port, AUTH_TIMEOUT_MS)
 
-  // Step 3: Open browser
+  // Step 3: Open browser + always show URL as fallback
+  process.stdout.write(`\nIf your browser doesn't open, visit this URL:\n${auth_url}\n\n`)
   try {
     await open(auth_url)
   } catch {
-    // If browser fails to open, show the URL for manual opening
-    process.stdout.write(`\nPlease open this URL in your browser:\n${auth_url}\n\n`)
+    // Browser open failed — URL already printed above
   }
 
   // Step 4: Wait for callback

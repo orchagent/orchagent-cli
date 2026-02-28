@@ -156,12 +156,13 @@ function healthColor(health: string): string {
   }
 }
 
-function formatServiceUrl(svc: AutomationService): string {
-  const url = svc.provider_url || svc.cloud_run_url || '-'
-  if (url !== '-' && svc.infrastructure_provider === 'flyio') {
-    return `${url} ${chalk.gray('(internal — not a public endpoint)')}`
-  }
-  return url
+function formatServiceTier(svc: AutomationService): string {
+  const tier = (svc as unknown as Record<string, unknown>).service_tier_label as string | undefined
+  if (tier) return tier
+  const rawTier = svc.service_tier || 'standard'
+  return rawTier === 'performance'
+    ? 'Performance (Dedicated 1 vCPU, 512 MB)'
+    : 'Standard (Shared CPU, 512 MB)'
 }
 
 function severityColor(severity: string, message: string): string {
@@ -321,7 +322,7 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`  ${chalk.bold('Name:')}     ${svc.service_name}\n`)
         process.stdout.write(`  ${chalk.bold('Agent:')}    ${svc.agent_name}@${svc.agent_version}\n`)
         process.stdout.write(`  ${chalk.bold('State:')}    ${stateColor(svc.current_state)}\n`)
-        process.stdout.write(`  ${chalk.bold('URL:')}      ${formatServiceUrl(svc)}\n`)
+        process.stdout.write(`  ${chalk.bold('Tier:')}     ${formatServiceTier(svc)}\n`)
         if (options.pin) {
           process.stdout.write(`  ${chalk.bold('Pinned:')}   ${chalk.yellow(`yes (won't auto-update on publish)`)}\n`)
         }
@@ -525,8 +526,7 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`  Fail Streak:  ${chalk.red(String(svc.consecutive_restart_failures))} / ${svc.max_restart_failures}\n`)
       }
       process.stdout.write(`  Instances:    ${svc.min_instances}-${svc.max_instances}\n`)
-      process.stdout.write(`  Service ID:   ${svc.provider_service_id || svc.cloud_run_service || '-'}\n`)
-      process.stdout.write(`  URL:          ${formatServiceUrl(svc)}\n`)
+      process.stdout.write(`  Tier:         ${formatServiceTier(svc)}\n`)
       process.stdout.write(`  Deployed:     ${formatDate(svc.last_deployed_at)}\n`)
       process.stdout.write(`  Last Restart: ${formatDate(svc.last_restart_at)}\n`)
 
