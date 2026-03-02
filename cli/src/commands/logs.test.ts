@@ -1,7 +1,8 @@
 /**
  * Tests for the logs command.
  *
- * Covers: BUG-1 (short run IDs), BUG-2 (org prefix stripping)
+ * Covers: BUG-1 (short run IDs), BUG-2 (org prefix stripping),
+ * service-aware logs (always-on service integration)
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -18,10 +19,12 @@ vi.mock('../lib/output', () => ({
 import { registerLogsCommand } from './logs'
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request } from '../lib/api'
+import { printJson } from '../lib/output'
 
 const mockGetResolvedConfig = vi.mocked(getResolvedConfig)
 const mockLoadConfig = vi.mocked(loadConfig)
 const mockRequest = vi.mocked(request)
+const mockPrintJson = vi.mocked(printJson)
 
 const WORKSPACE_ID = 'ws-123'
 
@@ -58,6 +61,26 @@ function makeRunLogsResponse(overrides: Record<string, unknown> = {}) {
     execution_time_ms: 1500,
     ...overrides,
   }
+}
+
+function makeService(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'svc-abc-123',
+    service_name: 'test-service',
+    agent_name: 'test-agent',
+    agent_version: 'v1',
+    current_state: 'running',
+    health_status: 'healthy',
+    ...overrides,
+  }
+}
+
+function makeServicesResponse(services: Array<Record<string, unknown>> = []) {
+  return { services, total: services.length }
+}
+
+function makeServiceLogsResponse(logs: Array<Record<string, unknown>> = []) {
+  return { logs }
 }
 
 describe('logs command', () => {
@@ -521,5 +544,220 @@ describe('logs command', () => {
 
     const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
     expect(output).toContain('orch replay')
+  })
+
+  // ─── Always-on service integration ──────────────────────────────────────
+
+  it('shows service logs alongside runs when agent has an always-on service', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([makeService()])
+      }
+      if (typeof path === 'string' && path.includes('/services/svc-abc-123/logs')) {
+        return makeServiceLogsResponse([
+          { timestamp: '2026-03-01T12:00:00Z', severity: 'INFO', message: 'Bot connected to Discord' },
+          { timestamp: '2026-03-01T12:01:00Z', severity: 'ERROR', message: 'Rate limit hit' },
+        ])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', 'test-agent'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    // Should show both runs table AND service logs section
+    expect(output).toContain('test-agent@v1')
+    expect(output).toContain('always-on service: test-service')
+    expect(output).toContain('Bot connected to Discord')
+    expect(output).toContain('Rate limit hit')
+    expect(output).toContain('--live')
+  })
+
+  it('shows service logs when no discrete runs exist but service does', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([makeService()])
+      }
+      if (typeof path === 'string' && path.includes('/services/svc-abc-123/logs')) {
+        return makeServiceLogsResponse([
+          { timestamp: '2026-03-01T12:00:00Z', severity: 'INFO', message: 'Service started' },
+        ])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', 'test-agent'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    // Should NOT show "No runs found" — should show service section
+    expect(output).not.toContain('No runs found')
+    expect(output).toContain('always-on service: test-service')
+    expect(output).toContain('Service started')
+  })
+
+  it('--live shows only service logs, skipping runs', async () => {
+    let runsRequested = false
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([makeService()])
+      }
+      if (typeof path === 'string' && path.includes('/services/svc-abc-123/logs')) {
+        return makeServiceLogsResponse([
+          { timestamp: '2026-03-01T12:00:00Z', severity: 'INFO', message: 'Live log line 1' },
+          { timestamp: '2026-03-01T12:01:00Z', severity: 'WARNING', message: 'Live log line 2' },
+        ])
+      }
+      if (typeof path === 'string' && path.includes('/runs')) {
+        runsRequested = true
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', 'test-agent', '--live'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('Live logs: test-service')
+    expect(output).toContain('Live log line 1')
+    expect(output).toContain('Live log line 2')
+    // Should NOT have requested runs endpoint
+    expect(runsRequested).toBe(false)
+  })
+
+  it('--live errors when no service found for agent', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([])
+      }
+      return {}
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'logs', 'no-service-agent', '--live'])
+    ).rejects.toThrow("No always-on service found for agent 'no-service-agent'")
+  })
+
+  it('--live without agent name gives helpful error', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      return {}
+    })
+
+    await expect(
+      program.parseAsync(['node', 'test', 'logs', '--live'])
+    ).rejects.toThrow('Specify an agent name with --live')
+  })
+
+  it('gracefully handles service lookup failure and still shows runs', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        throw new Error('Service endpoint unavailable')
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', 'test-agent'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    // Runs should still be shown despite service lookup failure
+    expect(output).toContain('test-agent@v1')
+    expect(output).not.toContain('always-on service')
+  })
+
+  it('ignores deleted services', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([
+          makeService({ current_state: 'deleted' }),
+        ])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', 'test-agent'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    // Should NOT show service section for deleted service
+    expect(output).not.toContain('always-on service')
+  })
+
+  it('--json with service includes service info in payload', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([makeService()])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', 'test-agent', '--json'])
+
+    // printJson should have been called with service info in the payload
+    expect(mockPrintJson).toHaveBeenCalledTimes(1)
+    const payload = mockPrintJson.mock.calls[0][0] as Record<string, unknown>
+    expect(payload.service).toBeDefined()
+    expect((payload.service as Record<string, unknown>).id).toBe('svc-abc-123')
+    expect((payload.service as Record<string, unknown>).current_state).toBe('running')
+  })
+
+  it('does not look up services when no agent name filter is provided', async () => {
+    let servicesRequested = false
+
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services')) {
+        servicesRequested = true
+        return makeServicesResponse([])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([makeRun()])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs'])
+
+    // Should NOT have queried services since no agent name was provided
+    expect(servicesRequested).toBe(false)
   })
 })

@@ -44,6 +44,30 @@ interface RunLogsResponse {
   execution_time_ms: number | null
 }
 
+interface ServiceSummary {
+  id: string
+  service_name: string
+  agent_name: string
+  agent_version: string
+  current_state: string
+  health_status: string
+}
+
+interface ServicesListResponse {
+  services: ServiceSummary[]
+  total: number
+}
+
+interface ServiceLogEntry {
+  timestamp: string | null
+  severity: string
+  message: string
+}
+
+interface ServiceLogsResponse {
+  logs: ServiceLogEntry[]
+}
+
 interface Workspace {
   id: string
   name: string
@@ -137,6 +161,79 @@ function isShortUuid(value: string): boolean {
   return /^[0-9a-f]{7,}$/i.test(value) && !value.includes('/')
 }
 
+function severityColor(severity: string, message: string): string {
+  switch (severity.toUpperCase()) {
+    case 'ERROR':
+    case 'CRITICAL':
+      return chalk.red(message)
+    case 'WARNING':
+      return chalk.yellow(message)
+    case 'INFO':
+      return chalk.white(message)
+    default:
+      return chalk.gray(message)
+  }
+}
+
+/** Find an always-on service for a given agent name in the workspace. */
+async function findServiceForAgent(
+  config: ResolvedConfig,
+  workspaceId: string,
+  agentName: string,
+): Promise<ServiceSummary | null> {
+  try {
+    const result = await request<ServicesListResponse>(
+      config, 'GET', `/workspaces/${workspaceId}/services?limit=100`
+    )
+    return result.services.find(
+      (s) => s.agent_name === agentName && s.current_state !== 'deleted'
+    ) ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Fetch and display logs from an always-on service. */
+async function showServiceLogs(
+  config: ResolvedConfig,
+  workspaceId: string,
+  service: ServiceSummary,
+  limit: string,
+  json?: boolean,
+): Promise<void> {
+  const params = new URLSearchParams()
+  params.set('limit', limit)
+  const qs = `?${params.toString()}`
+
+  const result = await request<ServiceLogsResponse>(
+    config, 'GET', `/workspaces/${workspaceId}/services/${service.id}/logs${qs}`
+  )
+
+  if (json) {
+    printJson({
+      service_id: service.id,
+      service_name: service.service_name,
+      agent_name: service.agent_name,
+      agent_version: service.agent_version,
+      logs: result.logs,
+    })
+    return
+  }
+
+  if (!result.logs.length) {
+    process.stdout.write(chalk.gray('No service logs available yet.\n'))
+    return
+  }
+
+  for (const entry of result.logs) {
+    const ts = entry.timestamp
+      ? new Date(entry.timestamp).toISOString().replace('T', ' ').replace('Z', '')
+      : '???'
+    const sev = entry.severity.padEnd(7)
+    process.stdout.write(`${chalk.gray(ts)} ${severityColor(entry.severity, sev)} ${entry.message}\n`)
+  }
+}
+
 // ============================================
 // COMMAND REGISTRATION
 // ============================================
@@ -150,6 +247,7 @@ export function registerLogsCommand(program: Command): void {
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .option('--status <status>', 'Filter by status: running, completed, failed, timeout')
     .option('--limit <n>', 'Number of runs to show (default: 20)', '20')
+    .option('--live', 'Show live logs from always-on service (skips run history)')
     .option('--json', 'Output as JSON')
     .action(
       async (
@@ -158,6 +256,7 @@ export function registerLogsCommand(program: Command): void {
           workspace?: string
           status?: string
           limit?: string
+          live?: boolean
           json?: boolean
         }
       ) => {
@@ -225,8 +324,30 @@ async function listRuns(
   config: ResolvedConfig,
   workspaceId: string,
   agentName: string | undefined,
-  options: { status?: string; limit?: string; json?: boolean }
+  options: { status?: string; limit?: string; live?: boolean; json?: boolean }
 ): Promise<void> {
+  // When filtering by agent name, check for an always-on service in parallel
+  const servicePromise = agentName
+    ? findServiceForAgent(config, workspaceId, agentName)
+    : Promise.resolve(null)
+
+  // --live: skip run history and show only service logs
+  if (options.live) {
+    const service = await servicePromise
+    if (!service) {
+      const msg = agentName
+        ? `No always-on service found for agent '${agentName}'.`
+        : 'Specify an agent name with --live (e.g. orch logs my-agent --live).'
+      throw new CliError(msg)
+    }
+    process.stdout.write(
+      chalk.bold(`\nLive logs: ${service.service_name}`) +
+      ` (${service.agent_name}@${service.agent_version})\n\n`
+    )
+    await showServiceLogs(config, workspaceId, service, options.limit ?? '100', options.json)
+    return
+  }
+
   const params = new URLSearchParams()
   if (agentName) params.set('agent_name', agentName)
   if (options.status) params.set('status', options.status)
@@ -234,18 +355,26 @@ async function listRuns(
   params.set('limit', String(Math.min(Math.max(1, limit), 200)))
 
   const qs = params.toString() ? `?${params.toString()}` : ''
-  const result = await request<RunsListResponse>(
-    config,
-    'GET',
-    `/workspaces/${workspaceId}/runs${qs}`
-  )
+  const [result, service] = await Promise.all([
+    request<RunsListResponse>(config, 'GET', `/workspaces/${workspaceId}/runs${qs}`),
+    servicePromise,
+  ])
 
   if (options.json) {
-    printJson(result)
+    const payload: Record<string, unknown> = { ...result }
+    if (service) {
+      payload.service = {
+        id: service.id,
+        service_name: service.service_name,
+        current_state: service.current_state,
+        health_status: service.health_status,
+      }
+    }
+    printJson(payload)
     return
   }
 
-  if (result.runs.length === 0) {
+  if (result.runs.length === 0 && !service) {
     if (agentName) {
       process.stdout.write(`No runs found for agent '${agentName}'.\n`)
     } else {
@@ -254,45 +383,64 @@ async function listRuns(
     return
   }
 
-  const table = new Table({
-    head: [
-      chalk.bold('Run ID'),
-      chalk.bold('Agent'),
-      chalk.bold('Status'),
-      chalk.bold('Duration'),
-      chalk.bold('Source'),
-      chalk.bold('Started'),
-      chalk.bold('Error'),
-    ],
-  })
+  // Show runs table if there are any
+  if (result.runs.length > 0) {
+    const table = new Table({
+      head: [
+        chalk.bold('Run ID'),
+        chalk.bold('Agent'),
+        chalk.bold('Status'),
+        chalk.bold('Duration'),
+        chalk.bold('Source'),
+        chalk.bold('Started'),
+        chalk.bold('Error'),
+      ],
+    })
 
-  result.runs.forEach((r) => {
-    const errorPreview = r.error_message
-      ? chalk.red(r.error_message.length > 50 ? r.error_message.slice(0, 50) + '...' : r.error_message)
-      : chalk.gray('-')
+    result.runs.forEach((r) => {
+      const errorPreview = r.error_message
+        ? chalk.red(r.error_message.length > 50 ? r.error_message.slice(0, 50) + '...' : r.error_message)
+        : chalk.gray('-')
 
-    table.push([
-      r.id.slice(0, 8),
-      `${r.agent_name}@${r.agent_version}`,
-      statusColor(r.status),
-      formatDuration(r.duration_ms),
-      r.trigger_source ?? '-',
-      formatDate(r.started_at || r.created_at),
-      errorPreview,
-    ])
-  })
+      table.push([
+        r.id.slice(0, 8),
+        `${r.agent_name}@${r.agent_version}`,
+        statusColor(r.status),
+        formatDuration(r.duration_ms),
+        r.trigger_source ?? '-',
+        formatDate(r.started_at || r.created_at),
+        errorPreview,
+      ])
+    })
 
-  process.stdout.write(table.toString() + '\n')
+    process.stdout.write(table.toString() + '\n')
 
-  if (result.total > result.runs.length) {
+    if (result.total > result.runs.length) {
+      process.stdout.write(
+        chalk.gray(`\nShowing ${result.runs.length} of ${result.total} runs. Use --limit to see more.\n`)
+      )
+    }
+
     process.stdout.write(
-      chalk.gray(`\nShowing ${result.runs.length} of ${result.total} runs. Use --limit to see more.\n`)
+      chalk.gray('\nView detailed logs for a run: orch logs <run-id>  · Replay a run: orch replay <run-id>\n')
     )
   }
 
-  process.stdout.write(
-    chalk.gray('\nView detailed logs for a run: orch logs <run-id>  · Replay a run: orch replay <run-id>\n')
-  )
+  // If an always-on service exists for this agent, show its live logs
+  if (service) {
+    if (result.runs.length > 0) {
+      process.stdout.write('\n')
+    }
+    process.stdout.write(
+      chalk.bold.cyan(`--- always-on service: ${service.service_name} ---`) + '\n' +
+      `State: ${statusColor(service.current_state)}  ` +
+      `Agent: ${service.agent_name}@${service.agent_version}\n\n`
+    )
+    await showServiceLogs(config, workspaceId, service, '50')
+    process.stdout.write(
+      chalk.gray(`\nFull service logs: orch logs ${agentName} --live  · More options: orch service logs ${service.id}\n`)
+    )
+  }
 }
 
 // ============================================
