@@ -28,6 +28,7 @@ interface AutomationService {
   provider_service_id: string | null
   provider_region: string | null
   provider_url: string | null
+  service_url: string | null
   cloud_run_service: string | null
   cloud_run_region: string | null
   cloud_run_url: string | null
@@ -323,10 +324,16 @@ export function registerServiceCommand(program: Command): void {
         process.stdout.write(`  ${chalk.bold('Agent:')}    ${svc.agent_name}@${svc.agent_version}\n`)
         process.stdout.write(`  ${chalk.bold('State:')}    ${stateColor(svc.current_state)}\n`)
         process.stdout.write(`  ${chalk.bold('Tier:')}     ${formatServiceTier(svc)}\n`)
+        if (svc.service_url) {
+          process.stdout.write(`  ${chalk.bold('URL:')}      ${chalk.cyan(svc.service_url)}\n`)
+        }
         if (options.pin) {
           process.stdout.write(`  ${chalk.bold('Pinned:')}   ${chalk.yellow(`yes (won't auto-update on publish)`)}\n`)
         }
         process.stdout.write(`\n`)
+        if (svc.service_url) {
+          process.stdout.write(chalk.gray(`Public URL: ${svc.service_url}\n`))
+        }
         process.stdout.write(chalk.gray(`View logs: orch service logs ${svc.id}\n`))
       } catch (e) {
         deploySpinner.stop()
@@ -516,6 +523,9 @@ export function registerServiceCommand(program: Command): void {
       process.stdout.write(`  Agent:        ${svc.agent_name}@${svc.agent_version}\n`)
       process.stdout.write(`  State:        ${stateColor(svc.current_state)}\n`)
       process.stdout.write(`  Health:       ${healthColor(svc.health_status)}\n`)
+      if (svc.service_url) {
+        process.stdout.write(`  URL:          ${chalk.cyan(svc.service_url)}\n`)
+      }
 
       if (svc.auto_paused_at) {
         process.stdout.write(`  ${chalk.bgRed.white(' CRASH-LOOP ')} auto-paused at ${formatDate(svc.auto_paused_at)}\n`)
