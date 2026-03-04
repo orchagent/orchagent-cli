@@ -493,6 +493,45 @@ export function registerServiceCommand(program: Command): void {
       }
     })
 
+  // orch service update <service-id>
+  service
+    .command('update <service-id>')
+    .description('Update a service to the latest agent version')
+    .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
+    .option('--json', 'Output as JSON')
+    .action(async (serviceId: string, options: { workspace?: string; json?: boolean }) => {
+      const config = await getResolvedConfig()
+      if (!config.apiKey) {
+        throw new CliError('Missing API key. Run `orch login` first.')
+      }
+
+      const workspaceId = await resolveWorkspaceId(config, options.workspace)
+
+      const spinner = createSpinner('Updating service to latest version...')
+      spinner.start()
+
+      try {
+        const result = await request<{ service: AutomationService; updated_to?: string }>(
+          config, 'POST', `/workspaces/${workspaceId}/services/${serviceId}/update-version`
+        )
+
+        spinner.succeed('Service updated')
+
+        if (options.json) {
+          printJson(result)
+          return
+        }
+
+        const svc = result.service
+        process.stdout.write(`${chalk.green('\u2713')} Service '${svc.service_name}' updated to ${result.updated_to || svc.agent_version}\n`)
+        process.stdout.write(`  ${chalk.bold('Agent:')}    ${svc.agent_name}@${svc.agent_version}\n`)
+        process.stdout.write(`  ${chalk.bold('State:')}    ${stateColor(svc.current_state)}\n`)
+      } catch (e) {
+        spinner.stop()
+        throw e
+      }
+    })
+
   // orch service info <service-id>
   service
     .command('info <service-id>')
