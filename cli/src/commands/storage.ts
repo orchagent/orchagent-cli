@@ -122,29 +122,62 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-async function parseJsonArg(arg: string): Promise<unknown> {
-  // Support @file.json syntax
-  if (arg.startsWith('@')) {
-    const fs = await import('fs/promises')
-    const filePath = arg.slice(1)
-    try {
-      const content = await fs.readFile(filePath, 'utf-8')
-      return JSON.parse(content)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new CliError(`File not found: ${filePath}`)
+async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) {
+    throw new CliError(
+      'No JSON value provided.\n\n' +
+      'Usage:\n' +
+      '  orch storage set <ns> <key> \'{"k":"v"}\'      Inline JSON\n' +
+      '  orch storage set <ns> <key> @file.json        Read from file\n' +
+      '  echo \'{"k":"v"}\' | orch storage set <ns> <key> -   Read from stdin\n' +
+      '  cat data.json | orch storage set <ns> <key>   Pipe (implicit stdin)'
+    )
+  }
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.from(chunk))
+  }
+  if (!chunks.length) {
+    throw new CliError('No data received on stdin.')
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+async function parseJsonArg(arg: string | undefined): Promise<unknown> {
+  let raw: string
+
+  if (!arg || arg === '-') {
+    // Read from stdin
+    raw = await readStdin()
+  } else if (arg.startsWith('@')) {
+    // Support @file.json and @- syntax
+    const source = arg.slice(1)
+    if (source === '-') {
+      raw = await readStdin()
+    } else {
+      const fs = await import('fs/promises')
+      try {
+        raw = await fs.readFile(source, 'utf-8')
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new CliError(`File not found: ${source}`)
+        }
+        throw new CliError(`Failed to read ${source}: ${(err as Error).message}`)
       }
-      throw new CliError(`Invalid JSON in ${filePath}: ${(err as Error).message}`)
     }
+  } else {
+    raw = arg
   }
 
   try {
-    return JSON.parse(arg)
+    return JSON.parse(raw)
   } catch {
     throw new CliError(
       'Invalid JSON value.\n\n' +
-      'Pass valid JSON or use @file.json to read from a file.\n' +
-      'Example: orch storage set signals 2026-03-05 \'{"pending": [], "done": []}\''
+      'Pass valid JSON, @file.json, or pipe via stdin:\n' +
+      '  orch storage set signals 2026-03-05 \'{"pending": []}\'\n' +
+      '  orch storage set signals 2026-03-05 @data.json\n' +
+      '  echo \'{"pending": []}\' | orch storage set signals 2026-03-05 -'
     )
   }
 }
@@ -279,13 +312,13 @@ export function registerStorageCommand(program: Command): void {
       process.stdout.write(JSON.stringify(result.value, null, 2) + '\n')
     })
 
-  // orch storage set <namespace> <key> <value>
+  // orch storage set <namespace> <key> [value]
   storage
-    .command('set <namespace> <key> <value>')
-    .description('Create or update a document (JSON string or @file.json)')
+    .command('set <namespace> <key> [value]')
+    .description('Create or update a document (JSON string, @file.json, or - for stdin)')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .option('--version <n>', 'Expected version for compare-and-swap (CAS)')
-    .action(async (namespace: string, key: string, value: string, options: {
+    .action(async (namespace: string, key: string, value: string | undefined, options: {
       workspace?: string
       version?: string
     }) => {
@@ -323,12 +356,12 @@ export function registerStorageCommand(program: Command): void {
       )
     })
 
-  // orch storage patch <namespace> <key> <value>
+  // orch storage patch <namespace> <key> [value]
   storage
-    .command('patch <namespace> <key> <value>')
-    .description('Merge-patch a document (shallow merge JSON into existing)')
+    .command('patch <namespace> <key> [value]')
+    .description('Merge-patch a document (JSON string, @file.json, or - for stdin)')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
-    .action(async (namespace: string, key: string, value: string, options: {
+    .action(async (namespace: string, key: string, value: string | undefined, options: {
       workspace?: string
     }) => {
       const config = await getResolvedConfig()
