@@ -44,6 +44,7 @@ import { registerMetricsCommand } from './metrics'
 import { registerDagCommand } from './dag'
 import { registerCompletionCommand } from './completion'
 import { registerValidateCommand } from './validate'
+import { registerStorageCommand } from './storage'
 
 export function registerCommands(program: Command): void {
   registerLoginCommand(program)
@@ -90,4 +91,5 @@ export function registerCommands(program: Command): void {
   registerDagCommand(program)
   registerCompletionCommand(program)
   registerValidateCommand(program)
+  registerStorageCommand(program)
 }
