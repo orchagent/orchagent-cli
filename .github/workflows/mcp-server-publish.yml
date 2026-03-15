@@ -1,0 +1,52 @@
+name: MCP Server Publish to npm
+
+on:
+  push:
+    tags:
+      - "mcp-server-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: |
+          cd mcp-server
+          npm ci
+
+      - name: Build
+        run: |
+          cd mcp-server
+          npm run build
+
+      - name: Publish @orchagent/mcp-server
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd mcp-server
+          npm publish --access public
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./mcp-server/package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "Published @orchagent/mcp-server@$VERSION"

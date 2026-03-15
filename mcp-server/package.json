@@ -1,0 +1,32 @@
+{
+  "name": "@orchagent/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for orchagent — run agents, manage tasks, send messages from any MCP client",
+  "type": "module",
+  "bin": {
+    "orchagent-mcp": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "keywords": [
+    "mcp",
+    "orchagent",
+    "ai-agents",
+    "model-context-protocol"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^3.25"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
