@@ -6,6 +6,7 @@ import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { printJson } from '../lib/output'
+import { parseFields, filterFields } from '../lib/list-options'
 import type { ResolvedConfig } from '../types'
 
 // ============================================
@@ -193,6 +194,21 @@ async function findServiceForAgent(
   }
 }
 
+/** Find all active (non-deleted) always-on services in the workspace. */
+async function findActiveServices(
+  config: ResolvedConfig,
+  workspaceId: string,
+): Promise<ServiceSummary[]> {
+  try {
+    const result = await request<ServicesListResponse>(
+      config, 'GET', `/workspaces/${workspaceId}/services?limit=100`
+    )
+    return result.services.filter((s) => s.current_state !== 'deleted')
+  } catch {
+    return []
+  }
+}
+
 /** Fetch and display logs from an always-on service. */
 async function showServiceLogs(
   config: ResolvedConfig,
@@ -247,8 +263,10 @@ export function registerLogsCommand(program: Command): void {
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .option('--status <status>', 'Filter by status: running, completed, failed, timeout')
     .option('--limit <n>', 'Number of runs to show (default: 20)', '20')
+    .option('--offset <n>', 'Number of runs to skip')
     .option('--live', 'Show live logs from always-on service (skips run history)')
     .option('--json', 'Output as JSON')
+    .option('--fields <fields>', 'Comma-separated fields to include in JSON output (implies --json)')
     .action(
       async (
         target: string | undefined,
@@ -256,8 +274,10 @@ export function registerLogsCommand(program: Command): void {
           workspace?: string
           status?: string
           limit?: string
+          offset?: string
           live?: boolean
           json?: boolean
+          fields?: string
         }
       ) => {
         const config = await getResolvedConfig()
@@ -324,7 +344,7 @@ async function listRuns(
   config: ResolvedConfig,
   workspaceId: string,
   agentName: string | undefined,
-  options: { status?: string; limit?: string; live?: boolean; json?: boolean }
+  options: { status?: string; limit?: string; offset?: string; live?: boolean; json?: boolean; fields?: string }
 ): Promise<void> {
   // When filtering by agent name, check for an always-on service in parallel
   const servicePromise = agentName
@@ -353,6 +373,10 @@ async function listRuns(
   if (options.status) params.set('status', options.status)
   const limit = parseInt(options.limit ?? '20', 10)
   params.set('limit', String(Math.min(Math.max(1, limit), 200)))
+  if (options.offset) {
+    const offset = parseInt(options.offset, 10)
+    if (!isNaN(offset) && offset > 0) params.set('offset', String(offset))
+  }
 
   const qs = params.toString() ? `?${params.toString()}` : ''
   const [result, service] = await Promise.all([
@@ -360,7 +384,10 @@ async function listRuns(
     servicePromise,
   ])
 
-  if (options.json) {
+  // --fields implies --json
+  const useJson = options.json || !!options.fields
+
+  if (useJson) {
     const payload: Record<string, unknown> = { ...result }
     if (service) {
       payload.service = {
@@ -370,6 +397,10 @@ async function listRuns(
         health_status: service.health_status,
       }
     }
+    if (options.fields) {
+      const fields = parseFields(options.fields)
+      payload.runs = filterFields(payload.runs as unknown[], fields)
+    }
     printJson(payload)
     return
   }
@@ -377,8 +408,26 @@ async function listRuns(
   if (result.runs.length === 0 && !service) {
     if (agentName) {
       process.stdout.write(`No runs found for agent '${agentName}'.\n`)
+      process.stdout.write(
+        chalk.gray(`\nIf this is an always-on service, try: orch logs ${agentName} --live\n`)
+      )
     } else {
       process.stdout.write('No runs found in this workspace.\n')
+      // Check if the workspace has active services the user might want logs for
+      const activeServices = await findActiveServices(config, workspaceId)
+      if (activeServices.length > 0) {
+        process.stdout.write(
+          chalk.yellow('\nThis workspace has always-on services. To view service logs:\n')
+        )
+        for (const svc of activeServices) {
+          process.stdout.write(
+            `  ${chalk.cyan('orch logs ' + svc.agent_name + ' --live')}  (${svc.service_name})\n`
+          )
+        }
+        process.stdout.write(
+          chalk.gray('\nOr use: orch service logs <service-id>\n')
+        )
+      }
     }
     return
   }

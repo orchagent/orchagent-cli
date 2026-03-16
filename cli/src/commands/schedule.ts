@@ -8,6 +8,7 @@ import { request, listMyAgents } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { resolveJsonBody } from '../lib/json-input'
 import { printJson } from '../lib/output'
+import { parseFields, filterFields } from '../lib/list-options'
 import { parseAgentRef } from '../lib/agent-ref'
 import { getAgentWithFallback } from '../lib/api'
 import type { ResolvedConfig } from '../types'
@@ -197,7 +198,10 @@ export function registerScheduleCommand(program: Command): void {
     .option('--agent <name>', 'Filter by agent name')
     .option('--type <type>', 'Filter by type (cron or webhook)')
     .option('--json', 'Output as JSON')
-    .action(async (options: { workspace?: string; agent?: string; type?: string; json?: boolean }) => {
+    .option('--fields <fields>', 'Comma-separated fields to include in JSON output (implies --json)')
+    .option('--limit <n>', 'Maximum number of schedules to return (default: 100)')
+    .option('--offset <n>', 'Number of schedules to skip')
+    .action(async (options: { workspace?: string; agent?: string; type?: string; json?: boolean; fields?: string; limit?: string; offset?: string }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -207,7 +211,11 @@ export function registerScheduleCommand(program: Command): void {
       const params = new URLSearchParams()
       if (options.agent) params.set('agent_name', options.agent)
       if (options.type) params.set('schedule_type', options.type)
-      params.set('limit', '100')
+      params.set('limit', options.limit ?? '100')
+      if (options.offset) {
+        const offset = parseInt(options.offset, 10)
+        if (!isNaN(offset) && offset > 0) params.set('offset', String(offset))
+      }
 
       const qs = params.toString() ? `?${params.toString()}` : ''
       const result = await request<SchedulesListResponse>(
@@ -216,8 +224,16 @@ export function registerScheduleCommand(program: Command): void {
         `/workspaces/${workspaceId}/schedules${qs}`
       )
 
-      if (options.json) {
-        printJson(result)
+      // --fields implies --json
+      const useJson = options.json || !!options.fields
+
+      if (useJson) {
+        if (options.fields) {
+          const fields = parseFields(options.fields)
+          printJson({ ...result, schedules: filterFields(result.schedules, fields) })
+        } else {
+          printJson(result)
+        }
         return
       }
 
@@ -765,12 +781,16 @@ export function registerScheduleCommand(program: Command): void {
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .option('--status <status>', 'Filter by status (completed, failed, running, timeout)')
     .option('--limit <n>', 'Number of runs to show (default: 20)', '20')
+    .option('--offset <n>', 'Number of runs to skip')
     .option('--json', 'Output as JSON')
+    .option('--fields <fields>', 'Comma-separated fields to include in JSON output (implies --json)')
     .action(async (scheduleId: string, options: {
       workspace?: string
       status?: string
       limit: string
+      offset?: string
       json?: boolean
+      fields?: string
     }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
@@ -782,14 +802,26 @@ export function registerScheduleCommand(program: Command): void {
       const params = new URLSearchParams()
       params.set('limit', options.limit)
       if (options.status) params.set('status', options.status)
+      if (options.offset) {
+        const offset = parseInt(options.offset, 10)
+        if (!isNaN(offset) && offset > 0) params.set('offset', String(offset))
+      }
       const qs = `?${params.toString()}`
 
       const result = await request<ScheduleRunsResponse>(
         config, 'GET', `/workspaces/${workspaceId}/schedules/${scheduleId}/runs${qs}`
       )
 
-      if (options.json) {
-        printJson(result)
+      // --fields implies --json
+      const useJson = options.json || !!options.fields
+
+      if (useJson) {
+        if (options.fields) {
+          const fields = parseFields(options.fields)
+          printJson({ ...result, runs: filterFields(result.runs, fields) })
+        } else {
+          printJson(result)
+        }
         return
       }
 

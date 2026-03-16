@@ -1,6 +1,6 @@
 {
   "name": "@orchagent/cli",
-  "version": "0.3.119",
+  "version": "0.3.120",
   "description": "Command-line interface for orchagent — deploy and run AI agents for your team",
   "license": "MIT",
   "author": "orchagent <hello@orchagent.io>",
@@ -30,7 +30,8 @@
   },
   "files": [
     "dist",
-    "src/resources"
+    "src/resources",
+    "AGENT_GUIDE.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -26,11 +26,12 @@ export function registerLoginCommand(program: Command): void {
     .option('--key <key>', 'API key (for CI/CD, non-interactive)')
     .option('--port <port>', `Localhost port for browser callback (default: ${DEFAULT_AUTH_PORT})`, String(DEFAULT_AUTH_PORT))
     .action(async (options: { key?: string; port?: string }) => {
-      const providedKey = options.key || process.env.ORCHAGENT_API_KEY
-
-      // If key provided via flag or env var, use existing key-based flow
-      if (providedKey) {
-        await keyBasedLogin(providedKey)
+      // If key provided via --key flag, use key-based flow (for CI/CD)
+      // Note: ORCHAGENT_API_KEY env var is intentionally NOT checked here —
+      // it's for runtime API auth, not for login. Otherwise `orch login`
+      // can never reach the browser flow when the env var is set.
+      if (options.key) {
+        await keyBasedLogin(options.key)
         return
       }
 
@@ -69,7 +70,7 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
     ...existing,
     api_key: apiKey,
     api_url: resolved.apiUrl,
-    default_org: existing.default_org ?? org.slug,
+    default_org: org.slug,
   }
   // Clear workspace from previous account — workspaces are account-specific
   delete nextConfig.workspace
@@ -77,6 +78,14 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
   await saveConfig(nextConfig)
   await track('cli_login', { method: 'key' })
   process.stdout.write(`✓ Logged in to ${org.slug}\n`)
+
+  if (process.env.ORCHAGENT_API_KEY) {
+    process.stderr.write(
+      '\nWarning: ORCHAGENT_API_KEY is set in your environment.\n' +
+      'The env var overrides your login credentials. Unset it with:\n' +
+      '  unset ORCHAGENT_API_KEY\n'
+    )
+  }
 
   if (isFirstLogin) {
     process.stdout.write('\n  Tip: Run `orch doctor` to verify your setup.\n\n')
@@ -100,7 +109,7 @@ async function browserBasedLogin(port: number): Promise<void> {
       ...existing,
       api_key: result.apiKey,
       api_url: resolved.apiUrl,
-      default_org: existing.default_org ?? result.orgSlug,
+      default_org: result.orgSlug,
     }
     // Clear workspace from previous account — workspaces are account-specific
     delete nextConfig.workspace
@@ -108,6 +117,14 @@ async function browserBasedLogin(port: number): Promise<void> {
     await saveConfig(nextConfig)
     await track('cli_login', { method: 'browser' })
     process.stdout.write(`\n✓ Logged in to ${result.orgSlug}\n`)
+
+    if (process.env.ORCHAGENT_API_KEY) {
+      process.stderr.write(
+        '\nWarning: ORCHAGENT_API_KEY is set in your environment.\n' +
+        'The env var overrides your login credentials. Unset it with:\n' +
+        '  unset ORCHAGENT_API_KEY\n'
+      )
+    }
 
     if (isFirstLogin) {
       process.stdout.write('\n  Tip: Run `orch doctor` to verify your setup.\n\n')

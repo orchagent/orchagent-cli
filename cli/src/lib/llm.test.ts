@@ -4,6 +4,7 @@ import {
   warnProviderModelMismatch,
   MODEL_PROVIDER_PATTERNS,
   validateProvider,
+  validateModelIds,
 } from './llm'
 
 describe('detectProviderFromModel', () => {
@@ -166,5 +167,64 @@ describe('MODEL_PROVIDER_PATTERNS', () => {
     for (const pattern of Object.values(MODEL_PROVIDER_PATTERNS)) {
       expect(pattern).toBeInstanceOf(RegExp)
     }
+  })
+})
+
+describe('validateModelIds', () => {
+  it('returns no warnings for valid model IDs', () => {
+    const warnings = validateModelIds({
+      anthropic: 'claude-sonnet-4-6',
+      openai: 'gpt-5.2',
+      gemini: 'gemini-2.5-pro',
+    })
+    expect(warnings).toHaveLength(0)
+  })
+
+  it('warns on unrecognized model ID', () => {
+    const warnings = validateModelIds({
+      anthropic: 'my-custom-model',
+    })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].message).toContain('Unrecognized model ID')
+    expect(warnings[0].message).toContain('my-custom-model')
+    expect(warnings[0].message).toContain('404')
+  })
+
+  it('warns on provider mismatch (openai model under anthropic)', () => {
+    const warnings = validateModelIds({
+      anthropic: 'gpt-4o',
+    })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].message).toContain('looks like a openai model')
+    expect(warnings[0].message).toContain('set under "anthropic"')
+  })
+
+  it('warns on unknown provider key', () => {
+    const warnings = validateModelIds({
+      mistralai: 'mistral-large',
+    })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].message).toContain('Unknown provider "mistralai"')
+  })
+
+  it('returns multiple warnings for multiple issues', () => {
+    const warnings = validateModelIds({
+      anthropic: 'gpt-4o',
+      openai: 'some-unknown-model',
+      badprovider: 'claude-sonnet-4-6',
+    })
+    expect(warnings).toHaveLength(3)
+  })
+
+  it('accepts ollama models under ollama provider', () => {
+    const warnings = validateModelIds({
+      ollama: 'llama3.2',
+    })
+    expect(warnings).toHaveLength(0)
+  })
+
+  it('returns no warnings for empty object', () => {
+    const warnings = validateModelIds({})
+    expect(warnings).toHaveLength(0)
   })
 })

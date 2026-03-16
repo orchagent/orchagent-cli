@@ -17,6 +17,8 @@ import {
   detectSdkCompatible,
 } from '../commands/publish'
 import { detectEntrypoint, previewBundle } from './bundle'
+import { validateModelIds } from './llm'
+import { rejectControlChars } from './sanitize'
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -102,6 +104,14 @@ export function inferExecutionEngine(
 }
 
 function validateNameFormat(name: string, issues: ValidationIssue[], file: string): void {
+  // DX-29: reject control chars in agent names
+  try {
+    rejectControlChars(name, 'agent name')
+  } catch (err) {
+    issues.push({ level: 'error', message: (err as Error).message, file })
+    return // no point checking format if control chars present
+  }
+
   const nameRegex = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/
   if (name.length < 2 || name.length > 50) {
     issues.push({ level: 'error', message: 'Agent name must be 2-50 characters', file })
@@ -247,6 +257,14 @@ async function validateManifest(
       message: '"model" field is not recognized. Use "default_models": {"anthropic": "...", "openai": "..."}',
       file: 'orchagent.json',
     })
+  }
+
+  // ── Model ID validation (DX-17) ──
+  if (manifest.default_models && typeof manifest.default_models === 'object') {
+    const modelWarnings = validateModelIds(manifest.default_models as Record<string, string>)
+    for (const w of modelWarnings) {
+      issues.push({ level: 'warning', message: w.message, file: 'orchagent.json' })
+    }
   }
 
   // ── Misplaced manifest fields ──

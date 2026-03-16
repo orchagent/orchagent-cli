@@ -366,6 +366,116 @@ describe('orch agents', () => {
     })
   })
 
+  describe('--fields', () => {
+    it('filters JSON output to specified fields', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--fields', 'name,version'])
+
+      expect(mockPrintJson).toHaveBeenCalledTimes(1)
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Record<string, unknown>[]
+      expect(jsonArg).toHaveLength(3) // latest-only by default
+      for (const agent of jsonArg) {
+        expect(Object.keys(agent)).toEqual(['name', 'version'])
+      }
+    })
+
+    it('implies --json output (no table rendered)', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--fields', 'name'])
+
+      expect(mockPrintJson).toHaveBeenCalledTimes(1)
+      // Should not render table to stdout (only printJson called)
+      const output = allStdout(stdoutSpy)
+      expect(output).toBe('')
+    })
+
+    it('handles fields that do not exist on the agent', async () => {
+      const agents = [makeAgent({ name: 'solo', version: 'v1', created_at: '2026-01-01T00:00:00Z' })]
+      mockListMyAgents.mockResolvedValue(agents)
+      await program.parseAsync(['node', 'test', 'agents', '--fields', 'name,nonexistent'])
+
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Record<string, unknown>[]
+      expect(jsonArg[0]).toEqual({ name: 'solo' })
+    })
+
+    it('works with --all-versions', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--fields', 'name,type', '--all-versions'])
+
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Record<string, unknown>[]
+      expect(jsonArg).toHaveLength(6) // all versions
+      for (const agent of jsonArg) {
+        expect(Object.keys(agent).sort()).toEqual(['name', 'type'])
+      }
+    })
+
+    it('works with --filter', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--fields', 'name', '--filter', 'scanner'])
+
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Record<string, unknown>[]
+      expect(jsonArg).toHaveLength(1)
+      expect(jsonArg[0]).toEqual({ name: 'scanner' })
+    })
+
+    it('can be combined with --json (--fields takes precedence)', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--json', '--fields', 'name'])
+
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Record<string, unknown>[]
+      for (const agent of jsonArg) {
+        expect(Object.keys(agent)).toEqual(['name'])
+      }
+    })
+  })
+
+  describe('--limit and --offset', () => {
+    it('limits the number of results', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--json', '--limit', '2'])
+
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Agent[]
+      expect(jsonArg).toHaveLength(2)
+    })
+
+    it('offsets skips items from the start', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--json', '--offset', '1'])
+
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Agent[]
+      // 3 unique agents in latest-only mode, offset 1 = 2 remaining
+      expect(jsonArg).toHaveLength(2)
+    })
+
+    it('combines limit and offset', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--json', '--limit', '1', '--offset', '1'])
+
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Agent[]
+      expect(jsonArg).toHaveLength(1)
+    })
+
+    it('limit applies in table mode too', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--limit', '1'])
+
+      const output = allStdout(stdoutSpy)
+      // Should still show a table, but only 1 row
+      expect(output).toContain('1 agent')
+    })
+
+    it('limit + fields work together', async () => {
+      mockListMyAgents.mockResolvedValue(multiVersionAgents)
+      await program.parseAsync(['node', 'test', 'agents', '--fields', 'name', '--limit', '2'])
+
+      const jsonArg = mockPrintJson.mock.calls[0][0] as Record<string, unknown>[]
+      expect(jsonArg).toHaveLength(2)
+      for (const agent of jsonArg) {
+        expect(Object.keys(agent)).toEqual(['name'])
+      }
+    })
+  })
+
   describe('workspace resolution', () => {
     it('passes workspace ID to API call', async () => {
       mockLoadConfig.mockResolvedValue({ workspace: 'team-org' })

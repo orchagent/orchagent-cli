@@ -14,6 +14,7 @@ import { createCodeBundle, detectEntrypoint, validateBundle, previewBundle } fro
 import { saveServiceKey } from '../lib/key-store'
 import { discoverAgents, topoSort, formatPublishPlan, formatDryRunSummary } from '../lib/batch-publish'
 import type { AgentManifest, Agent, ResolvedConfig } from '../types'
+import { validateModelIds } from '../lib/llm'
 
 /**
  * Extract template placeholders from a prompt template.
@@ -527,6 +528,122 @@ export async function checkWorkspaceLlmKeys(
 }
 
 /**
+ * Pre-publish check: verify that all required_secrets exist in the workspace
+ * BEFORE publishing. This lets users set missing secrets before wasting time
+ * on the publish step (DX-3).
+ *
+ * In TTY mode: warns and asks for confirmation to continue.
+ * In non-TTY mode: warns but does not block (for CI/CD pipelines).
+ * API errors are silently swallowed (non-fatal).
+ *
+ * Returns the list of missing secret names (empty if all present or check failed).
+ */
+export async function prePublishSecretsCheck(
+  config: ResolvedConfig,
+  workspaceId: string,
+  workspaceSlug: string,
+  requiredSecrets: string[]
+): Promise<string[]> {
+  if (!requiredSecrets.length) return []
+
+  let secrets: Array<{ name: string }>
+  try {
+    const result = await request<{
+      secrets: Array<{ name: string }>
+    }>(config, 'GET', `/workspaces/${workspaceId}/secrets`)
+    secrets = result.secrets
+    if (!Array.isArray(secrets)) return []
+  } catch {
+    return [] // Can't reach API — skip pre-check, gateway will catch at runtime
+  }
+
+  const existingNames = new Set(secrets.map(s => s.name))
+  const missing = requiredSecrets.filter(name => !existingNames.has(name))
+  if (missing.length === 0) return []
+
+  // Show prominent warning about missing secrets
+  process.stderr.write(
+    chalk.yellow.bold(`\n⚠ ${missing.length} required secret${missing.length === 1 ? '' : 's'} missing from workspace '${workspaceSlug}':\n`)
+  )
+  for (const name of missing) {
+    process.stderr.write(`  ${chalk.yellow('•')} ${chalk.bold(name)}\n`)
+  }
+  process.stderr.write(`\n  Set them now:\n`)
+  for (const name of missing) {
+    process.stderr.write(`  ${chalk.cyan(`orch secrets set ${name} <value>`)}\n`)
+  }
+  process.stderr.write(
+    chalk.gray(`\n  Without these secrets, the agent will fail at runtime.\n`)
+  )
+
+  // In TTY mode, ask user to confirm they want to continue publishing
+  if (process.stdin.isTTY && process.stderr.isTTY) {
+    const readline = await import('readline/promises')
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+    const answer = await rl.question(chalk.yellow('\n  Publish anyway? (y/N): '))
+    rl.close()
+    if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+      process.stderr.write('\nPublish cancelled. Set the missing secrets first.\n')
+      process.exit(0)
+    }
+  } else {
+    process.stderr.write(chalk.gray(`  (non-interactive — continuing with publish)\n\n`))
+  }
+
+  return missing
+}
+
+/**
+ * After a successful publish, check whether the workspace has all the secrets
+ * declared in required_secrets. Warns about any missing ones so the user can
+ * set them before running the agent.
+ *
+ * Best-effort: API errors are silently swallowed (the agent is already published).
+ */
+export async function checkRequiredSecrets(
+  config: ResolvedConfig,
+  workspaceId: string,
+  workspaceSlug: string,
+  requiredSecrets: string[]
+): Promise<void> {
+  if (!requiredSecrets.length) return
+
+  let secrets: Array<{ name: string }>
+  try {
+    const result = await request<{
+      secrets: Array<{ name: string }>
+    }>(config, 'GET', `/workspaces/${workspaceId}/secrets`)
+    secrets = result.secrets
+    if (!Array.isArray(secrets)) return
+  } catch {
+    return // Can't reach API — fall back to showing all secrets as instructions
+  }
+
+  const existingNames = new Set(secrets.map(s => s.name))
+  const missing = requiredSecrets.filter(name => !existingNames.has(name))
+
+  if (missing.length === 0) {
+    // All secrets present — brief confirmation
+    process.stderr.write(
+      chalk.green(`\n✓ All ${requiredSecrets.length} required secret${requiredSecrets.length === 1 ? '' : 's'} found in workspace '${workspaceSlug}'\n`)
+    )
+    return
+  }
+
+  // Some secrets missing — warn with set commands
+  process.stderr.write(
+    chalk.yellow(`\n⚠ ${missing.length} required secret${missing.length === 1 ? '' : 's'} not set in workspace '${workspaceSlug}':\n`)
+  )
+  for (const name of missing) {
+    process.stderr.write(`  ${chalk.yellow(name)}\n`)
+  }
+  process.stderr.write(`\n  Set before running:\n`)
+  for (const name of missing) {
+    process.stderr.write(`  ${chalk.cyan(`orch secrets set ${name} <value>`)}\n`)
+  }
+}
+
+/**
  * Batch publish all agents found in subdirectories, in dependency order.
  * Discovers orchagent.json/SKILL.md in immediate subdirectories,
  * topologically sorts by manifest dependencies, and publishes leaf-first.
@@ -940,6 +1057,14 @@ export function registerPublishCommand(program: Command): void {
           `  ${chalk.cyan(`"default_models": { "anthropic": "${modelVal}" }`)}\n\n` +
           `  The model resolution order is: caller --model flag → agent default_models → platform default.\n\n`
         ))
+      }
+
+      // DX-17: Validate model IDs in default_models
+      if (manifest.default_models && typeof manifest.default_models === 'object') {
+        const modelWarnings = validateModelIds(manifest.default_models as Record<string, string>)
+        for (const w of modelWarnings) {
+          process.stderr.write(chalk.yellow(`Warning: ${w.message}\n`))
+        }
       }
 
       // Auto-migrate inline schemas to schema.json
@@ -1446,6 +1571,15 @@ export function registerPublishCommand(program: Command): void {
         }
       }
 
+      // Pre-publish: check required secrets exist in workspace (DX-3)
+      // Fail fast — warn before spending time on the publish API call
+      await prePublishSecretsCheck(
+        config,
+        workspaceId || org.id,
+        org.slug,
+        manifest.required_secrets || []
+      )
+
       // Create the agent (server auto-assigns version)
       let result: Awaited<ReturnType<typeof createAgent>>
       try {
@@ -1673,18 +1807,14 @@ export function registerPublishCommand(program: Command): void {
         supportedProviders
       )
 
-      // Show required secrets with setup instructions (F-18)
-      if (manifest.required_secrets?.length) {
-        process.stdout.write(`\nRequired secrets:\n`)
-        for (const secret of manifest.required_secrets) {
-          process.stdout.write(`  ${secret}\n`)
-        }
-        process.stdout.write(`\nSet secrets before running:\n`)
-        for (const secret of manifest.required_secrets) {
-          process.stdout.write(`  orch secrets set ${secret} <value>\n`)
-        }
-        process.stdout.write(`\nView existing secrets: ${chalk.cyan('orch secrets list')}\n`)
-      }
+      // Post-publish: confirm secrets status (DX-13, DX-3)
+      // Shows green check when all present, yellow warning when missing
+      await checkRequiredSecrets(
+        config,
+        workspaceId || org.id,
+        org.slug,
+        manifest.required_secrets || []
+      )
 
       // Show security review result if available
       const secReview = (result as Record<string, unknown>).security_review as

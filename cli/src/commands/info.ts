@@ -5,6 +5,7 @@ import { getResolvedConfig, loadConfig } from '../lib/config'
 import { ApiError, getOrg, listMyAgents, getPublicAgent, resolveWorkspaceIdForOrg } from '../lib/api'
 import { parseAgentRef } from '../lib/agent-ref'
 import { CliError } from '../lib/errors'
+import { parseFields, filterFields } from '../lib/list-options'
 import type { AgentTypeValue } from '../types'
 
 type SchemaProperty = {
@@ -37,7 +38,7 @@ type EnvironmentPinning = {
   npm_flags?: string
 }
 
-type AgentDownload = {
+export type AgentDownload = {
   type: AgentTypeValue
   name: string
   version: string
@@ -131,7 +132,7 @@ function extractCustomTools(
     .map(t => ({ name: t.name!, description: t.description, command: t.command }))
 }
 
-async function getAgentInfo(
+export async function getAgentInfo(
   config: { apiKey?: string; apiUrl: string; defaultOrg?: string },
   org: string,
   agent: string,
@@ -223,7 +224,8 @@ export function registerInfoCommand(program: Command): void {
     .command('info <agent>')
     .description('Show agent details including inputs and outputs')
     .option('--json', 'Output as JSON')
-    .action(async (agentArg: string, options: { json?: boolean }) => {
+    .option('--fields <fields>', 'Comma-separated fields to include in JSON output (implies --json)')
+    .action(async (agentArg: string, options: { json?: boolean; fields?: string }) => {
       const config = await getResolvedConfig()
       const parsed = parseAgentRef(agentArg)
       const configFile = await loadConfig()
@@ -239,13 +241,16 @@ export function registerInfoCommand(program: Command): void {
       // Fetch agent metadata
       const agentData = await getAgentInfo(config, org, agent, version, workspaceId)
 
-      if (options.json) {
+      // --fields implies --json
+      if (options.json || options.fields) {
         // Don't expose internal routing URLs in JSON output
         const output = { ...agentData }
         if (output.url?.includes('.internal')) {
           delete output.url
         }
-        process.stdout.write(JSON.stringify(output, null, 2) + '\n')
+        const fields = options.fields ? parseFields(options.fields) : undefined
+        const data = fields ? filterFields(output, fields) : output
+        process.stdout.write(JSON.stringify(data, null, 2) + '\n')
         return
       }
 

@@ -22,7 +22,8 @@ import {
   resolveWorkspaceIdForOrg,
   getAgentCostEstimate,
 } from '../lib/api'
-import { CliError, jsonInputError, ExitCodes } from '../lib/errors'
+import { CliError, jsonInputError, ExitCodes, ErrorCodes } from '../lib/errors'
+import { rejectPathTraversal } from '../lib/sanitize'
 import { resolveJsonBody } from '../lib/json-input'
 import { printJson } from '../lib/output'
 import { createSpinner, createElapsedSpinner, withSpinner } from '../lib/spinner'
@@ -139,6 +140,9 @@ function resolveExecutionEngine(agentData: {
 // ─── Validation helpers ─────────────────────────────────────────────────────
 
 async function validateFilePath(filePath: string): Promise<void> {
+  // DX-29: reject ../ traversal in file paths
+  rejectPathTraversal(filePath, 'file path')
+
   const stat = await fs.stat(filePath)
   if (stat.isDirectory()) {
     throw new CliError(
@@ -432,6 +436,8 @@ export async function readKeyedFiles(args: string[]): Promise<Record<string, str
   for (const arg of args) {
     const parsed = isKeyedFileArg(arg)
     if (!parsed) continue
+    // DX-29: reject ../ traversal in file paths
+    rejectPathTraversal(parsed.filePath, 'file path')
     const resolved = path.resolve(parsed.filePath)
     let stat: Awaited<ReturnType<typeof fs.stat>>
     try {
@@ -455,6 +461,8 @@ const MOUNT_MAX_DEPTH = 15
 const MOUNT_MAX_FILES = 500
 
 export async function mountDirectory(dirPath: string): Promise<Record<string, string>> {
+  // DX-29: reject ../ traversal in mount paths
+  rejectPathTraversal(dirPath, 'mount path')
   const resolved = path.resolve(dirPath)
   let stat: Awaited<ReturnType<typeof fs.stat>>
   try {
@@ -2238,7 +2246,7 @@ async function executeCloud(
     loop: (agentMeta as Agent & { loop?: Record<string, unknown> | null }).loop ?? null,
   })
 
-  // Pre-flight: check required secrets before running (F-18)
+  // Pre-flight: check required secrets before running (F-18, DX-3)
   // Only for sandbox-backed engines where secrets are injected as env vars
   if (cloudEngine !== 'direct_llm') {
     const agentRequiredSecrets = (agentMeta as Agent).required_secrets
@@ -2251,14 +2259,18 @@ async function executeCloud(
           const existingNames = new Set(secretsResult.secrets.map((s: { name: string }) => s.name))
           const missing = agentRequiredSecrets.filter((s: string) => !existingNames.has(s))
           if (missing.length > 0) {
-            throw new CliError(
-              `Agent requires secrets not found in workspace '${org}':\n` +
+            const err = new CliError(
+              `Agent requires ${missing.length} secret${missing.length === 1 ? '' : 's'} not found in workspace '${org}':\n` +
               missing.map((s: string) => `  - ${s}`).join('\n') + '\n\n' +
               `Set them before running:\n` +
               missing.map((s: string) => `  orch secrets set ${s} <value>`).join('\n') + '\n\n' +
               `Secrets are injected as environment variables into the agent sandbox.\n` +
-              `View existing secrets: orch secrets list`
+              `View existing secrets: orch secrets list`,
+              ExitCodes.INVALID_INPUT
             )
+            err.code = ErrorCodes.MISSING_SECRETS
+            err.hint = `Set missing secrets: ${missing.map(s => `orch secrets set ${s} <value>`).join(', ')}`
+            throw err
           }
         }
       } catch (err) {
@@ -2719,6 +2731,18 @@ async function executeCloud(
           ? (payload as { metadata?: { sandbox_exit_code?: number } }).metadata?.sandbox_exit_code
           : undefined
 
+      // DX-1: Read failure classification from gateway
+      const userMessage =
+        typeof payload === 'object' && payload
+          ? (payload as { error?: { user_message?: string } }).error?.user_message
+          : undefined
+
+      // DX-2: Read stderr tail from gateway for immediate debugging
+      const stderrTail =
+        typeof payload === 'object' && payload
+          ? (payload as { error?: { stderr_tail?: string } }).error?.stderr_tail
+          : undefined
+
       // Detect platform errors that surface as SANDBOX_ERROR (BUG-11)
       const lowerMessage = (message || '').toLowerCase()
       const isPlatformError =
@@ -2728,12 +2752,14 @@ async function executeCloud(
         lowerMessage.includes('orchagent_service_key') ||
         lowerMessage.includes('orchagent_billing_org')
 
-      // Categorize: platform > gateway category > exit_code heuristic > neutral
+      // DX-1: Prefer user_message from gateway when available
       let attribution: string
       if (isPlatformError) {
         attribution =
           `This may be a platform configuration issue, not an error in the agent's code.\n` +
           `If this persists, contact support with the ref below.`
+      } else if (userMessage) {
+        attribution = userMessage
       } else if (errorCategory === 'code_error' || (!errorCategory && sandboxExitCode != null && sandboxExitCode !== 0)) {
         attribution =
           `This is an error in the agent's code, not the platform.\n` +
@@ -2743,26 +2769,39 @@ async function executeCloud(
           `The agent failed during setup. This may be a dependency or configuration issue.\n` +
           `Check requirements.txt and environment configuration.`
       } else {
-        // No category from gateway, no exit code — can't determine blame
         attribution = `Agent execution failed. Check agent logs for details.`
       }
+
+      // DX-2: Show stderr tail for immediate debugging
+      const stderrSection = stderrTail
+        ? `\n\n--- stderr (last lines) ---\n${stderrTail}`
+        : ''
 
       throw new CliError(
         `${message}\n\n` +
         attribution +
+        stderrSection +
         (hint ? `\n\nHint: ${hint}` : '') +
+        (requestId ? `\n\nFull logs: orch logs ${requestId.slice(0, 8)}` : '') +
         refSuffix
       )
     }
 
     if (errorCode === 'SANDBOX_TIMEOUT') {
       spinner?.stop()
+
+      // DX-1: Use user_message from gateway when available
+      const userMessage =
+        typeof payload === 'object' && payload
+          ? (payload as { error?: { user_message?: string } }).error?.user_message
+          : undefined
+
       throw new CliError(
         `${message}\n\n` +
-        `The agent did not complete in time. Try:\n` +
+        (userMessage || `The agent did not complete in time. Try:\n` +
         `  - Simplifying the input\n` +
         `  - Using a smaller dataset\n` +
-        `  - Contacting the agent author to increase the timeout` +
+        `  - Contacting the agent author to increase the timeout`) +
         refSuffix
       )
     }

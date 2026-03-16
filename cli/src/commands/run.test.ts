@@ -2262,6 +2262,73 @@ describe('F-18: Pre-flight secrets check', () => {
       expect(err.message).not.toContain('orch secrets set DB_URL') // DB_URL exists
     }
   })
+
+  it('sets MISSING_SECRETS error code and hint for JSON mode (DX-3)', async () => {
+    mockLoadConfig.mockResolvedValue({ workspace: 'my-workspace' })
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-123')
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'tool',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      required_secrets: ['MISSING_KEY'],
+      execution_engine: 'code_runtime',
+    } as any)
+
+    mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
+      if (path === '/workspaces/ws-123/secrets') {
+        return { secrets: [] }
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      expect(err.code).toBe('MISSING_SECRETS')
+      expect(err.hint).toContain('orch secrets set MISSING_KEY')
+      expect(err.exitCode).toBe(5) // INVALID_INPUT
+    }
+  })
+
+  it('includes count of missing secrets in error message (DX-3)', async () => {
+    mockLoadConfig.mockResolvedValue({ workspace: 'my-workspace' })
+    mockResolveWorkspaceIdForOrg.mockResolvedValue('ws-123')
+
+    mockGetAgentWithFallback.mockResolvedValue({
+      type: 'agent',
+      name: 'test-agent',
+      version: 'v1',
+      supported_providers: ['any'],
+      required_secrets: ['KEY_A', 'KEY_B', 'KEY_C'],
+      execution_engine: 'managed_loop',
+    } as any)
+
+    mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
+      if (path === '/workspaces/ws-123/secrets') {
+        return { secrets: [{ name: 'KEY_A' }] }
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    try {
+      await program.parseAsync([
+        'node', 'test', 'run', 'test-org/test-agent',
+        '--data', '{"test": true}',
+      ])
+      expect.fail('Should have thrown')
+    } catch (err: any) {
+      expect(err.message).toContain('2 secrets not found')
+      expect(err.message).toContain('KEY_B')
+      expect(err.message).toContain('KEY_C')
+      expect(err.message).not.toContain('  - KEY_A')
+    }
+  })
 })
 
 describe('Streaming headers for code_runtime cloud runs', () => {

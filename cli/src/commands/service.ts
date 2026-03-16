@@ -6,6 +6,7 @@ import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { printJson } from '../lib/output'
+import { parseFields, filterFields } from '../lib/list-options'
 import { createSpinner } from '../lib/spinner'
 import type { ResolvedConfig } from '../types'
 
@@ -348,7 +349,10 @@ export function registerServiceCommand(program: Command): void {
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .option('--status <state>', 'Filter by state')
     .option('--json', 'Output as JSON')
-    .action(async (options: { workspace?: string; status?: string; json?: boolean }) => {
+    .option('--fields <fields>', 'Comma-separated fields to include in JSON output (implies --json)')
+    .option('--limit <n>', 'Maximum number of services to return (default: 100)')
+    .option('--offset <n>', 'Number of services to skip')
+    .action(async (options: { workspace?: string; status?: string; json?: boolean; fields?: string; limit?: string; offset?: string }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -358,15 +362,27 @@ export function registerServiceCommand(program: Command): void {
 
       const params = new URLSearchParams()
       if (options.status) params.set('status', options.status)
-      params.set('limit', '100')
+      params.set('limit', options.limit ?? '100')
+      if (options.offset) {
+        const offset = parseInt(options.offset, 10)
+        if (!isNaN(offset) && offset > 0) params.set('offset', String(offset))
+      }
       const qs = params.toString() ? `?${params.toString()}` : ''
 
       const result = await request<ServicesListResponse>(
         config, 'GET', `/workspaces/${workspaceId}/services${qs}`
       )
 
-      if (options.json) {
-        printJson(result)
+      // --fields implies --json
+      const useJson = options.json || !!options.fields
+
+      if (useJson) {
+        if (options.fields) {
+          const fields = parseFields(options.fields)
+          printJson({ ...result, services: filterFields(result.services, fields) })
+        } else {
+          printJson(result)
+        }
         return
       }
 

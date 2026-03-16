@@ -20,7 +20,7 @@ vi.mock('../lib/bundle')
 vi.mock('../lib/key-store')
 
 import fs from 'fs/promises'
-import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, scanReservedPort, checkDependencies, detectSdkCompatible, checkWorkspaceLlmKeys } from './publish'
+import { registerPublishCommand, extractTemplateVariables, deriveInputSchema, scanUndeclaredEnvVars, scanReservedPort, checkDependencies, detectSdkCompatible, checkWorkspaceLlmKeys, checkRequiredSecrets, prePublishSecretsCheck } from './publish'
 import { CliError } from '../lib/errors'
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { createAgent, getOrg, previewAgentVersion, validateAgentPublish, uploadCodeBundle, request, getPublicAgent } from '../lib/api'
@@ -1493,7 +1493,7 @@ describe('publish command - schema auto-migration', () => {
     expect(stderrOutput).toContain('Would create schema.json')
   })
 
-  it('shows required_secrets with setup instructions after publish (F-18)', async () => {
+  it('warns about missing required_secrets after publish (DX-13)', async () => {
     const manifest = {
       name: 'secret-agent',
       type: 'agent',
@@ -1522,16 +1522,73 @@ describe('publish command - schema auto-migration', () => {
     mockCreateAgent.mockResolvedValue({
       agent: { id: 'agent-123', version: 'v1', name: 'secret-agent' },
     })
+    // Workspace has GITHUB_TOKEN but not DISCORD_WEBHOOK_URL
+    mockRequest.mockResolvedValue({
+      secrets: [{ name: 'GITHUB_TOKEN' }],
+    })
 
     await program.parseAsync(['node', 'test', 'publish'])
 
-    const output = stdoutSpy.mock.calls.map((c: any) => c[0]).join('')
-    expect(output).toContain('Required secrets:')
-    expect(output).toContain('DISCORD_WEBHOOK_URL')
-    expect(output).toContain('GITHUB_TOKEN')
-    expect(output).toContain('orch secrets set DISCORD_WEBHOOK_URL <value>')
-    expect(output).toContain('orch secrets set GITHUB_TOKEN <value>')
-    expect(output).toContain('orch secrets list')
+    const errOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(errOutput).toContain('1 required secret not set')
+    expect(errOutput).toContain('DISCORD_WEBHOOK_URL')
+    expect(errOutput).toContain('orch secrets set DISCORD_WEBHOOK_URL <value>')
+    // GITHUB_TOKEN already exists — should NOT appear in missing list
+    expect(errOutput).not.toContain('orch secrets set GITHUB_TOKEN')
+  })
+
+  it('warns about missing secrets BEFORE publish API call (DX-3)', async () => {
+    const manifest = {
+      name: 'secret-agent',
+      type: 'agent',
+      description: 'Agent with secrets',
+      required_secrets: ['MISSING_SECRET'],
+      runtime: { command: 'python3 main.py' },
+    }
+
+    mockFs.readFile.mockImplementation(async (filePath: unknown) => {
+      const p = String(filePath)
+      if (p.includes('SKILL.md')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      if (p.includes('orchagent.json')) return JSON.stringify(manifest)
+      if (p.includes('schema.json')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      throw new Error(`Unexpected file: ${p}`)
+    })
+    mockFs.readdir.mockResolvedValue([
+      { name: 'main.py', isFile: () => true, isDirectory: () => false },
+    ] as any)
+    mockDetectEntrypoint.mockResolvedValue('main.py')
+    mockCreateCodeBundle.mockResolvedValue({ fileCount: 1, sizeBytes: 512, entrypoint: 'main.py' })
+    mockValidateBundle.mockResolvedValue({ valid: true })
+    mockUploadCodeBundle.mockResolvedValue({ code_hash: 'abc123def456' })
+    mockFs.mkdtemp.mockResolvedValue('/tmp/orchagent-bundle-123')
+    mockFs.rm.mockResolvedValue(undefined)
+    mockFs.access.mockResolvedValue(undefined)
+
+    // Track the order: secrets check API call vs createAgent API call
+    const callOrder: string[] = []
+    mockRequest.mockImplementation(async (_config: any, _method: string, path: string) => {
+      if (path.includes('/secrets')) {
+        callOrder.push('secrets_check')
+        return { secrets: [] } // No secrets in workspace
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    mockCreateAgent.mockImplementation(async () => {
+      callOrder.push('create_agent')
+      return { agent: { id: 'agent-123', version: 'v1', name: 'secret-agent' } }
+    })
+
+    await program.parseAsync(['node', 'test', 'publish'])
+
+    // Pre-publish check happens BEFORE createAgent (DX-3)
+    expect(callOrder[0]).toBe('secrets_check')
+    expect(callOrder[1]).toBe('create_agent')
+
+    // Pre-publish warning appeared
+    const errOutput = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(errOutput).toContain('1 required secret missing')
+    expect(errOutput).toContain('MISSING_SECRET')
+    expect(errOutput).toContain('agent will fail at runtime')
   })
 
   it('shows required_secrets in dry-run preview (F-18)', async () => {
@@ -4023,5 +4080,241 @@ describe('checkWorkspaceLlmKeys', () => {
       'GET',
       '/workspaces/ws-abc-123/secrets'
     )
+  })
+})
+
+// ============================================
+// checkRequiredSecrets (DX-13)
+// ============================================
+
+describe('checkRequiredSecrets', () => {
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+
+  const baseConfig = { apiKey: 'sk_test_123', apiUrl: 'https://api.test.com' }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+  })
+
+  afterEach(() => {
+    stderrSpy.mockRestore()
+  })
+
+  it('warns about missing secrets not found in workspace', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [{ name: 'DB_URL' }],
+    })
+
+    await checkRequiredSecrets(baseConfig, 'ws-1', 'my-team', ['DB_URL', 'API_KEY', 'WEBHOOK_SECRET'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('2 required secrets not set')
+    expect(output).toContain("workspace 'my-team'")
+    expect(output).toContain('API_KEY')
+    expect(output).toContain('WEBHOOK_SECRET')
+    expect(output).toContain('orch secrets set API_KEY <value>')
+    expect(output).toContain('orch secrets set WEBHOOK_SECRET <value>')
+    // DB_URL is present — should NOT appear in warning
+    expect(output).not.toContain('orch secrets set DB_URL')
+  })
+
+  it('shows confirmation when all secrets are present', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [{ name: 'DB_URL' }, { name: 'API_KEY' }],
+    })
+
+    await checkRequiredSecrets(baseConfig, 'ws-1', 'my-team', ['DB_URL', 'API_KEY'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('All 2 required secrets found')
+    expect(output).toContain("workspace 'my-team'")
+  })
+
+  it('uses singular "secret" for single required secret', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [{ name: 'MY_KEY' }],
+    })
+
+    await checkRequiredSecrets(baseConfig, 'ws-1', 'my-team', ['MY_KEY'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('1 required secret found')
+    expect(output).not.toContain('secrets found')
+  })
+
+  it('uses singular "secret" when one is missing', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkRequiredSecrets(baseConfig, 'ws-1', 'my-team', ['API_KEY'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('1 required secret not set')
+    expect(output).not.toContain('secrets not set')
+  })
+
+  it('does nothing when required_secrets is empty', async () => {
+    await checkRequiredSecrets(baseConfig, 'ws-1', 'my-team', [])
+
+    expect(mockRequest).not.toHaveBeenCalled()
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('silently returns on API error', async () => {
+    mockRequest.mockRejectedValue(new Error('Network error'))
+
+    await checkRequiredSecrets(baseConfig, 'ws-1', 'my-team', ['API_KEY'])
+
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('silently returns on unexpected API response', async () => {
+    mockRequest.mockResolvedValue({ secrets: null })
+
+    await checkRequiredSecrets(baseConfig, 'ws-1', 'my-team', ['API_KEY'])
+
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('calls the correct API path with workspace ID', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await checkRequiredSecrets(baseConfig, 'ws-abc-123', 'my-team', ['API_KEY'])
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      baseConfig,
+      'GET',
+      '/workspaces/ws-abc-123/secrets'
+    )
+  })
+})
+
+// ============================================
+// prePublishSecretsCheck (DX-3)
+// ============================================
+
+describe('prePublishSecretsCheck', () => {
+  let stderrSpy: ReturnType<typeof vi.spyOn>
+  let originalStdinIsTTY: boolean | undefined
+  let originalStderrIsTTY: boolean | undefined
+
+  const baseConfig = { apiKey: 'sk_test_123', apiUrl: 'https://api.test.com' }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    // Default to non-TTY (no interactive prompts)
+    originalStdinIsTTY = process.stdin.isTTY
+    originalStderrIsTTY = process.stderr.isTTY
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true })
+    Object.defineProperty(process.stderr, 'isTTY', { value: false, configurable: true })
+  })
+
+  afterEach(() => {
+    stderrSpy.mockRestore()
+    Object.defineProperty(process.stdin, 'isTTY', { value: originalStdinIsTTY, configurable: true })
+    Object.defineProperty(process.stderr, 'isTTY', { value: originalStderrIsTTY, configurable: true })
+  })
+
+  it('returns empty array when required_secrets is empty', async () => {
+    const result = await prePublishSecretsCheck(baseConfig, 'ws-1', 'my-team', [])
+
+    expect(result).toEqual([])
+    expect(mockRequest).not.toHaveBeenCalled()
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('returns empty array when all secrets are present', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [{ name: 'DB_URL' }, { name: 'API_KEY' }],
+    })
+
+    const result = await prePublishSecretsCheck(baseConfig, 'ws-1', 'my-team', ['DB_URL', 'API_KEY'])
+
+    expect(result).toEqual([])
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('warns about missing secrets and returns them', async () => {
+    mockRequest.mockResolvedValue({
+      secrets: [{ name: 'DB_URL' }],
+    })
+
+    const result = await prePublishSecretsCheck(baseConfig, 'ws-1', 'my-team', ['DB_URL', 'API_KEY', 'WEBHOOK_SECRET'])
+
+    expect(result).toEqual(['API_KEY', 'WEBHOOK_SECRET'])
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('2 required secrets missing')
+    expect(output).toContain("workspace 'my-team'")
+    expect(output).toContain('API_KEY')
+    expect(output).toContain('WEBHOOK_SECRET')
+    expect(output).toContain('orch secrets set API_KEY <value>')
+    expect(output).toContain('orch secrets set WEBHOOK_SECRET <value>')
+    expect(output).toContain('agent will fail at runtime')
+    // DB_URL is present — should NOT appear in missing list
+    expect(output).not.toContain('orch secrets set DB_URL')
+  })
+
+  it('uses singular "secret" when one is missing', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    const result = await prePublishSecretsCheck(baseConfig, 'ws-1', 'my-team', ['API_KEY'])
+
+    expect(result).toEqual(['API_KEY'])
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('1 required secret missing')
+    expect(output).not.toContain('secrets missing')
+  })
+
+  it('returns empty array on API error (non-fatal)', async () => {
+    mockRequest.mockRejectedValue(new Error('Network error'))
+
+    const result = await prePublishSecretsCheck(baseConfig, 'ws-1', 'my-team', ['API_KEY'])
+
+    expect(result).toEqual([])
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('returns empty array when API returns unexpected data', async () => {
+    mockRequest.mockResolvedValue({ secrets: null })
+
+    const result = await prePublishSecretsCheck(baseConfig, 'ws-1', 'my-team', ['API_KEY'])
+
+    expect(result).toEqual([])
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('calls the correct API path with workspace ID', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await prePublishSecretsCheck(baseConfig, 'ws-abc-123', 'my-team', ['API_KEY'])
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      baseConfig,
+      'GET',
+      '/workspaces/ws-abc-123/secrets'
+    )
+  })
+
+  it('shows non-interactive message when not TTY', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    await prePublishSecretsCheck(baseConfig, 'ws-1', 'my-team', ['API_KEY'])
+
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('non-interactive')
+  })
+
+  it('returns all secrets as missing when workspace has none', async () => {
+    mockRequest.mockResolvedValue({ secrets: [] })
+
+    const result = await prePublishSecretsCheck(baseConfig, 'ws-1', 'my-team', ['A', 'B', 'C'])
+
+    expect(result).toEqual(['A', 'B', 'C'])
+    const output = stderrSpy.mock.calls.map((c: any) => c[0]).join('')
+    expect(output).toContain('3 required secrets missing')
+    expect(output).toContain('orch secrets set A <value>')
+    expect(output).toContain('orch secrets set B <value>')
+    expect(output).toContain('orch secrets set C <value>')
   })
 })

@@ -12,6 +12,7 @@ import { exitWithError } from './lib/errors'
 import { enhanceUnknownOptionSuggestions } from './lib/suggest'
 import { initPostHog, shutdownPostHog } from './lib/analytics'
 import { loadConfig } from './lib/config'
+import { shouldAutoJson, setJsonMode } from './lib/output'
 import { setProgressEnabled } from './lib/spinner'
 import { checkForUpdates, printUpdateNotification } from './lib/update-notifier'
 import packageJson from '../package.json'
@@ -53,10 +54,33 @@ async function main() {
     setProgressEnabled(false)
   }
 
-  // Parse args - hook will set noProgress if --no-progress flag is passed
-  program.hook('preAction', () => {
+  // Parse args - hook handles --no-progress and TTY auto-detection
+  program.hook('preAction', (_thisCommand, actionCommand) => {
     const opts = program.opts()
     if (opts.progress === false) {
+      setProgressEnabled(false)
+    }
+
+    // TTY auto-detection: non-TTY → auto-enable JSON on commands that support it
+    // This lets piped output (orch agents | jq .) and agent consumers get JSON automatically.
+    // Override: ORCHAGENT_OUTPUT=text forces human-readable even in non-TTY.
+    const hasJsonOption = actionCommand.options.some(
+      (o: { long?: string }) => o.long === '--json'
+    )
+    if (hasJsonOption && actionCommand.getOptionValue('json') === undefined) {
+      if (shouldAutoJson()) {
+        actionCommand.setOptionValue('json', true)
+        setProgressEnabled(false)
+      }
+    }
+
+    // Track JSON mode globally so exitWithError can output structured errors
+    if (actionCommand.getOptionValue('json')) {
+      setJsonMode(true)
+    }
+
+    // Also disable progress spinners in non-TTY (even if command has no --json option)
+    if (!process.stdout.isTTY) {
       setProgressEnabled(false)
     }
   })

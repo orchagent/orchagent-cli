@@ -6,6 +6,8 @@ import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { printJson } from '../lib/output'
+import { parseFields, filterFields } from '../lib/list-options'
+import { rejectControlChars, sanitizeSecretValue } from '../lib/sanitize'
 import type { ResolvedConfig } from '../types'
 
 // Known LLM key names → provider. Must stay in sync with gateway's
@@ -94,6 +96,8 @@ function formatDate(iso: string | null): string {
 }
 
 function validateSecretName(name: string): void {
+  // DX-29: reject control chars before format check
+  rejectControlChars(name, 'secret name')
   if (!name || name.length > 128) {
     throw new CliError('Secret name must be 1-128 characters.')
   }
@@ -137,7 +141,8 @@ export function registerSecretsCommand(program: Command): void {
     .description('List secrets in your workspace (names and metadata, never values)')
     .option('--workspace <slug>', 'Workspace slug (default: current workspace)')
     .option('--json', 'Output as JSON')
-    .action(async (options: { workspace?: string; json?: boolean }) => {
+    .option('--fields <fields>', 'Comma-separated fields to include in JSON output (implies --json)')
+    .action(async (options: { workspace?: string; json?: boolean; fields?: string }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
         throw new CliError('Missing API key. Run `orch login` first.')
@@ -150,8 +155,16 @@ export function registerSecretsCommand(program: Command): void {
         `/workspaces/${workspaceId}/secrets`
       )
 
-      if (options.json) {
-        printJson(result)
+      // --fields implies --json
+      const useJson = options.json || !!options.fields
+
+      if (useJson) {
+        if (options.fields) {
+          const fields = parseFields(options.fields)
+          printJson({ ...result, secrets: filterFields(result.secrets, fields) })
+        } else {
+          printJson(result)
+        }
         return
       }
 
@@ -201,6 +214,9 @@ export function registerSecretsCommand(program: Command): void {
       }
 
       validateSecretName(name)
+
+      // DX-29: strip dangerous control chars from secret values (keep \n, \r, \t for PEM keys etc.)
+      value = sanitizeSecretValue(value)
 
       if (!value) {
         throw new CliError('Secret value cannot be empty.')

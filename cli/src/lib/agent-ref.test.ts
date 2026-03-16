@@ -48,4 +48,43 @@ describe('parseAgentRef', () => {
   it('throws on too many segments', () => {
     expect(() => parseAgentRef('a/b/c')).toThrow()
   })
+
+  // DX-29: Input hardening
+  describe('input hardening (DX-29)', () => {
+    it('rejects control characters in agent name', () => {
+      expect(() => parseAgentRef('my-agent\x00')).toThrow(/control character/)
+    })
+
+    it('rejects control characters in org name', () => {
+      expect(() => parseAgentRef('my\x07org/agent')).toThrow(/control character/)
+    })
+
+    it('rejects control characters in version', () => {
+      expect(() => parseAgentRef('org/agent@v1\x1B')).toThrow(/control character/)
+    })
+
+    it('rejects ? in agent ref (query param injection)', () => {
+      expect(() => parseAgentRef('org/agent?foo=bar')).toThrow(/\?/)
+    })
+
+    it('rejects # in agent ref (fragment injection)', () => {
+      expect(() => parseAgentRef('org/agent#section')).toThrow(/#/)
+    })
+
+    it('rejects % in agent ref (URL encoding)', () => {
+      expect(() => parseAgentRef('org/agent%2F')).toThrow(/%/)
+    })
+
+    it('rejects & in agent ref (query param injection)', () => {
+      expect(() => parseAgentRef('org/agent&x=1')).toThrow(/&/)
+    })
+
+    it('rejects double-encoded sequences', () => {
+      expect(() => parseAgentRef('org/agent%252F')).toThrow(/%/)
+    })
+
+    it('rejects ? in version string', () => {
+      expect(() => parseAgentRef('org/agent@v1?debug=true')).toThrow(/\?/)
+    })
+  })
 })

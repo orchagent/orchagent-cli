@@ -139,6 +139,10 @@ describe('getResolvedConfig', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     process.env = { ...originalEnv }
+    // Clear orchagent env vars so tests start from a clean slate
+    delete process.env.ORCHAGENT_API_KEY
+    delete process.env.ORCHAGENT_API_URL
+    delete process.env.ORCHAGENT_DEFAULT_ORG
     // Default: no config file
     const error = new Error('ENOENT') as NodeJS.ErrnoException
     error.code = 'ENOENT'

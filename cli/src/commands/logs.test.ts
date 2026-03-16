@@ -738,7 +738,7 @@ describe('logs command', () => {
     expect((payload.service as Record<string, unknown>).current_state).toBe('running')
   })
 
-  it('does not look up services when no agent name filter is provided', async () => {
+  it('does not look up services when no agent name filter is provided and runs exist', async () => {
     let servicesRequested = false
 
     mockRequest.mockImplementation(async (_config, method, path) => {
@@ -757,7 +757,103 @@ describe('logs command', () => {
 
     await program.parseAsync(['node', 'test', 'logs'])
 
-    // Should NOT have queried services since no agent name was provided
+    // Should NOT have queried services since runs were found
     expect(servicesRequested).toBe(false)
+  })
+
+  // ─── DX-8: orch logs → suggest orch service logs ──────────────────────────
+
+  it('suggests service logs when bare orch logs has no runs but workspace has services', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([
+          makeService({ agent_name: 'discord-bot', service_name: 'discord-bot-svc' }),
+          makeService({ agent_name: 'api-server', service_name: 'api-server-svc' }),
+        ])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('No runs found')
+    expect(output).toContain('always-on services')
+    expect(output).toContain('orch logs discord-bot --live')
+    expect(output).toContain('orch logs api-server --live')
+    expect(output).toContain('orch service logs')
+  })
+
+  it('does not suggest services when bare orch logs has no runs and no services', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('No runs found')
+    expect(output).not.toContain('always-on services')
+  })
+
+  it('suggests --live when orch logs <agent-name> has no runs and no service', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs', 'my-bot'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain("No runs found for agent 'my-bot'")
+    expect(output).toContain('orch logs my-bot --live')
+  })
+
+  it('excludes deleted services from suggestions', async () => {
+    mockRequest.mockImplementation(async (_config, method, path) => {
+      if (path === '/workspaces') {
+        return { workspaces: [{ id: WORKSPACE_ID, name: 'Joe', slug: 'joe' }] }
+      }
+      if (typeof path === 'string' && path.includes('/services?')) {
+        return makeServicesResponse([
+          makeService({ agent_name: 'old-bot', service_name: 'old-bot-svc', current_state: 'deleted' }),
+        ])
+      }
+      if (typeof path === 'string' && path.includes('/runs?')) {
+        return makeRunsResponse([])
+      }
+      return {}
+    })
+
+    await program.parseAsync(['node', 'test', 'logs'])
+
+    const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
+    expect(output).toContain('No runs found')
+    // Should NOT suggest deleted services
+    expect(output).not.toContain('always-on services')
+    expect(output).not.toContain('old-bot')
   })
 })

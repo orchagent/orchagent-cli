@@ -5,6 +5,7 @@ import { getResolvedConfig, loadConfig } from '../lib/config'
 import { request } from '../lib/api'
 import { CliError } from '../lib/errors'
 import { printJson } from '../lib/output'
+import { parseFields, filterFields } from '../lib/list-options'
 import type { ResolvedConfig } from '../types'
 
 // ============================================
@@ -200,11 +201,13 @@ export function registerStorageCommand(program: Command): void {
     .option('--limit <n>', 'Max keys to return (default: 100)', '100')
     .option('--cursor <cursor>', 'Pagination cursor from previous response')
     .option('--json', 'Output as JSON')
+    .option('--fields <fields>', 'Comma-separated fields to include in JSON output (implies --json)')
     .action(async (namespace: string | undefined, options: {
       workspace?: string
       limit?: string
       cursor?: string
       json?: boolean
+      fields?: string
     }) => {
       const config = await getResolvedConfig()
       if (!config.apiKey) {
@@ -214,14 +217,18 @@ export function registerStorageCommand(program: Command): void {
       const workspaceId = await resolveWorkspaceId(config, options.workspace)
       const headers: Record<string, string> = { 'X-Workspace-Id': workspaceId }
 
+      // --fields implies --json
+      const useJson = options.json || !!options.fields
+      const parsedFields = options.fields ? parseFields(options.fields) : undefined
+
       if (!namespace) {
         // List namespaces
         const result = await request<NamespacesResponse>(
           config, 'GET', '/storage', { headers }
         )
 
-        if (options.json) {
-          printJson(result)
+        if (useJson) {
+          printJson(parsedFields ? filterFields(result, parsedFields) : result)
           return
         }
 
@@ -246,8 +253,8 @@ export function registerStorageCommand(program: Command): void {
           config, 'GET', path, { headers }
         )
 
-        if (options.json) {
-          printJson(result)
+        if (useJson) {
+          printJson(parsedFields ? filterFields(result, parsedFields) : result)
           return
         }
 

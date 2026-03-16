@@ -4,6 +4,7 @@ import chalk from 'chalk'
 import { getResolvedConfig, loadConfig } from '../lib/config'
 import { listMyAgents, resolveWorkspaceIdForOrg } from '../lib/api'
 import { printJson } from '../lib/output'
+import { parseFields, filterFields, applyLimitOffset, parseIntOption } from '../lib/list-options'
 import type { Agent } from '../types'
 
 /**
@@ -44,7 +45,10 @@ export function registerAgentsCommand(program: Command): void {
     .option('--filter <text>', 'Filter by name')
     .option('--all-versions', 'Show all versions (default: latest only)')
     .option('--json', 'Output raw JSON')
-    .action(async (options: { filter?: string; allVersions?: boolean; json?: boolean }) => {
+    .option('--fields <fields>', 'Comma-separated fields to include in JSON output (implies --json)')
+    .option('--limit <n>', 'Maximum number of items to return')
+    .option('--offset <n>', 'Number of items to skip')
+    .action(async (options: { filter?: string; allVersions?: boolean; json?: boolean; fields?: string; limit?: string; offset?: string }) => {
       const config = await getResolvedConfig()
 
       // Resolve workspace context
@@ -70,8 +74,19 @@ export function registerAgentsCommand(program: Command): void {
         versionCounts = grouped.versionCounts
       }
 
-      if (options.json) {
-        printJson(displayAgents)
+      // Apply client-side limit/offset
+      const limit = parseIntOption(options.limit)
+      const offset = parseIntOption(options.offset)
+      if (limit != null || offset != null) {
+        displayAgents = applyLimitOffset(displayAgents, limit, offset)
+      }
+
+      // --fields implies --json
+      const useJson = options.json || !!options.fields
+
+      if (useJson) {
+        const fields = options.fields ? parseFields(options.fields) : undefined
+        printJson(fields ? filterFields(displayAgents, fields) : displayAgents)
         return
       }
 

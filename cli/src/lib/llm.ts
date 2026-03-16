@@ -337,6 +337,51 @@ export function validateProvider(provider: string): void {
   }
 }
 
+export interface ModelIdWarning {
+  provider: string
+  model: string
+  message: string
+}
+
+/**
+ * Validate model IDs in default_models against known provider patterns.
+ * Returns warnings for unrecognized model IDs (does not error — could be new models).
+ */
+export function validateModelIds(
+  defaultModels: Record<string, string>
+): ModelIdWarning[] {
+  const validProviders = ['openai', 'anthropic', 'gemini', 'ollama']
+  const warnings: ModelIdWarning[] = []
+
+  for (const [provider, model] of Object.entries(defaultModels)) {
+    if (!validProviders.includes(provider)) {
+      warnings.push({
+        provider,
+        model,
+        message: `Unknown provider "${provider}" in default_models. Valid providers: ${validProviders.join(', ')}`,
+      })
+      continue
+    }
+
+    const detectedProvider = detectProviderFromModel(model)
+    if (!detectedProvider) {
+      warnings.push({
+        provider,
+        model,
+        message: `Unrecognized model ID "${model}" for provider "${provider}". This may cause a 404 at runtime.`,
+      })
+    } else if (detectedProvider !== provider) {
+      warnings.push({
+        provider,
+        model,
+        message: `Model "${model}" looks like a ${detectedProvider} model but is set under "${provider}".`,
+      })
+    }
+  }
+
+  return warnings
+}
+
 /**
  * Model-name patterns for auto-detecting the LLM provider.
  * Tested against the lowercased model string.

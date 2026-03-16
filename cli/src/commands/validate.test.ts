@@ -634,6 +634,29 @@ describe('validateAgentProject', () => {
       )
     })
 
+    it('warns about unrecognized model ID in default_models (DX-17)', async () => {
+      mockPromptAgent({ default_models: { anthropic: 'my-fake-model' } as any })
+      const result = await validateAgentProject('/test/project')
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({ level: 'warning', message: expect.stringContaining('Unrecognized model ID') })
+      )
+    })
+
+    it('warns about provider mismatch in default_models (DX-17)', async () => {
+      mockPromptAgent({ default_models: { anthropic: 'gpt-4o' } as any })
+      const result = await validateAgentProject('/test/project')
+      expect(result.issues).toContainEqual(
+        expect.objectContaining({ level: 'warning', message: expect.stringContaining('looks like a openai model') })
+      )
+    })
+
+    it('no model ID warnings for valid default_models (DX-17)', async () => {
+      mockPromptAgent({ default_models: { anthropic: 'claude-sonnet-4-6', openai: 'gpt-5.2' } as any })
+      const result = await validateAgentProject('/test/project')
+      const modelWarnings = result.issues.filter(i => i.message.includes('model ID') || i.message.includes('looks like'))
+      expect(modelWarnings).toHaveLength(0)
+    })
+
     it('warns about ORCHAGENT_SERVICE_KEY in required_secrets', async () => {
       mockPromptAgent({ required_secrets: ['ORCHAGENT_SERVICE_KEY', 'MY_TOKEN'] })
       const result = await validateAgentProject('/test/project')
