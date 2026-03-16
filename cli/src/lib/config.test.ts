@@ -169,11 +169,19 @@ describe('getResolvedConfig', () => {
     expect(config.apiKey).toBe('sk_from_file')
   })
 
-  it('prioritizes env vars over file config', async () => {
+  it('prioritizes file config over env vars', async () => {
     process.env.ORCHAGENT_API_KEY = 'sk_from_env'
     vi.mocked(fs.readFile).mockResolvedValueOnce(
       JSON.stringify({ api_key: 'sk_from_file' })
     )
+
+    const config = await getResolvedConfig()
+
+    expect(config.apiKey).toBe('sk_from_file')
+  })
+
+  it('falls back to env var when no file config', async () => {
+    process.env.ORCHAGENT_API_KEY = 'sk_from_env'
 
     const config = await getResolvedConfig()
 

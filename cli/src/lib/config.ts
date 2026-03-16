@@ -49,11 +49,13 @@ export async function getResolvedConfig(
   // If profile specified, get config from profiles
   const profileConfig = profile ? fileConfig.profiles?.[profile] : undefined
 
+  // Config file wins over env var for interactive use (login/logout work correctly).
+  // CI/CD can use overrides (--key flag) or profiles which still take top priority.
   const apiKey =
     overrides.api_key ??
-    (process.env.ORCHAGENT_API_KEY || undefined) ??
     profileConfig?.api_key ??
-    fileConfig.api_key
+    fileConfig.api_key ??
+    (process.env.ORCHAGENT_API_KEY || undefined)
   const apiUrl =
     overrides.api_url ??
     process.env.ORCHAGENT_API_URL ??
