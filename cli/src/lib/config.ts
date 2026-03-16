@@ -51,7 +51,7 @@ export async function getResolvedConfig(
 
   const apiKey =
     overrides.api_key ??
-    process.env.ORCHAGENT_API_KEY ??
+    (process.env.ORCHAGENT_API_KEY || undefined) ??
     profileConfig?.api_key ??
     fileConfig.api_key
   const apiUrl =
