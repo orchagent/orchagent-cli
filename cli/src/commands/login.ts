@@ -88,7 +88,11 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
   }
 
   if (isFirstLogin) {
-    process.stdout.write('\n  Tip: Run `orch doctor` to verify your setup.\n\n')
+    process.stdout.write(
+      '\n  Quick start: Tell Claude Code:\n' +
+      '  "Read docs.orchagent.io and build me an agent"\n\n' +
+      '  Or manually: orch init my-agent\n\n'
+    )
   }
 }
 
@@ -127,7 +131,11 @@ async function browserBasedLogin(port: number): Promise<void> {
     }
 
     if (isFirstLogin) {
-      process.stdout.write('\n  Tip: Run `orch doctor` to verify your setup.\n\n')
+      process.stdout.write(
+      '\n  Quick start: Tell Claude Code:\n' +
+      '  "Read docs.orchagent.io and build me an agent"\n\n' +
+      '  Or manually: orch init my-agent\n\n'
+    )
     }
   } catch (err) {
     if (err instanceof CliError) {
