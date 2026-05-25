@@ -84,6 +84,56 @@ describe('login command', () => {
     )
   })
 
+  it('saves key-based login to a named profile without replacing default login', async () => {
+    mockLoadConfig.mockResolvedValue({
+      api_key: 'sk_default',
+      default_org: 'default',
+      workspace: 'default-ws',
+      profiles: {
+        old: {
+          api_key: 'sk_old',
+          default_org: 'old',
+        },
+      },
+    })
+
+    await program.parseAsync(['node', 'test', 'login', '--key', 'sk_stocksure', '--profile', 'stocksure'])
+
+    expect(mockSaveConfig).toHaveBeenCalledWith({
+      api_key: 'sk_default',
+      default_org: 'default',
+      workspace: 'default-ws',
+      profiles: {
+        old: {
+          api_key: 'sk_old',
+          default_org: 'old',
+        },
+        stocksure: {
+          api_key: 'sk_stocksure',
+          api_url: 'https://api.test.com',
+          default_org: 'joe',
+        },
+      },
+    })
+  })
+
+  it('clears only the named profile workspace on profile login', async () => {
+    mockLoadConfig.mockResolvedValue({
+      profiles: {
+        stocksure: {
+          api_key: 'sk_old',
+          default_org: 'stocksure',
+          workspace: 'old-workspace',
+        },
+      },
+    })
+
+    await program.parseAsync(['node', 'test', 'login', '--key', 'sk_new', '--profile', 'stocksure'])
+
+    const savedConfig = mockSaveConfig.mock.calls[0][0]
+    expect(savedConfig.profiles?.stocksure).not.toHaveProperty('workspace')
+  })
+
   it('clears workspace on key-based login', async () => {
     mockLoadConfig.mockResolvedValue({ workspace: 'old-ws' })
 
@@ -130,6 +180,35 @@ describe('login command', () => {
 
       const output = stdoutSpy.mock.calls.map(c => c[0]).join('')
       expect(output).toContain('orch doctor')
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true })
+    }
+  })
+
+  it('saves browser login to a named profile', async () => {
+    mockLoadConfig.mockResolvedValue({ api_key: 'sk_default' })
+    mockStartBrowserAuth.mockResolvedValue({
+      apiKey: 'sk_browser_key',
+      orgSlug: 'logsure',
+      orgName: 'LogSure',
+    })
+
+    const origIsTTY = process.stdin.isTTY
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true })
+
+    try {
+      await program.parseAsync(['node', 'test', 'login', '--profile', 'logsure'])
+
+      expect(mockSaveConfig).toHaveBeenCalledWith({
+        api_key: 'sk_default',
+        profiles: {
+          logsure: {
+            api_key: 'sk_browser_key',
+            api_url: 'https://api.test.com',
+            default_org: 'logsure',
+          },
+        },
+      })
     } finally {
       Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true })
     }

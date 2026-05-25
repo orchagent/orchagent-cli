@@ -24,14 +24,17 @@ export function registerLoginCommand(program: Command): void {
     .command('login')
     .description('Authenticate with orchagent via browser or API key')
     .option('--key <key>', 'API key (for CI/CD, non-interactive)')
+    .option('--profile <name>', 'Save credentials to a named profile')
     .option('--port <port>', `Localhost port for browser callback (default: ${DEFAULT_AUTH_PORT})`, String(DEFAULT_AUTH_PORT))
-    .action(async (options: { key?: string; port?: string }) => {
+    .action(async (options: { key?: string; profile?: string; port?: string }) => {
+      const profile = normalizeProfileName(options.profile)
+
       // If key provided via --key flag, use key-based flow (for CI/CD)
       // Note: ORCHAGENT_API_KEY env var is intentionally NOT checked here —
       // it's for runtime API auth, not for login. Otherwise `orch login`
       // can never reach the browser flow when the env var is set.
       if (options.key) {
-        await keyBasedLogin(options.key)
+        await keyBasedLogin(options.key, profile)
         return
       }
 
@@ -49,14 +52,23 @@ export function registerLoginCommand(program: Command): void {
         throw new CliError('Port must be a number between 1024 and 65535')
       }
 
-      await browserBasedLogin(port)
+      await browserBasedLogin(port, profile)
     })
+}
+
+function normalizeProfileName(profile: string | undefined): string | undefined {
+  const name = profile?.trim()
+  if (!name) return undefined
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    throw new CliError('Profile names may only contain letters, numbers, dots, underscores, and hyphens.')
+  }
+  return name
 }
 
 /**
  * Login using an API key (for CI/CD and non-interactive environments).
  */
-async function keyBasedLogin(apiKey: string): Promise<void> {
+async function keyBasedLogin(apiKey: string, profile?: string): Promise<void> {
   if (!apiKey) {
     throw new CliError('API key is required.')
   }
@@ -64,20 +76,31 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
   const resolved = await getResolvedConfig({ api_key: apiKey })
   const org = await getOrg(resolved)
   const existing = await loadConfig()
-  const isFirstLogin = !existing.api_key
+  const isFirstLogin = profile ? !existing.profiles?.[profile]?.api_key : !existing.api_key
 
-  const nextConfig = {
-    ...existing,
-    api_key: apiKey,
-    api_url: resolved.apiUrl,
-    default_org: org.slug,
+  const nextConfig = { ...existing }
+  if (profile) {
+    nextConfig.profiles = {
+      ...existing.profiles,
+      [profile]: {
+        ...existing.profiles?.[profile],
+        api_key: apiKey,
+        api_url: resolved.apiUrl,
+        default_org: org.slug,
+      },
+    }
+    delete nextConfig.profiles[profile].workspace
+  } else {
+    nextConfig.api_key = apiKey
+    nextConfig.api_url = resolved.apiUrl
+    nextConfig.default_org = org.slug
+    // Clear workspace from previous account — workspaces are account-specific
+    delete nextConfig.workspace
   }
-  // Clear workspace from previous account — workspaces are account-specific
-  delete nextConfig.workspace
 
   await saveConfig(nextConfig)
   await track('cli_login', { method: 'key' })
-  process.stdout.write(`✓ Logged in to ${org.slug}\n`)
+  process.stdout.write(profile ? `✓ Logged in to ${org.slug} as profile ${profile}\n` : `✓ Logged in to ${org.slug}\n`)
 
   if (process.env.ORCHAGENT_API_KEY) {
     process.stderr.write(
@@ -100,28 +123,39 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
 /**
  * Login via browser OAuth flow.
  */
-async function browserBasedLogin(port: number): Promise<void> {
+async function browserBasedLogin(port: number, profile?: string): Promise<void> {
   const existing = await loadConfig()
-  const isFirstLogin = !existing.api_key
-  const resolved = await getResolvedConfig()
+  const isFirstLogin = profile ? !existing.profiles?.[profile]?.api_key : !existing.api_key
+  const resolved = await getResolvedConfig({}, profile)
 
   process.stdout.write('Opening browser for authentication...\n\n')
 
   try {
     const result = await startBrowserAuth(resolved.apiUrl, port)
 
-    const nextConfig = {
-      ...existing,
-      api_key: result.apiKey,
-      api_url: resolved.apiUrl,
-      default_org: result.orgSlug,
+    const nextConfig = { ...existing }
+    if (profile) {
+      nextConfig.profiles = {
+        ...existing.profiles,
+        [profile]: {
+          ...existing.profiles?.[profile],
+          api_key: result.apiKey,
+          api_url: resolved.apiUrl,
+          default_org: result.orgSlug,
+        },
+      }
+      delete nextConfig.profiles[profile].workspace
+    } else {
+      nextConfig.api_key = result.apiKey
+      nextConfig.api_url = resolved.apiUrl
+      nextConfig.default_org = result.orgSlug
+      // Clear workspace from previous account — workspaces are account-specific
+      delete nextConfig.workspace
     }
-    // Clear workspace from previous account — workspaces are account-specific
-    delete nextConfig.workspace
 
     await saveConfig(nextConfig)
     await track('cli_login', { method: 'browser' })
-    process.stdout.write(`\n✓ Logged in to ${result.orgSlug}\n`)
+    process.stdout.write(profile ? `\n✓ Logged in to ${result.orgSlug} as profile ${profile}\n` : `\n✓ Logged in to ${result.orgSlug}\n`)
 
     if (process.env.ORCHAGENT_API_KEY) {
       process.stderr.write(
