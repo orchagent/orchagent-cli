@@ -143,6 +143,7 @@ describe('getResolvedConfig', () => {
     delete process.env.ORCHAGENT_API_KEY
     delete process.env.ORCHAGENT_API_URL
     delete process.env.ORCHAGENT_DEFAULT_ORG
+    delete process.env.ORCHAGENT_PROFILE
     // Default: no config file
     const error = new Error('ENOENT') as NodeJS.ErrnoException
     error.code = 'ENOENT'
@@ -178,6 +179,45 @@ describe('getResolvedConfig', () => {
     const config = await getResolvedConfig()
 
     expect(config.apiKey).toBe('sk_from_file')
+  })
+
+  it('uses ORCHAGENT_PROFILE to select a named profile', async () => {
+    process.env.ORCHAGENT_PROFILE = 'stocksure'
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify({
+        api_key: 'sk_hub',
+        default_org: 'hub',
+        profiles: {
+          stocksure: {
+            api_key: 'sk_stocksure',
+            api_url: 'https://api.profile.test',
+            default_org: 'stocksure',
+          },
+        },
+      })
+    )
+
+    const config = await getResolvedConfig()
+
+    expect(config).toEqual({
+      apiKey: 'sk_stocksure',
+      apiUrl: 'https://api.profile.test',
+      defaultOrg: 'stocksure',
+    })
+  })
+
+  it('uses profile-mode env key instead of falling back to active file login', async () => {
+    process.env.ORCHAGENT_PROFILE = 'stocksure'
+    process.env.ORCHAGENT_API_KEY = 'sk_env_stocksure'
+    process.env.ORCHAGENT_DEFAULT_ORG = 'stocksure'
+    vi.mocked(fs.readFile).mockResolvedValueOnce(
+      JSON.stringify({ api_key: 'sk_hub', default_org: 'hub' })
+    )
+
+    const config = await getResolvedConfig()
+
+    expect(config.apiKey).toBe('sk_env_stocksure')
+    expect(config.defaultOrg).toBe('stocksure')
   })
 
   it('falls back to env var when no file config', async () => {

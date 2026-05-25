@@ -45,27 +45,32 @@ export async function getResolvedConfig(
   profile?: string
 ): Promise<ResolvedConfig> {
   const fileConfig = await loadConfig()
+  const requestedProfile = profile ?? process.env.ORCHAGENT_PROFILE
 
   // If profile specified, get config from profiles
-  const profileConfig = profile ? fileConfig.profiles?.[profile] : undefined
+  const profileConfig = requestedProfile ? fileConfig.profiles?.[requestedProfile] : undefined
+  const profileMode = Boolean(requestedProfile)
 
   // Config file wins over env var for interactive use (login/logout work correctly).
-  // CI/CD can use overrides (--key flag) or profiles which still take top priority.
+  // CI/CD and per-process task runners can use overrides, profiles, or
+  // ORCHAGENT_PROFILE+ORCHAGENT_API_KEY. In profile mode we intentionally do
+  // not fall back to the top-level active login, because that would silently
+  // target the wrong account from an isolated task terminal.
   const apiKey =
     overrides.api_key ??
     profileConfig?.api_key ??
-    fileConfig.api_key ??
-    (process.env.ORCHAGENT_API_KEY || undefined)
+    (profileMode ? (process.env.ORCHAGENT_API_KEY || undefined) : (fileConfig.api_key ?? (process.env.ORCHAGENT_API_KEY || undefined)))
   const apiUrl =
     overrides.api_url ??
     process.env.ORCHAGENT_API_URL ??
     profileConfig?.api_url ??
-    fileConfig.api_url ??
+    (profileMode ? undefined : fileConfig.api_url) ??
     DEFAULT_API_URL
   const defaultOrg =
     overrides.default_org ??
     process.env.ORCHAGENT_DEFAULT_ORG ??
-    fileConfig.default_org
+    profileConfig?.default_org ??
+    (profileMode ? undefined : fileConfig.default_org)
 
   return {
     apiKey,

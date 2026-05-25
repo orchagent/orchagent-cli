@@ -3,7 +3,7 @@ export type ConfigFile = {
   api_url?: string
   default_org?: string
   workspace?: string
-  profiles?: Record<string, { api_key: string; api_url?: string }>
+  profiles?: Record<string, { api_key: string; api_url?: string; default_org?: string; workspace?: string }>
   default_formats?: string[]
   default_scope?: 'user' | 'project'
   default_provider?: string

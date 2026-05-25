@@ -91,7 +91,8 @@ async function keyBasedLogin(apiKey: string): Promise<void> {
     process.stdout.write(
       '\n  Quick start: Tell Claude Code:\n' +
       '  "Read docs.orchagent.io and build me an agent"\n\n' +
-      '  Or manually: orch init my-agent\n\n'
+      '  Or manually: orch init my-agent\n' +
+      '  Verify setup: orch doctor\n\n'
     )
   }
 }
@@ -132,10 +133,11 @@ async function browserBasedLogin(port: number): Promise<void> {
 
     if (isFirstLogin) {
       process.stdout.write(
-      '\n  Quick start: Tell Claude Code:\n' +
-      '  "Read docs.orchagent.io and build me an agent"\n\n' +
-      '  Or manually: orch init my-agent\n\n'
-    )
+        '\n  Quick start: Tell Claude Code:\n' +
+        '  "Read docs.orchagent.io and build me an agent"\n\n' +
+        '  Or manually: orch init my-agent\n' +
+        '  Verify setup: orch doctor\n\n'
+      )
     }
   } catch (err) {
     if (err instanceof CliError) {
